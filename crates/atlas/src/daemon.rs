@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
-use std::fs;
+use nix::unistd::{fork, setsid, ForkResult};
+use std::fs::{self, File};
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::config::{get_pid_file, get_socket_path, load_config, Config};
+use crate::config::{get_config_dir, get_pid_file, get_socket_path, load_config, Config};
 use crate::pid::{check_daemon, remove_pid_file, write_pid_file, PidInfo};
 
 pub struct Daemon {
@@ -37,16 +39,61 @@ impl Daemon {
         })
     }
 
-    pub async fn start(self) -> Result<()> {
-        if self.socket_path.exists() {
-            fs::remove_file(&self.socket_path)
-                .with_context(|| format!("Failed to remove stale socket: {}", self.socket_path.display()))?;
-        }
-
+    pub fn start(self) -> Result<()> {
+        // Ensure config directory exists before forking
         if let Some(parent) = self.socket_path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent)?;
             }
+        }
+
+        // Fork to background
+        match unsafe { fork() } {
+            Ok(ForkResult::Parent { child }) => {
+                println!("Daemon started (PID: {})", child);
+                return Ok(());
+            }
+            Ok(ForkResult::Child) => {
+                // Continue in child process
+            }
+            Err(e) => {
+                anyhow::bail!("Fork failed: {}", e);
+            }
+        }
+
+        // Child process: become session leader
+        setsid().context("Failed to create new session")?;
+
+        // Redirect stdin/stdout/stderr to /dev/null
+        let dev_null = File::open("/dev/null")?;
+        let null_fd = dev_null.as_raw_fd();
+        unsafe {
+            libc::dup2(null_fd, 0); // stdin
+            libc::dup2(null_fd, 1); // stdout
+            libc::dup2(null_fd, 2); // stderr
+        }
+
+        // Set up logging to file
+        let log_path = get_config_dir().ok().map(|d| d.join("daemon.log"));
+        if let Some(ref path) = log_path {
+            if let Ok(file) = File::create(path) {
+                let file_fd = file.as_raw_fd();
+                unsafe {
+                    libc::dup2(file_fd, 1); // stdout to log
+                    libc::dup2(file_fd, 2); // stderr to log
+                }
+            }
+        }
+
+        // Build and run tokio runtime in daemon process
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(self.run_daemon())
+    }
+
+    async fn run_daemon(self) -> Result<()> {
+        if self.socket_path.exists() {
+            fs::remove_file(&self.socket_path)
+                .with_context(|| format!("Failed to remove stale socket: {}", self.socket_path.display()))?;
         }
 
         let listener = UnixListener::bind(&self.socket_path)

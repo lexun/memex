@@ -54,16 +54,47 @@ enum ConfigAction {
     Path,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Handle daemon start/restart synchronously (before any tokio runtime)
+    // This allows proper fork() without runtime conflicts
+    match &cli.command {
+        Commands::Daemon { action: DaemonAction::Start } => {
+            let daemon = daemon::Daemon::new()?;
+            return daemon.start();
+        }
+        Commands::Daemon { action: DaemonAction::Restart } => {
+            // Need async for stop, so create a temporary runtime
+            let cfg = config::load_config()?;
+            let pid_path = config::get_pid_file(&cfg)?;
+            if pid::check_daemon(&pid_path)?.is_some() {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(async {
+                    daemon::stop_daemon().await?;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    Ok::<_, anyhow::Error>(())
+                })?;
+                // Runtime is dropped here before fork
+            }
+            let daemon = daemon::Daemon::new()?;
+            return daemon.start();
+        }
+        _ => {}
+    }
+
+    // For all other commands, use tokio runtime
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async_main(cli))
+}
+
+async fn async_main(cli: Cli) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::Level::INFO.into()),
         )
         .init();
-
-    let cli = Cli::parse();
 
     match cli.command {
         Commands::Daemon { action } => handle_daemon(action).await,
@@ -74,22 +105,12 @@ async fn main() -> Result<()> {
 
 async fn handle_daemon(action: DaemonAction) -> Result<()> {
     match action {
-        DaemonAction::Start => {
-            let daemon = daemon::Daemon::new()?;
-            daemon.start().await
+        DaemonAction::Start | DaemonAction::Restart => {
+            // Handled in main() before runtime starts
+            unreachable!()
         }
         DaemonAction::Stop => daemon::stop_daemon().await,
         DaemonAction::Status => daemon::daemon_status(),
-        DaemonAction::Restart => {
-            let cfg = config::load_config()?;
-            let pid_path = config::get_pid_file(&cfg)?;
-            if pid::check_daemon(&pid_path)?.is_some() {
-                daemon::stop_daemon().await?;
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-            let daemon = daemon::Daemon::new()?;
-            daemon.start().await
-        }
     }
 }
 
