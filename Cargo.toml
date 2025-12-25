@@ -1,17 +1,11 @@
 [workspace]
-members = [
-    "crates/tasks",
-    "crates/cli",
-    "crates/daemon",
-    "crates/common",
-    "crates/mcp",
-]
+members = ["crates/atlas"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Luke <luke@lexun.io>"]
+authors = ["Luke Barbuto <luke.barbuto@gmail.com>"]
 license = "BSL-1.1"
 
 [workspace.dependencies]
