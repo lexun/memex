@@ -94,10 +94,12 @@ fn main() -> Result<()> {
 }
 
 async fn async_main(cli: Cli) -> Result<()> {
+    // Default to WARN level for quiet CLI output
+    // Use RUST_LOG=info or RUST_LOG=debug for verbose output
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
+                .add_directive(tracing::Level::WARN.into()),
         )
         .init();
 
