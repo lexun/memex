@@ -26,6 +26,11 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Task management
+    Task {
+        #[command(subcommand)]
+        action: forge::TaskCommand,
+    },
     /// Initialize memex configuration
     Init,
 }
@@ -99,6 +104,7 @@ async fn async_main(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Daemon { action } => handle_daemon(action).await,
         Commands::Config { action } => handle_config(action),
+        Commands::Task { action } => forge::handle_task_command(action),
         Commands::Init => handle_init(),
     }
 }
