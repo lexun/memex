@@ -154,6 +154,17 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
 
         TaskCommand::Note(note_cmd) => handle_note_command(&store, note_cmd).await,
         TaskCommand::Dep(dep_cmd) => handle_dep_command(&store, dep_cmd).await,
+
+        TaskCommand::Import { file } => {
+            let path = std::path::Path::new(&file);
+            if !path.exists() {
+                anyhow::bail!("File not found: {}", file);
+            }
+
+            let count = store.import_from_file(path).await?;
+            println!("Imported {} statements from {}", count, file);
+            Ok(())
+        }
     }
 }
 

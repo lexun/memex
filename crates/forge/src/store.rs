@@ -339,4 +339,26 @@ impl Store {
         let deps: Vec<TaskDependency> = response.take(0).context("Failed to parse dependencies")?;
         Ok(deps)
     }
+
+    // ========== Import/Export Operations ==========
+
+    /// Import data from a .surql file
+    pub async fn import_from_file(&self, path: &Path) -> Result<usize> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read import file: {}", path.display()))?;
+
+        // Count statements for reporting
+        let statement_count = content
+            .lines()
+            .filter(|line| line.trim().starts_with("INSERT"))
+            .count();
+
+        // Execute the SQL
+        self.db
+            .query(&content)
+            .await
+            .context("Failed to execute import SQL")?;
+
+        Ok(statement_count)
+    }
 }

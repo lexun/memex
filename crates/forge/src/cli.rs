@@ -80,6 +80,12 @@ pub enum TaskCommand {
     /// Manage task dependencies
     #[command(subcommand)]
     Dep(DepCommand),
+
+    /// Import tasks from a .surql file
+    Import {
+        /// Path to the import file
+        file: String,
+    },
 }
 
 /// Commands for task notes/updates
