@@ -12,6 +12,7 @@ data/
 
 # Local development
 /local/
+/.memex/
 
 # MCP config
 .mcp.json.local
