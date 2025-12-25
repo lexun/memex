@@ -1,0 +1,17 @@
+# Rust
+/target
+
+# devenv
+.devenv*
+devenv.lock
+.direnv
+
+# SurrealDB data
+*.db
+data/
+
+# Local development
+/local/
+
+# MCP config
+.mcp.json.local
