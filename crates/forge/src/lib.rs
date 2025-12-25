@@ -5,8 +5,11 @@
 
 pub mod cli;
 pub mod handler;
+pub mod migrations;
+pub mod store;
 pub mod task;
 
 pub use cli::TaskCommand;
 pub use handler::handle_task_command;
+pub use store::Store;
 pub use task::{Task, TaskId, TaskStatus};

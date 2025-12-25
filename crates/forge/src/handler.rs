@@ -1,15 +1,19 @@
 //! Command handlers for Forge CLI
 //!
 //! These handlers execute the task management commands.
-//! Currently prints placeholders - storage will be added later.
+
+use std::path::Path;
 
 use anyhow::Result;
 
 use crate::cli::{DepCommand, NoteCommand, TaskCommand};
+use crate::store::Store;
 use crate::task::Task;
 
 /// Handle a task command
-pub fn handle_task_command(cmd: TaskCommand) -> Result<()> {
+pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()> {
+    let store = Store::new(db_path).await?;
+
     match cmd {
         TaskCommand::Create {
             title,
@@ -25,46 +29,79 @@ pub fn handle_task_command(cmd: TaskCommand) -> Result<()> {
                 task = task.with_project(proj);
             }
 
-            // TODO: Store task
-            println!("Created task: {}", task.id);
-            println!("  Title: {}", task.title);
-            if let Some(ref desc) = task.description {
-                println!("  Description: {}", desc);
-            }
-            if let Some(ref proj) = task.project {
-                println!("  Project: {}", proj);
-            }
-            println!("  Priority: {}", task.priority);
+            let created = store.create_task(task).await?;
+            println!("Created task: {}", created.id_str().unwrap_or_default());
             Ok(())
         }
 
         TaskCommand::List { project, status } => {
-            // TODO: Query storage
-            println!("Listing tasks...");
-            if let Some(proj) = project {
-                println!("  Project filter: {}", proj);
+            let status_filter = status
+                .as_ref()
+                .map(|s| s.parse())
+                .transpose()?;
+
+            let tasks = store
+                .list_tasks(project.as_deref(), status_filter)
+                .await?;
+
+            if tasks.is_empty() {
+                println!("No tasks found");
+            } else {
+                for task in tasks {
+                    print_task_summary(&task);
+                }
             }
-            if let Some(stat) = status {
-                println!("  Status filter: {}", stat);
-            }
-            println!("  (no tasks yet - storage not implemented)");
             Ok(())
         }
 
         TaskCommand::Ready { project } => {
-            // TODO: Query storage for pending tasks with no blockers
-            println!("Ready tasks...");
-            if let Some(proj) = project {
-                println!("  Project filter: {}", proj);
+            let tasks = store.ready_tasks(project.as_deref()).await?;
+
+            if tasks.is_empty() {
+                println!("No ready tasks");
+            } else {
+                println!("Ready tasks:");
+                for task in tasks {
+                    print_task_summary(&task);
+                }
             }
-            println!("  (no tasks yet - storage not implemented)");
             Ok(())
         }
 
         TaskCommand::Get { id } => {
-            // TODO: Fetch from storage
-            println!("Task: {}", id);
-            println!("  (storage not implemented)");
+            match store.get_task(&id).await? {
+                Some(task) => {
+                    print_task_detail(&task);
+
+                    // Show notes
+                    let notes = store.get_notes(&id).await?;
+                    if !notes.is_empty() {
+                        println!("\nNotes:");
+                        for note in notes {
+                            let note_id = note.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+                            println!("  [{}] {} - {}",
+                                note_id,
+                                note.created_at.format("%Y-%m-%d %H:%M"),
+                                note.content
+                            );
+                        }
+                    }
+
+                    // Show dependencies
+                    let deps = store.get_dependencies(&id).await?;
+                    if !deps.is_empty() {
+                        println!("\nDependencies:");
+                        for dep in deps {
+                            let from_id = dep.from_task.id.to_raw();
+                            let to_id = dep.to_task.id.to_raw();
+                            println!("  {} {} {}", from_id, dep.relation, to_id);
+                        }
+                    }
+                }
+                None => {
+                    println!("Task not found: {}", id);
+                }
+            }
             Ok(())
         }
 
@@ -73,70 +110,131 @@ pub fn handle_task_command(cmd: TaskCommand) -> Result<()> {
             status,
             priority,
         } => {
-            // TODO: Update in storage
-            println!("Updating task: {}", id);
-            if let Some(stat) = status {
-                println!("  Status -> {}", stat);
-            }
-            if let Some(prio) = priority {
-                println!("  Priority -> {}", prio);
+            let status_update = status
+                .as_ref()
+                .map(|s| s.parse())
+                .transpose()?;
+
+            match store.update_task(&id, status_update, priority).await? {
+                Some(task) => {
+                    println!("Updated task: {}", task.id_str().unwrap_or_default());
+                    print_task_summary(&task);
+                }
+                None => {
+                    println!("Task not found: {}", id);
+                }
             }
             Ok(())
         }
 
         TaskCommand::Close { id, reason } => {
-            // TODO: Update status to completed in storage
-            println!("Closing task: {}", id);
-            if let Some(r) = reason {
-                println!("  Reason: {}", r);
+            match store.close_task(&id, reason.as_deref()).await? {
+                Some(task) => {
+                    let action = if reason.is_some() { "Cancelled" } else { "Completed" };
+                    println!("{} task: {}", action, task.id_str().unwrap_or_default());
+                }
+                None => {
+                    println!("Task not found: {}", id);
+                }
             }
             Ok(())
         }
 
         TaskCommand::Delete { id } => {
-            // TODO: Delete from storage
-            println!("Deleting task: {}", id);
+            match store.delete_task(&id).await? {
+                Some(task) => {
+                    println!("Deleted task: {}", task.id_str().unwrap_or_default());
+                }
+                None => {
+                    println!("Task not found: {}", id);
+                }
+            }
             Ok(())
         }
 
-        TaskCommand::Note(note_cmd) => handle_note_command(note_cmd),
-        TaskCommand::Dep(dep_cmd) => handle_dep_command(dep_cmd),
+        TaskCommand::Note(note_cmd) => handle_note_command(&store, note_cmd).await,
+        TaskCommand::Dep(dep_cmd) => handle_dep_command(&store, dep_cmd).await,
     }
 }
 
-fn handle_note_command(cmd: NoteCommand) -> Result<()> {
+async fn handle_note_command(store: &Store, cmd: NoteCommand) -> Result<()> {
     match cmd {
         NoteCommand::Add { task_id, content } => {
-            println!("Adding note to task: {}", task_id);
-            println!("  Content: {}", content);
+            let note = store.add_note(&task_id, &content).await?;
+            let note_id = note.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+            println!("Added note: {}", note_id);
             Ok(())
         }
         NoteCommand::Edit { note_id, content } => {
-            println!("Editing note: {}", note_id);
-            println!("  New content: {}", content);
+            match store.edit_note(&note_id, &content).await? {
+                Some(_) => println!("Updated note: {}", note_id),
+                None => println!("Note not found: {}", note_id),
+            }
             Ok(())
         }
         NoteCommand::Delete { note_id } => {
-            println!("Deleting note: {}", note_id);
+            match store.delete_note(&note_id).await? {
+                Some(_) => println!("Deleted note: {}", note_id),
+                None => println!("Note not found: {}", note_id),
+            }
             Ok(())
         }
     }
 }
 
-fn handle_dep_command(cmd: DepCommand) -> Result<()> {
+async fn handle_dep_command(store: &Store, cmd: DepCommand) -> Result<()> {
     match cmd {
         DepCommand::Add { from, to, relation } => {
-            println!("Adding dependency: {} {} {}", from, relation, to);
+            store.add_dependency(&from, &to, &relation).await?;
+            println!("Added dependency: {} {} {}", from, relation, to);
             Ok(())
         }
         DepCommand::Remove { from, to, relation } => {
-            println!("Removing dependency: {} {} {}", from, relation, to);
+            store.remove_dependency(&from, &to, &relation).await?;
+            println!("Removed dependency: {} {} {}", from, relation, to);
             Ok(())
         }
         DepCommand::Show { task_id } => {
-            println!("Dependencies for task: {}", task_id);
-            println!("  (storage not implemented)");
+            let deps = store.get_dependencies(&task_id).await?;
+
+            if deps.is_empty() {
+                println!("No dependencies for task: {}", task_id);
+            } else {
+                println!("Dependencies for task {}:", task_id);
+                for dep in deps {
+                    let from_id = dep.from_task.id.to_raw();
+                    let to_id = dep.to_task.id.to_raw();
+                    println!("  {} {} {}", from_id, dep.relation, to_id);
+                }
+            }
             Ok(())
         }
+    }
+}
+
+fn print_task_summary(task: &Task) {
+    let id = task.id_str().unwrap_or_default();
+    let project = task.project.as_deref().unwrap_or("-");
+    println!(
+        "[{}] {} ({}) [{}] p:{}",
+        id, task.title, task.status, project, task.priority
+    );
+}
+
+fn print_task_detail(task: &Task) {
+    println!("Task: {}", task.id_str().unwrap_or_default());
+    println!("  Title: {}", task.title);
+    if let Some(ref desc) = task.description {
+        println!("  Description: {}", desc);
+    }
+    println!("  Status: {}", task.status);
+    if let Some(ref proj) = task.project {
+        println!("  Project: {}", proj);
+    }
+    println!("  Priority: {}", task.priority);
+    println!("  Created: {}", task.created_at.format("%Y-%m-%d %H:%M:%S"));
+    println!("  Updated: {}", task.updated_at.format("%Y-%m-%d %H:%M:%S"));
+    if let Some(ref completed) = task.completed_at {
+        println!("  Completed: {}", completed.format("%Y-%m-%d %H:%M:%S"));
     }
 }

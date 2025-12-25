@@ -1,30 +1,10 @@
 //! Core task types and operations
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use surrealdb::sql::{Datetime, Thing};
 
-/// Unique identifier for a task
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TaskId(pub Uuid);
-
-impl TaskId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for TaskId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for TaskId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+/// Task ID type (just the key portion)
+pub type TaskId = String;
 
 /// Task status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,11 +28,39 @@ impl Default for TaskStatus {
     }
 }
 
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            TaskStatus::Pending => "pending",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Blocked => "blocked",
+            TaskStatus::Completed => "completed",
+            TaskStatus::Cancelled => "cancelled",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl std::str::FromStr for TaskStatus {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(TaskStatus::Pending),
+            "in_progress" => Ok(TaskStatus::InProgress),
+            "blocked" => Ok(TaskStatus::Blocked),
+            "completed" => Ok(TaskStatus::Completed),
+            "cancelled" => Ok(TaskStatus::Cancelled),
+            _ => anyhow::bail!("Unknown status: {}", s),
+        }
+    }
+}
+
 /// A task representing a unit of work
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
-    /// Unique identifier
-    pub id: TaskId,
+    /// SurrealDB record ID
+    pub id: Option<Thing>,
     /// Short title
     pub title: String,
     /// Optional longer description
@@ -64,28 +72,33 @@ pub struct Task {
     /// Priority (higher = more important)
     pub priority: i32,
     /// When the task was created
-    pub created_at: DateTime<Utc>,
+    pub created_at: Datetime,
     /// When the task was last updated
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Datetime,
     /// When the task was completed (if applicable)
-    pub completed_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<Datetime>,
 }
 
 impl Task {
     /// Create a new task with the given title
     pub fn new(title: impl Into<String>) -> Self {
-        let now = Utc::now();
+        let now = Datetime::default();
         Self {
-            id: TaskId::new(),
+            id: None,
             title: title.into(),
             description: None,
             status: TaskStatus::default(),
             project: None,
             priority: 0,
-            created_at: now,
+            created_at: now.clone(),
             updated_at: now,
             completed_at: None,
         }
+    }
+
+    /// Get the task ID as a string (just the key part)
+    pub fn id_str(&self) -> Option<String> {
+        self.id.as_ref().map(|t| t.id.to_raw())
     }
 
     /// Set the description
@@ -105,4 +118,34 @@ impl Task {
         self.priority = priority;
         self
     }
+}
+
+/// A note/update on a task
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskNote {
+    /// SurrealDB record ID
+    pub id: Option<Thing>,
+    /// The task this note belongs to
+    pub task_id: Thing,
+    /// Note content
+    pub content: String,
+    /// When the note was created
+    pub created_at: Datetime,
+    /// When the note was last updated
+    pub updated_at: Datetime,
+}
+
+/// A dependency between tasks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskDependency {
+    /// SurrealDB record ID
+    pub id: Option<Thing>,
+    /// The task that depends on another
+    pub from_task: Thing,
+    /// The task being depended on
+    pub to_task: Thing,
+    /// Type of relationship (blocks, blocked_by, relates_to)
+    pub relation: String,
+    /// When the dependency was created
+    pub created_at: Datetime,
 }

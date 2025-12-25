@@ -104,7 +104,11 @@ async fn async_main(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Daemon { action } => handle_daemon(action).await,
         Commands::Config { action } => handle_config(action),
-        Commands::Task { action } => forge::handle_task_command(action),
+        Commands::Task { action } => {
+            let cfg = config::load_config()?;
+            let db_path = config::get_db_path(&cfg)?;
+            forge::handle_task_command(action, &db_path).await
+        }
         Commands::Init => handle_init(),
     }
 }
