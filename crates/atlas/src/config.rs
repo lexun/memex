@@ -41,13 +41,9 @@ impl Default for DatabaseConfig {
 }
 
 pub fn get_config_dir() -> Result<PathBuf> {
+    // MEMEX_CONFIG_PATH overrides the default config directory
     if let Ok(path) = std::env::var("MEMEX_CONFIG_PATH") {
-        let path = PathBuf::from(path);
-        if path.is_dir() {
-            return Ok(path);
-        } else if let Some(parent) = path.parent() {
-            return Ok(parent.to_path_buf());
-        }
+        return Ok(PathBuf::from(path));
     }
 
     ProjectDirs::from("", "", APP_NAME)
