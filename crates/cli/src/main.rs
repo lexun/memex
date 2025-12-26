@@ -31,6 +31,11 @@ enum Commands {
         #[command(subcommand)]
         action: forge::TaskCommand,
     },
+    /// MCP server
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
     /// Initialize memex configuration
     Init,
 }
@@ -57,6 +62,12 @@ enum ConfigAction {
     Set { key: String, value: String },
     /// Show configuration file path
     Path,
+}
+
+#[derive(Subcommand)]
+enum McpAction {
+    /// Start MCP server on stdio
+    Serve,
 }
 
 fn main() -> Result<()> {
@@ -111,6 +122,7 @@ async fn async_main(cli: Cli) -> Result<()> {
             let db_path = config::get_db_path(&cfg)?;
             forge::handle_task_command(action, &db_path).await
         }
+        Commands::Mcp { action } => handle_mcp(action).await,
         Commands::Init => handle_init(),
     }
 }
@@ -160,6 +172,16 @@ fn handle_config(action: ConfigAction) -> Result<()> {
             let path = config::get_config_file()?;
             println!("{}", path.display());
             Ok(())
+        }
+    }
+}
+
+async fn handle_mcp(action: McpAction) -> Result<()> {
+    match action {
+        McpAction::Serve => {
+            let cfg = config::load_config()?;
+            let db_path = config::get_db_path(&cfg)?;
+            mcp::start_server(&db_path).await
         }
     }
 }
