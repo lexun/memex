@@ -119,8 +119,8 @@ async fn async_main(cli: Cli) -> Result<()> {
         Commands::Config { action } => handle_config(action),
         Commands::Task { action } => {
             let cfg = config::load_config()?;
-            let db_path = config::get_db_path(&cfg)?;
-            forge::handle_task_command(action, &db_path).await
+            let socket_path = config::get_socket_path(&cfg)?;
+            forge::handle_task_command(action, &socket_path).await
         }
         Commands::Mcp { action } => handle_mcp(action).await,
         Commands::Init => handle_init(),
@@ -180,8 +180,8 @@ async fn handle_mcp(action: McpAction) -> Result<()> {
     match action {
         McpAction::Serve => {
             let cfg = config::load_config()?;
-            let db_path = config::get_db_path(&cfg)?;
-            mcp::start_server(&db_path).await
+            let socket_path = config::get_socket_path(&cfg)?;
+            mcp::start_server(&socket_path).await
         }
     }
 }

@@ -829,6 +829,7 @@ dependencies = [
  "clap",
  "directories",
  "forge",
+ "ipc",
  "libc",
  "mcp",
  "nix",
@@ -1292,6 +1293,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "ipc",
  "serde",
  "serde_json",
  "surrealdb",
@@ -1967,6 +1969,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2285,6 +2300,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "forge",
+ "ipc",
  "mcp-attr",
  "serde",
  "serde_json",

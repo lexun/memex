@@ -1,18 +1,18 @@
 //! Command handlers for Forge CLI
 //!
-//! These handlers execute the task management commands.
+//! These handlers execute the task management commands via the daemon.
 
 use std::path::Path;
 
 use anyhow::Result;
 
 use crate::cli::{DepCommand, NoteCommand, TaskCommand};
-use crate::store::Store;
+use crate::client::TaskClient;
 use crate::task::Task;
 
-/// Handle a task command
-pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()> {
-    let store = Store::new(db_path).await?;
+/// Handle a task command via the daemon
+pub async fn handle_task_command(cmd: TaskCommand, socket_path: &Path) -> Result<()> {
+    let client = TaskClient::new(socket_path);
 
     match cmd {
         TaskCommand::Create {
@@ -29,7 +29,7 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
                 task = task.with_project(proj);
             }
 
-            let created = store.create_task(task).await?;
+            let created = client.create_task(task).await?;
             println!("Created task: {}", created.id_str().unwrap_or_default());
             Ok(())
         }
@@ -40,7 +40,7 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
                 .map(|s| s.parse())
                 .transpose()?;
 
-            let tasks = store
+            let tasks = client
                 .list_tasks(project.as_deref(), status_filter)
                 .await?;
 
@@ -55,7 +55,7 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
         }
 
         TaskCommand::Ready { project } => {
-            let tasks = store.ready_tasks(project.as_deref()).await?;
+            let tasks = client.ready_tasks(project.as_deref()).await?;
 
             if tasks.is_empty() {
                 println!("No ready tasks");
@@ -69,12 +69,12 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
         }
 
         TaskCommand::Get { id } => {
-            match store.get_task(&id).await? {
+            match client.get_task(&id).await? {
                 Some(task) => {
                     print_task_detail(&task);
 
                     // Show notes
-                    let notes = store.get_notes(&id).await?;
+                    let notes = client.get_notes(&id).await?;
                     if !notes.is_empty() {
                         println!("\nNotes:");
                         for note in notes {
@@ -88,7 +88,7 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
                     }
 
                     // Show dependencies
-                    let deps = store.get_dependencies(&id).await?;
+                    let deps = client.get_dependencies(&id).await?;
                     if !deps.is_empty() {
                         println!("\nDependencies:");
                         for dep in deps {
@@ -115,7 +115,7 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
                 .map(|s| s.parse())
                 .transpose()?;
 
-            match store.update_task(&id, status_update, priority).await? {
+            match client.update_task(&id, status_update, priority).await? {
                 Some(task) => {
                     println!("Updated task: {}", task.id_str().unwrap_or_default());
                     print_task_summary(&task);
@@ -128,7 +128,7 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
         }
 
         TaskCommand::Close { id, reason } => {
-            match store.close_task(&id, reason.as_deref()).await? {
+            match client.close_task(&id, reason.as_deref()).await? {
                 Some(task) => {
                     let action = if reason.is_some() { "Cancelled" } else { "Completed" };
                     println!("{} task: {}", action, task.id_str().unwrap_or_default());
@@ -141,7 +141,7 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
         }
 
         TaskCommand::Delete { id } => {
-            match store.delete_task(&id).await? {
+            match client.delete_task(&id).await? {
                 Some(task) => {
                     println!("Deleted task: {}", task.id_str().unwrap_or_default());
                 }
@@ -152,39 +152,37 @@ pub async fn handle_task_command(cmd: TaskCommand, db_path: &Path) -> Result<()>
             Ok(())
         }
 
-        TaskCommand::Note(note_cmd) => handle_note_command(&store, note_cmd).await,
-        TaskCommand::Dep(dep_cmd) => handle_dep_command(&store, dep_cmd).await,
+        TaskCommand::Note(note_cmd) => handle_note_command(&client, note_cmd).await,
+        TaskCommand::Dep(dep_cmd) => handle_dep_command(&client, dep_cmd).await,
 
         TaskCommand::Import { file } => {
-            let path = std::path::Path::new(&file);
-            if !path.exists() {
-                anyhow::bail!("File not found: {}", file);
-            }
-
-            let count = store.import_from_file(path).await?;
-            println!("Imported {} statements from {}", count, file);
-            Ok(())
+            // Import requires direct database access; daemon must be stopped
+            anyhow::bail!(
+                "Import requires direct database access.\n\
+                Stop the daemon first: memex daemon stop\n\
+                Then run: memex task import {}", file
+            );
         }
     }
 }
 
-async fn handle_note_command(store: &Store, cmd: NoteCommand) -> Result<()> {
+async fn handle_note_command(client: &TaskClient, cmd: NoteCommand) -> Result<()> {
     match cmd {
         NoteCommand::Add { task_id, content } => {
-            let note = store.add_note(&task_id, &content).await?;
+            let note = client.add_note(&task_id, &content).await?;
             let note_id = note.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
             println!("Added note: {}", note_id);
             Ok(())
         }
         NoteCommand::Edit { note_id, content } => {
-            match store.edit_note(&note_id, &content).await? {
+            match client.edit_note(&note_id, &content).await? {
                 Some(_) => println!("Updated note: {}", note_id),
                 None => println!("Note not found: {}", note_id),
             }
             Ok(())
         }
         NoteCommand::Delete { note_id } => {
-            match store.delete_note(&note_id).await? {
+            match client.delete_note(&note_id).await? {
                 Some(_) => println!("Deleted note: {}", note_id),
                 None => println!("Note not found: {}", note_id),
             }
@@ -193,20 +191,20 @@ async fn handle_note_command(store: &Store, cmd: NoteCommand) -> Result<()> {
     }
 }
 
-async fn handle_dep_command(store: &Store, cmd: DepCommand) -> Result<()> {
+async fn handle_dep_command(client: &TaskClient, cmd: DepCommand) -> Result<()> {
     match cmd {
         DepCommand::Add { from, to, relation } => {
-            store.add_dependency(&from, &to, &relation).await?;
+            client.add_dependency(&from, &to, &relation).await?;
             println!("Added dependency: {} {} {}", from, relation, to);
             Ok(())
         }
         DepCommand::Remove { from, to, relation } => {
-            store.remove_dependency(&from, &to, &relation).await?;
+            client.remove_dependency(&from, &to, &relation).await?;
             println!("Removed dependency: {} {} {}", from, relation, to);
             Ok(())
         }
         DepCommand::Show { task_id } => {
-            let deps = store.get_dependencies(&task_id).await?;
+            let deps = client.get_dependencies(&task_id).await?;
 
             if deps.is_empty() {
                 println!("No dependencies for task: {}", task_id);

@@ -1,6 +1,7 @@
 //! MCP server implementation for Memex
 //!
 //! Exposes task management tools via the Model Context Protocol.
+//! Connects to the daemon via IPC instead of accessing the database directly.
 
 use std::path::Path;
 
@@ -9,18 +10,18 @@ use mcp_attr::server::{mcp_server, serve_stdio, McpServer};
 use mcp_attr::ErrorCode;
 
 use forge::task::{Task, TaskStatus};
-use forge::Store;
+use forge::TaskClient;
 
 /// MCP server for Memex task management
 pub struct MemexMcpServer {
-    store: Store,
+    client: TaskClient,
 }
 
 impl MemexMcpServer {
-    /// Create a new MCP server with a database connection
-    pub async fn new(db_path: &Path) -> Result<Self> {
-        let store = Store::new(db_path).await?;
-        Ok(Self { store })
+    /// Create a new MCP server connected to the daemon
+    pub fn new(socket_path: &Path) -> Self {
+        let client = TaskClient::new(socket_path);
+        Self { client }
     }
 
     fn format_task_summary(task: &Task) -> String {
@@ -43,6 +44,7 @@ impl McpServer for MemexMcpServer {
         description: Option<String>,
         project: Option<String>,
         priority: Option<i32>,
+        _task_type: Option<String>,
     ) -> mcp_attr::Result<String> {
         let mut task = Task::new(&title).with_priority(priority.unwrap_or(0));
 
@@ -53,7 +55,7 @@ impl McpServer for MemexMcpServer {
             task = task.with_project(proj);
         }
 
-        match self.store.create_task(task).await {
+        match self.client.create_task(task).await {
             Ok(created) => {
                 let id = created.id_str().unwrap_or_default();
                 Ok(format!(
@@ -77,7 +79,7 @@ impl McpServer for MemexMcpServer {
     ) -> mcp_attr::Result<String> {
         let status_filter = status.and_then(|s| s.parse::<TaskStatus>().ok());
 
-        match self.store.list_tasks(project.as_deref(), status_filter).await {
+        match self.client.list_tasks(project.as_deref(), status_filter).await {
             Ok(tasks) => {
                 if tasks.is_empty() {
                     Ok("No tasks found".to_string())
@@ -100,7 +102,7 @@ impl McpServer for MemexMcpServer {
     /// Get tasks that are ready to work on (pending with no blocking dependencies)
     #[tool]
     async fn ready_tasks(&self, project: Option<String>) -> mcp_attr::Result<String> {
-        match self.store.ready_tasks(project.as_deref()).await {
+        match self.client.ready_tasks(project.as_deref()).await {
             Ok(tasks) => {
                 if tasks.is_empty() {
                     Ok("No ready tasks".to_string())
@@ -123,7 +125,7 @@ impl McpServer for MemexMcpServer {
     /// Get detailed information about a task including notes and dependencies
     #[tool]
     async fn get_task(&self, id: String) -> mcp_attr::Result<String> {
-        match self.store.get_task(&id).await {
+        match self.client.get_task(&id).await {
             Ok(Some(task)) => {
                 let id_str = task.id_str().unwrap_or_default();
                 let mut output = format!(
@@ -139,7 +141,7 @@ impl McpServer for MemexMcpServer {
                 }
 
                 // Fetch and display notes
-                if let Ok(notes) = self.store.get_notes(&id).await {
+                if let Ok(notes) = self.client.get_notes(&id).await {
                     if !notes.is_empty() {
                         output.push_str(&format!("\n\n  Notes ({}):", notes.len()));
                         for note in notes {
@@ -158,7 +160,7 @@ impl McpServer for MemexMcpServer {
                 }
 
                 // Fetch and display dependencies
-                if let Ok(deps) = self.store.get_dependencies(&id).await {
+                if let Ok(deps) = self.client.get_dependencies(&id).await {
                     if !deps.is_empty() {
                         output.push_str("\n\n  Dependencies:");
                         for dep in deps {
@@ -212,7 +214,7 @@ impl McpServer for MemexMcpServer {
         };
 
         match self
-            .store
+            .client
             .update_task(&id, status_update, priority)
             .await
         {
@@ -237,7 +239,7 @@ impl McpServer for MemexMcpServer {
     /// Close a task (mark as completed or cancelled if reason provided)
     #[tool]
     async fn close_task(&self, id: String, reason: Option<String>) -> mcp_attr::Result<String> {
-        match self.store.close_task(&id, reason.as_deref()).await {
+        match self.client.close_task(&id, reason.as_deref()).await {
             Ok(Some(task)) => {
                 let id_str = task.id_str().unwrap_or_default();
                 Ok(format!("Closed task: {}\n  Status: {}", id_str, task.status))
@@ -256,7 +258,7 @@ impl McpServer for MemexMcpServer {
     /// Delete a task
     #[tool]
     async fn delete_task(&self, id: String) -> mcp_attr::Result<String> {
-        match self.store.delete_task(&id).await {
+        match self.client.delete_task(&id).await {
             Ok(Some(_)) => Ok(format!("Deleted task: {}", id)),
             Ok(None) => {
                 let msg = format!("Task not found: {}", id);
@@ -276,11 +278,11 @@ impl McpServer for MemexMcpServer {
         task_id: String,
         content: String,
     ) -> mcp_attr::Result<String> {
-        match self.store.add_note(&task_id, &content).await {
+        match self.client.add_note(&task_id, &content).await {
             Ok(note) => {
                 let note_id = note.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
                 // Get count of notes
-                match self.store.get_notes(&task_id).await {
+                match self.client.get_notes(&task_id).await {
                     Ok(notes) => Ok(format!(
                         "Added note to task: {}\n  Note ID: {}\n  Total notes: {}",
                         task_id,
@@ -304,7 +306,7 @@ impl McpServer for MemexMcpServer {
         update_id: String,
         content: String,
     ) -> mcp_attr::Result<String> {
-        match self.store.edit_note(&update_id, &content).await {
+        match self.client.edit_note(&update_id, &content).await {
             Ok(Some(_)) => Ok(format!("Updated note: {}", update_id)),
             Ok(None) => {
                 let msg = format!("Note not found: {}", update_id);
@@ -320,7 +322,7 @@ impl McpServer for MemexMcpServer {
     /// Delete a task note
     #[tool]
     async fn delete_task_update(&self, update_id: String) -> mcp_attr::Result<String> {
-        match self.store.delete_note(&update_id).await {
+        match self.client.delete_note(&update_id).await {
             Ok(Some(_)) => Ok(format!("Deleted note: {}", update_id)),
             Ok(None) => {
                 let msg = format!("Note not found: {}", update_id);
@@ -352,7 +354,7 @@ impl McpServer for MemexMcpServer {
         }
 
         match self
-            .store
+            .client
             .add_dependency(&from_task_id, &to_task_id, &relation_type)
             .await
         {
@@ -376,7 +378,7 @@ impl McpServer for MemexMcpServer {
         relation_type: String,
     ) -> mcp_attr::Result<String> {
         match self
-            .store
+            .client
             .remove_dependency(&from_task_id, &to_task_id, &relation_type)
             .await
         {
@@ -394,7 +396,7 @@ impl McpServer for MemexMcpServer {
     /// Get dependencies for a task
     #[tool]
     async fn get_dependencies(&self, task_id: String) -> mcp_attr::Result<String> {
-        match self.store.get_dependencies(&task_id).await {
+        match self.client.get_dependencies(&task_id).await {
             Ok(deps) => {
                 if deps.is_empty() {
                     Ok(format!("No dependencies for task: {}", task_id))
@@ -417,13 +419,127 @@ impl McpServer for MemexMcpServer {
             }
         }
     }
+
+    /// Store knowledge in the knowledge base
+    #[tool]
+    async fn store_knowledge(
+        &self,
+        entity_type: String,
+        name: String,
+        content: String,
+        _project: Option<String>,
+        _metadata: Option<serde_json::Value>,
+    ) -> mcp_attr::Result<String> {
+        // Knowledge storage will be implemented when Atlas is integrated
+        Ok(format!(
+            "Knowledge storage not yet implemented. Would store: {} ({}) - {} bytes",
+            name,
+            entity_type,
+            content.len()
+        ))
+    }
+
+    /// Query knowledge from the knowledge base
+    #[tool]
+    async fn query_knowledge(
+        &self,
+        _search: Option<String>,
+        _entity_type: Option<String>,
+        _project: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        // Knowledge query will be implemented when Atlas is integrated
+        Ok("Knowledge query not yet implemented".to_string())
+    }
+
+    /// Update existing knowledge
+    #[tool]
+    async fn update_knowledge(
+        &self,
+        id: String,
+        _name: Option<String>,
+        _content: Option<String>,
+        _confidence: Option<f32>,
+    ) -> mcp_attr::Result<String> {
+        // Knowledge update will be implemented when Atlas is integrated
+        Ok(format!("Knowledge update not yet implemented. Would update: {}", id))
+    }
+
+    /// Relate two knowledge entities
+    #[tool]
+    async fn relate_entities(
+        &self,
+        from_id: String,
+        to_id: String,
+        relation_type: String,
+    ) -> mcp_attr::Result<String> {
+        // Knowledge relation will be implemented when Atlas is integrated
+        Ok(format!(
+            "Knowledge relation not yet implemented. Would relate: {} -> {} ({})",
+            from_id, to_id, relation_type
+        ))
+    }
+
+    /// Get project context (tasks + knowledge)
+    #[tool]
+    async fn get_project_context(&self, project: String) -> mcp_attr::Result<String> {
+        // Get tasks for the project
+        match self.client.list_tasks(Some(&project), None).await {
+            Ok(tasks) => {
+                let mut output = format!("Project: {}\n\n", project);
+
+                if tasks.is_empty() {
+                    output.push_str("No tasks found for this project.");
+                } else {
+                    output.push_str(&format!("Tasks ({}):\n", tasks.len()));
+                    for task in &tasks {
+                        output.push_str(&format!("  {}\n", Self::format_task_summary(task)));
+                    }
+                }
+
+                // Knowledge context will be added when Atlas is integrated
+                output.push_str("\nKnowledge: Not yet implemented");
+
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to get project context: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Discover context based on a query
+    #[tool]
+    async fn discover_context(
+        &self,
+        query: String,
+        _project: Option<String>,
+        _entity_type: Option<String>,
+        _limit: Option<i32>,
+    ) -> mcp_attr::Result<String> {
+        // Context discovery will be implemented when Atlas is integrated
+        Ok(format!(
+            "Context discovery not yet implemented. Would search for: \"{}\"",
+            query
+        ))
+    }
 }
 
 /// Start the MCP server on stdio
-pub async fn start_server(db_path: &Path) -> Result<()> {
+pub async fn start_server(socket_path: &Path) -> Result<()> {
     tracing::info!("Starting Memex MCP server");
-    let server = MemexMcpServer::new(db_path).await?;
-    tracing::info!("MCP server ready on stdio");
+
+    let server = MemexMcpServer::new(socket_path);
+
+    // Check if daemon is reachable
+    if !server.client.health_check().await? {
+        anyhow::bail!(
+            "Cannot connect to daemon at {}. Is the daemon running? Try: memex daemon start",
+            socket_path.display()
+        );
+    }
+
+    tracing::info!("Connected to daemon, MCP server ready on stdio");
     serve_stdio(server).await?;
     Ok(())
 }

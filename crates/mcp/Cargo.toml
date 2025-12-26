@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 forge = { path = "../forge" }
+ipc = { path = "../ipc" }
 mcp-attr = "0.0.7"
 tokio.workspace = true
 serde.workspace = true
