@@ -7,6 +7,11 @@ license.workspace = true
 description = "Memory and knowledge graph for Memex"
 
 [dependencies]
+clap.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+
+ipc.path = "../ipc"
+forge.path = "../forge"

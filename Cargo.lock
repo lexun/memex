@@ -380,7 +380,11 @@ name = "atlas"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
+ "forge",
+ "ipc",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 
@@ -825,6 +829,7 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atlas",
  "chrono",
  "clap",
  "directories",
@@ -2299,6 +2304,7 @@ name = "mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atlas",
  "forge",
  "ipc",
  "mcp-attr",

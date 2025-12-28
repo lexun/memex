@@ -11,6 +11,7 @@ name = "mcp"
 path = "src/lib.rs"
 
 [dependencies]
+atlas = { path = "../atlas" }
 forge = { path = "../forge" }
 ipc = { path = "../ipc" }
 mcp-attr = "0.0.7"

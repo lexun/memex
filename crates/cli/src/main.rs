@@ -31,6 +31,11 @@ enum Commands {
         #[command(subcommand)]
         action: forge::TaskCommand,
     },
+    /// Memo management (knowledge base)
+    Memo {
+        #[command(subcommand)]
+        action: atlas::MemoCommand,
+    },
     /// MCP server
     Mcp {
         #[command(subcommand)]
@@ -121,6 +126,11 @@ async fn async_main(cli: Cli) -> Result<()> {
             let cfg = config::load_config()?;
             let socket_path = config::get_socket_path(&cfg)?;
             forge::handle_task_command(action, &socket_path).await
+        }
+        Commands::Memo { action } => {
+            let cfg = config::load_config()?;
+            let socket_path = config::get_socket_path(&cfg)?;
+            atlas::handle_memo_command(action, &socket_path).await
         }
         Commands::Mcp { action } => handle_mcp(action).await,
         Commands::Init => handle_init(),

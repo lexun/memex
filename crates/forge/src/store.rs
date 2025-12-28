@@ -10,6 +10,7 @@ use surrealdb::sql::{Datetime, Thing};
 use surrealdb::Surreal;
 use tracing::info;
 
+use crate::memo::{Memo, MemoSource};
 use crate::migrations;
 use crate::task::{Task, TaskDependency, TaskId, TaskNote, TaskStatus};
 
@@ -360,5 +361,56 @@ impl Store {
             .context("Failed to execute import SQL")?;
 
         Ok(statement_count)
+    }
+
+    // ========== Memo Operations ==========
+
+    /// Record a new memo
+    pub async fn record_memo(&self, content: &str, source: MemoSource) -> Result<Memo> {
+        let memo = Memo::new(content, source);
+
+        let created: Option<Memo> = self
+            .db
+            .create("memo")
+            .content(memo)
+            .await
+            .context("Failed to create memo")?;
+
+        created.context("Memo creation returned no result")
+    }
+
+    /// List memos with optional limit
+    pub async fn list_memos(&self, limit: Option<usize>) -> Result<Vec<Memo>> {
+        let query = match limit {
+            Some(n) => format!("SELECT * FROM memo ORDER BY created_at DESC LIMIT {}", n),
+            None => "SELECT * FROM memo ORDER BY created_at DESC".to_string(),
+        };
+
+        let mut response = self.db.query(&query).await.context("Failed to query memos")?;
+        let memos: Vec<Memo> = response.take(0).context("Failed to parse memos")?;
+
+        Ok(memos)
+    }
+
+    /// Get a memo by ID
+    pub async fn get_memo(&self, id: &str) -> Result<Option<Memo>> {
+        let memo: Option<Memo> = self
+            .db
+            .select(("memo", id))
+            .await
+            .context("Failed to get memo")?;
+
+        Ok(memo)
+    }
+
+    /// Delete a memo
+    pub async fn delete_memo(&self, id: &str) -> Result<Option<Memo>> {
+        let deleted: Option<Memo> = self
+            .db
+            .delete(("memo", id))
+            .await
+            .context("Failed to delete memo")?;
+
+        Ok(deleted)
     }
 }

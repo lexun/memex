@@ -9,19 +9,25 @@ use anyhow::Result;
 use mcp_attr::server::{mcp_server, serve_stdio, McpServer};
 use mcp_attr::ErrorCode;
 
+use atlas::MemoClient;
 use forge::task::{Task, TaskStatus};
 use forge::TaskClient;
 
 /// MCP server for Memex task management
 pub struct MemexMcpServer {
-    client: TaskClient,
+    task_client: TaskClient,
+    memo_client: MemoClient,
 }
 
 impl MemexMcpServer {
     /// Create a new MCP server connected to the daemon
     pub fn new(socket_path: &Path) -> Self {
-        let client = TaskClient::new(socket_path);
-        Self { client }
+        let task_client = TaskClient::new(socket_path);
+        let memo_client = MemoClient::new(socket_path);
+        Self {
+            task_client,
+            memo_client,
+        }
     }
 
     fn format_task_summary(task: &Task) -> String {
@@ -55,7 +61,7 @@ impl McpServer for MemexMcpServer {
             task = task.with_project(proj);
         }
 
-        match self.client.create_task(task).await {
+        match self.task_client.create_task(task).await {
             Ok(created) => {
                 let id = created.id_str().unwrap_or_default();
                 Ok(format!(
@@ -79,7 +85,7 @@ impl McpServer for MemexMcpServer {
     ) -> mcp_attr::Result<String> {
         let status_filter = status.and_then(|s| s.parse::<TaskStatus>().ok());
 
-        match self.client.list_tasks(project.as_deref(), status_filter).await {
+        match self.task_client.list_tasks(project.as_deref(), status_filter).await {
             Ok(tasks) => {
                 if tasks.is_empty() {
                     Ok("No tasks found".to_string())
@@ -102,7 +108,7 @@ impl McpServer for MemexMcpServer {
     /// Get tasks that are ready to work on (pending with no blocking dependencies)
     #[tool]
     async fn ready_tasks(&self, project: Option<String>) -> mcp_attr::Result<String> {
-        match self.client.ready_tasks(project.as_deref()).await {
+        match self.task_client.ready_tasks(project.as_deref()).await {
             Ok(tasks) => {
                 if tasks.is_empty() {
                     Ok("No ready tasks".to_string())
@@ -125,7 +131,7 @@ impl McpServer for MemexMcpServer {
     /// Get detailed information about a task including notes and dependencies
     #[tool]
     async fn get_task(&self, id: String) -> mcp_attr::Result<String> {
-        match self.client.get_task(&id).await {
+        match self.task_client.get_task(&id).await {
             Ok(Some(task)) => {
                 let id_str = task.id_str().unwrap_or_default();
                 let mut output = format!(
@@ -141,7 +147,7 @@ impl McpServer for MemexMcpServer {
                 }
 
                 // Fetch and display notes
-                if let Ok(notes) = self.client.get_notes(&id).await {
+                if let Ok(notes) = self.task_client.get_notes(&id).await {
                     if !notes.is_empty() {
                         output.push_str(&format!("\n\n  Notes ({}):", notes.len()));
                         for note in notes {
@@ -160,7 +166,7 @@ impl McpServer for MemexMcpServer {
                 }
 
                 // Fetch and display dependencies
-                if let Ok(deps) = self.client.get_dependencies(&id).await {
+                if let Ok(deps) = self.task_client.get_dependencies(&id).await {
                     if !deps.is_empty() {
                         output.push_str("\n\n  Dependencies:");
                         for dep in deps {
@@ -214,7 +220,7 @@ impl McpServer for MemexMcpServer {
         };
 
         match self
-            .client
+            .task_client
             .update_task(&id, status_update, priority)
             .await
         {
@@ -239,7 +245,7 @@ impl McpServer for MemexMcpServer {
     /// Close a task (mark as completed or cancelled if reason provided)
     #[tool]
     async fn close_task(&self, id: String, reason: Option<String>) -> mcp_attr::Result<String> {
-        match self.client.close_task(&id, reason.as_deref()).await {
+        match self.task_client.close_task(&id, reason.as_deref()).await {
             Ok(Some(task)) => {
                 let id_str = task.id_str().unwrap_or_default();
                 Ok(format!("Closed task: {}\n  Status: {}", id_str, task.status))
@@ -258,7 +264,7 @@ impl McpServer for MemexMcpServer {
     /// Delete a task
     #[tool]
     async fn delete_task(&self, id: String) -> mcp_attr::Result<String> {
-        match self.client.delete_task(&id).await {
+        match self.task_client.delete_task(&id).await {
             Ok(Some(_)) => Ok(format!("Deleted task: {}", id)),
             Ok(None) => {
                 let msg = format!("Task not found: {}", id);
@@ -278,11 +284,11 @@ impl McpServer for MemexMcpServer {
         task_id: String,
         content: String,
     ) -> mcp_attr::Result<String> {
-        match self.client.add_note(&task_id, &content).await {
+        match self.task_client.add_note(&task_id, &content).await {
             Ok(note) => {
                 let note_id = note.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
                 // Get count of notes
-                match self.client.get_notes(&task_id).await {
+                match self.task_client.get_notes(&task_id).await {
                     Ok(notes) => Ok(format!(
                         "Added note to task: {}\n  Note ID: {}\n  Total notes: {}",
                         task_id,
@@ -306,7 +312,7 @@ impl McpServer for MemexMcpServer {
         update_id: String,
         content: String,
     ) -> mcp_attr::Result<String> {
-        match self.client.edit_note(&update_id, &content).await {
+        match self.task_client.edit_note(&update_id, &content).await {
             Ok(Some(_)) => Ok(format!("Updated note: {}", update_id)),
             Ok(None) => {
                 let msg = format!("Note not found: {}", update_id);
@@ -322,7 +328,7 @@ impl McpServer for MemexMcpServer {
     /// Delete a task note
     #[tool]
     async fn delete_task_update(&self, update_id: String) -> mcp_attr::Result<String> {
-        match self.client.delete_note(&update_id).await {
+        match self.task_client.delete_note(&update_id).await {
             Ok(Some(_)) => Ok(format!("Deleted note: {}", update_id)),
             Ok(None) => {
                 let msg = format!("Note not found: {}", update_id);
@@ -354,7 +360,7 @@ impl McpServer for MemexMcpServer {
         }
 
         match self
-            .client
+            .task_client
             .add_dependency(&from_task_id, &to_task_id, &relation_type)
             .await
         {
@@ -378,7 +384,7 @@ impl McpServer for MemexMcpServer {
         relation_type: String,
     ) -> mcp_attr::Result<String> {
         match self
-            .client
+            .task_client
             .remove_dependency(&from_task_id, &to_task_id, &relation_type)
             .await
         {
@@ -396,7 +402,7 @@ impl McpServer for MemexMcpServer {
     /// Get dependencies for a task
     #[tool]
     async fn get_dependencies(&self, task_id: String) -> mcp_attr::Result<String> {
-        match self.client.get_dependencies(&task_id).await {
+        match self.task_client.get_dependencies(&task_id).await {
             Ok(deps) => {
                 if deps.is_empty() {
                     Ok(format!("No dependencies for task: {}", task_id))
@@ -419,6 +425,47 @@ impl McpServer for MemexMcpServer {
             }
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Memo tools (Atlas knowledge base)
+    // -------------------------------------------------------------------------
+
+    /// Record a memo to the knowledge base
+    ///
+    /// Memos are free-form observations, notes, or facts that you want to remember.
+    /// They are recorded with attribution (who recorded them and under what authority).
+    #[tool]
+    async fn record_memo(&self, content: String) -> mcp_attr::Result<String> {
+        // When recording via MCP, we consider this user-directed
+        // (the agent is acting as a messenger for the user's intent)
+        match self
+            .memo_client
+            .record_memo(&content, true, Some("user:default"))
+            .await
+        {
+            Ok(memo) => {
+                let id = memo
+                    .id
+                    .as_ref()
+                    .map(|t| t.id.to_raw())
+                    .unwrap_or_default();
+                Ok(format!(
+                    "Recorded memo: {}\n  Content: {}\n  Created: {}",
+                    id,
+                    memo.content,
+                    memo.created_at
+                ))
+            }
+            Err(e) => {
+                let msg = format!("Failed to record memo: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Knowledge tools (placeholders for future Atlas features)
+    // -------------------------------------------------------------------------
 
     /// Store knowledge in the knowledge base
     #[tool]
@@ -483,7 +530,7 @@ impl McpServer for MemexMcpServer {
     #[tool]
     async fn get_project_context(&self, project: String) -> mcp_attr::Result<String> {
         // Get tasks for the project
-        match self.client.list_tasks(Some(&project), None).await {
+        match self.task_client.list_tasks(Some(&project), None).await {
             Ok(tasks) => {
                 let mut output = format!("Project: {}\n\n", project);
 
@@ -532,7 +579,7 @@ pub async fn start_server(socket_path: &Path) -> Result<()> {
     let server = MemexMcpServer::new(socket_path);
 
     // Check if daemon is reachable
-    if !server.client.health_check().await? {
+    if !server.task_client.health_check().await? {
         anyhow::bail!(
             "Cannot connect to daemon at {}. Is the daemon running? Try: memex daemon start",
             socket_path.display()

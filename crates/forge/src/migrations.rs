@@ -10,7 +10,7 @@ use surrealdb::Surreal;
 use tracing::info;
 
 /// Current schema version - increment when adding new migrations
-const CURRENT_SCHEMA_VERSION: u32 = 1;
+const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Schema version record stored in the database
 #[derive(Debug, Serialize, Deserialize)]
@@ -20,6 +20,9 @@ struct SchemaVersion {
 
 /// Migration 001: Initial task schema
 const MIGRATION_001: &str = include_str!("../migrations/001_initial_schema.surql");
+
+/// Migration 002: Memo schema for Atlas
+const MIGRATION_002: &str = include_str!("../migrations/002_memo_schema.surql");
 
 /// Run all pending migrations
 pub async fn run_migrations(db: &Surreal<Db>) -> Result<()> {
@@ -44,12 +47,13 @@ pub async fn run_migrations(db: &Surreal<Db>) -> Result<()> {
         set_version(db, 1).await?;
     }
 
-    // Add future migrations here:
-    // if current < 2 {
-    //     info!("Applying migration 002: ...");
-    //     db.query(MIGRATION_002).await?;
-    //     set_version(db, 2).await?;
-    // }
+    if current < 2 {
+        info!("Applying migration 002: Memo schema");
+        db.query(MIGRATION_002)
+            .await
+            .context("Failed to apply migration 002")?;
+        set_version(db, 2).await?;
+    }
 
     info!("Migrations complete (now at version {})", CURRENT_SCHEMA_VERSION);
     Ok(())

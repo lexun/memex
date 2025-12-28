@@ -16,7 +16,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use forge::{Store, Task, TaskStatus};
+use forge::{MemoSource, Store, Task, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
 
 use crate::config::{get_config_dir, get_db_path, get_pid_file, get_socket_path, load_config, Config};
@@ -262,6 +262,12 @@ async fn dispatch_request(request: &Request, store: &Store) -> Result<serde_json
         "remove_dependency" => handle_remove_dependency(request, store).await,
         "get_dependencies" => handle_get_dependencies(request, store).await,
 
+        // Memo operations
+        "record_memo" => handle_record_memo(request, store).await,
+        "list_memos" => handle_list_memos(request, store).await,
+        "get_memo" => handle_get_memo(request, store).await,
+        "delete_memo" => handle_delete_memo(request, store).await,
+
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
     }
@@ -506,6 +512,82 @@ async fn handle_get_dependencies(request: &Request, store: &Store) -> Result<ser
         .get_dependencies(&params.task_id)
         .await
         .map(|deps| serde_json::to_value(deps).unwrap())
+        .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+// ========== Memo Handlers ==========
+
+#[derive(Deserialize)]
+struct RecordMemoParams {
+    content: String,
+    #[serde(default)]
+    user_directed: bool,
+    actor: Option<String>,
+}
+
+async fn handle_record_memo(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+    let params: RecordMemoParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let actor = params.actor.unwrap_or_else(|| "user:default".to_string());
+    let source = if params.user_directed {
+        MemoSource::user(actor)
+    } else {
+        MemoSource::agent(actor)
+    };
+
+    store
+        .record_memo(&params.content, source)
+        .await
+        .map(|memo| serde_json::to_value(memo).unwrap())
+        .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct ListMemosParams {
+    limit: Option<usize>,
+}
+
+async fn handle_list_memos(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+    let params: ListMemosParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(ListMemosParams { limit: None });
+
+    store
+        .list_memos(params.limit)
+        .await
+        .map(|memos| serde_json::to_value(memos).unwrap())
+        .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct GetMemoParams {
+    id: String,
+}
+
+async fn handle_get_memo(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+    let params: GetMemoParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    store
+        .get_memo(&params.id)
+        .await
+        .map(|memo| serde_json::to_value(memo).unwrap())
+        .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct DeleteMemoParams {
+    id: String,
+}
+
+async fn handle_delete_memo(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+    let params: DeleteMemoParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    store
+        .delete_memo(&params.id)
+        .await
+        .map(|memo| serde_json::to_value(memo).unwrap())
         .map_err(|e| IpcError::internal(e.to_string()))
 }
 
