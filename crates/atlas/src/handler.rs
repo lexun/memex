@@ -15,15 +15,6 @@ pub async fn handle_memo_command(cmd: MemoCommand, socket_path: &Path) -> Result
     let client = MemoClient::new(socket_path);
 
     match cmd {
-        MemoCommand::Record { content } => {
-            // CLI recording is user-directed
-            let memo = client
-                .record_memo(&content, true, Some("user:default"))
-                .await?;
-            println!("Recorded memo: {}", memo.id_str().unwrap_or_default());
-            Ok(())
-        }
-
         MemoCommand::List { limit } => {
             let memos = client.list_memos(limit).await?;
 

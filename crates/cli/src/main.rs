@@ -31,10 +31,15 @@ enum Commands {
         #[command(subcommand)]
         action: forge::TaskCommand,
     },
-    /// Memo management (knowledge base)
-    Memo {
+    /// Record a memo to the knowledge base
+    Record {
+        /// The content to record
+        content: String,
+    },
+    /// Atlas knowledge base management
+    Atlas {
         #[command(subcommand)]
-        action: atlas::MemoCommand,
+        action: AtlasAction,
     },
     /// MCP server
     Mcp {
@@ -67,6 +72,15 @@ enum ConfigAction {
     Set { key: String, value: String },
     /// Show configuration file path
     Path,
+}
+
+#[derive(Subcommand)]
+enum AtlasAction {
+    /// Memo management
+    Memo {
+        #[command(subcommand)]
+        action: atlas::MemoCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -127,10 +141,22 @@ async fn async_main(cli: Cli) -> Result<()> {
             let socket_path = config::get_socket_path(&cfg)?;
             forge::handle_task_command(action, &socket_path).await
         }
-        Commands::Memo { action } => {
+        Commands::Record { content } => {
             let cfg = config::load_config()?;
             let socket_path = config::get_socket_path(&cfg)?;
-            atlas::handle_memo_command(action, &socket_path).await
+            let client = atlas::MemoClient::new(&socket_path);
+            let memo = client.record_memo(&content, true, Some("user:default")).await?;
+            println!("Recorded: {}", memo.id_str().unwrap_or_default());
+            Ok(())
+        }
+        Commands::Atlas { action } => {
+            let cfg = config::load_config()?;
+            let socket_path = config::get_socket_path(&cfg)?;
+            match action {
+                AtlasAction::Memo { action } => {
+                    atlas::handle_memo_command(action, &socket_path).await
+                }
+            }
         }
         Commands::Mcp { action } => handle_mcp(action).await,
         Commands::Init => handle_init(),

@@ -463,6 +463,76 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// List memos from the knowledge base
+    #[tool]
+    async fn list_memos(&self, limit: Option<i32>) -> mcp_attr::Result<String> {
+        let limit = limit.map(|l| l as usize);
+        match self.memo_client.list_memos(limit).await {
+            Ok(memos) => {
+                if memos.is_empty() {
+                    Ok("No memos found".to_string())
+                } else {
+                    let output = memos
+                        .iter()
+                        .map(|m| {
+                            let id = m.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+                            let content = if m.content.len() > 60 {
+                                format!("{}...", &m.content[..60])
+                            } else {
+                                m.content.clone()
+                            };
+                            format!("[{}] {}", id, content)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to list memos: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Get a specific memo by ID
+    #[tool]
+    async fn get_memo(&self, id: String) -> mcp_attr::Result<String> {
+        match self.memo_client.get_memo(&id).await {
+            Ok(Some(memo)) => {
+                let id_str = memo.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+                Ok(format!(
+                    "Memo: {}\n  Created: {}\n  Actor: {}\n  Authority: {:?}\n  Content: {}",
+                    id_str, memo.created_at, memo.source.actor, memo.source.authority, memo.content
+                ))
+            }
+            Ok(None) => {
+                let msg = format!("Memo not found: {}", id);
+                Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS).with_message(msg, true))
+            }
+            Err(e) => {
+                let msg = format!("Failed to get memo: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Delete a memo by ID
+    #[tool]
+    async fn delete_memo(&self, id: String) -> mcp_attr::Result<String> {
+        match self.memo_client.delete_memo(&id).await {
+            Ok(Some(_)) => Ok(format!("Deleted memo: {}", id)),
+            Ok(None) => {
+                let msg = format!("Memo not found: {}", id);
+                Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS).with_message(msg, true))
+            }
+            Err(e) => {
+                let msg = format!("Failed to delete memo: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Knowledge tools (placeholders for future Atlas features)
     // -------------------------------------------------------------------------

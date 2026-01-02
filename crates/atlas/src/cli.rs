@@ -8,12 +8,6 @@ use clap::Subcommand;
 /// Memo management commands
 #[derive(Debug, Subcommand)]
 pub enum MemoCommand {
-    /// Record a new memo
-    Record {
-        /// Memo content
-        content: String,
-    },
-
     /// List memos
     List {
         /// Maximum number of memos to show
