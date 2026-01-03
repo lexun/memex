@@ -1,7 +1,7 @@
 //! Daemon process for Memex
 //!
-//! The daemon holds the database connection and handles requests from clients
-//! via a Unix socket using JSON-RPC style messages.
+//! The daemon holds database connections for forge and atlas, handling requests
+//! from clients via a Unix socket using JSON-RPC style messages.
 
 use std::fs::{self, File};
 use std::os::unix::io::AsRawFd;
@@ -16,19 +16,25 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use forge::{MemoSource, Store, Task, TaskStatus};
+use atlas::{MemoSource, Store as AtlasStore};
+use db::Database;
+use forge::{Store as ForgeStore, Task, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
 
 use crate::config::{get_config_dir, get_db_path, get_pid_file, get_socket_path, load_config, Config};
 use crate::pid::{check_daemon, remove_pid_file, write_pid_file, PidInfo};
 
+/// Container for both stores
+struct Stores {
+    forge: ForgeStore,
+    atlas: AtlasStore,
+}
+
 /// The daemon process
 pub struct Daemon {
-    #[allow(dead_code)]
     config: Config,
     socket_path: PathBuf,
     pid_path: PathBuf,
-    db_path: PathBuf,
 }
 
 impl Daemon {
@@ -37,7 +43,6 @@ impl Daemon {
         let config = load_config()?;
         let socket_path = get_socket_path(&config)?;
         let pid_path = get_pid_file(&config)?;
-        let db_path = get_db_path(&config)?;
 
         if let Some(info) = check_daemon(&pid_path)? {
             anyhow::bail!(
@@ -51,7 +56,6 @@ impl Daemon {
             config,
             socket_path,
             pid_path,
-            db_path,
         })
     }
 
@@ -115,10 +119,34 @@ impl Daemon {
                 .with_context(|| format!("Failed to remove stale socket: {}", self.socket_path.display()))?;
         }
 
-        // Initialize the database store
-        tracing::info!("Opening database at: {}", self.db_path.display());
-        let store = Store::new(&self.db_path).await?;
-        let store = Arc::new(store);
+        // Get default database path for embedded mode
+        let default_db_path = get_db_path(&self.config)?;
+
+        // Connect to forge database
+        tracing::info!("Connecting to forge database...");
+        let forge_db = Database::connect(
+            &self.config.database,
+            "forge",
+            Some(default_db_path.clone()),
+        )
+        .await
+        .context("Failed to connect to forge database")?;
+
+        // Connect to atlas database
+        tracing::info!("Connecting to atlas database...");
+        let atlas_db = Database::connect(
+            &self.config.database,
+            "atlas",
+            Some(default_db_path),
+        )
+        .await
+        .context("Failed to connect to atlas database")?;
+
+        // Create stores
+        let stores = Arc::new(Stores {
+            forge: ForgeStore::new(forge_db),
+            atlas: AtlasStore::new(atlas_db),
+        });
 
         // Bind the socket
         let listener = UnixListener::bind(&self.socket_path)
@@ -131,21 +159,21 @@ impl Daemon {
         write_pid_file(&self.pid_path, &pid_info)?;
 
         // Run the server
-        let result = self.run_server(listener, store).await;
+        let result = self.run_server(listener, stores).await;
         self.cleanup();
         result
     }
 
     /// Accept and handle connections
-    async fn run_server(&self, listener: UnixListener, store: Arc<Store>) -> Result<()> {
+    async fn run_server(&self, listener: UnixListener, stores: Arc<Stores>) -> Result<()> {
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
-                            let store = Arc::clone(&store);
+                            let stores = Arc::clone(&stores);
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, store).await {
+                                if let Err(e) = handle_connection(stream, stores).await {
                                     tracing::error!("Connection error: {}", e);
                                 }
                             });
@@ -178,7 +206,7 @@ impl Daemon {
 }
 
 /// Handle a single client connection
-async fn handle_connection(stream: UnixStream, store: Arc<Store>) -> Result<()> {
+async fn handle_connection(stream: UnixStream, stores: Arc<Stores>) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -206,7 +234,7 @@ async fn handle_connection(stream: UnixStream, store: Arc<Store>) -> Result<()> 
         };
 
         // Handle request
-        let response = handle_request(&request, &store).await;
+        let response = handle_request(&request, &stores).await;
 
         // Send response
         let mut json = serde_json::to_string(&response)?;
@@ -218,8 +246,8 @@ async fn handle_connection(stream: UnixStream, store: Arc<Store>) -> Result<()> 
 }
 
 /// Handle a single request
-async fn handle_request(request: &Request, store: &Store) -> Response {
-    let result = dispatch_request(request, store).await;
+async fn handle_request(request: &Request, stores: &Stores) -> Response {
+    let result = dispatch_request(request, stores).await;
 
     match result {
         Ok(value) => Response::success(&request.id, value).unwrap_or_else(|e| {
@@ -230,7 +258,7 @@ async fn handle_request(request: &Request, store: &Store) -> Response {
 }
 
 /// Dispatch request to the appropriate handler
-async fn dispatch_request(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     match request.method.as_str() {
         // Health check
         "health_check" => Ok(serde_json::json!(true)),
@@ -242,31 +270,31 @@ async fn dispatch_request(request: &Request, store: &Store) -> Result<serde_json
             "pid": process::id()
         })),
 
-        // Task operations
-        "create_task" => handle_create_task(request, store).await,
-        "list_tasks" => handle_list_tasks(request, store).await,
-        "ready_tasks" => handle_ready_tasks(request, store).await,
-        "get_task" => handle_get_task(request, store).await,
-        "update_task" => handle_update_task(request, store).await,
-        "close_task" => handle_close_task(request, store).await,
-        "delete_task" => handle_delete_task(request, store).await,
+        // Task operations (forge)
+        "create_task" => handle_create_task(request, &stores.forge).await,
+        "list_tasks" => handle_list_tasks(request, &stores.forge).await,
+        "ready_tasks" => handle_ready_tasks(request, &stores.forge).await,
+        "get_task" => handle_get_task(request, &stores.forge).await,
+        "update_task" => handle_update_task(request, &stores.forge).await,
+        "close_task" => handle_close_task(request, &stores.forge).await,
+        "delete_task" => handle_delete_task(request, &stores.forge).await,
 
-        // Note operations
-        "add_note" => handle_add_note(request, store).await,
-        "get_notes" => handle_get_notes(request, store).await,
-        "edit_note" => handle_edit_note(request, store).await,
-        "delete_note" => handle_delete_note(request, store).await,
+        // Note operations (forge)
+        "add_note" => handle_add_note(request, &stores.forge).await,
+        "get_notes" => handle_get_notes(request, &stores.forge).await,
+        "edit_note" => handle_edit_note(request, &stores.forge).await,
+        "delete_note" => handle_delete_note(request, &stores.forge).await,
 
-        // Dependency operations
-        "add_dependency" => handle_add_dependency(request, store).await,
-        "remove_dependency" => handle_remove_dependency(request, store).await,
-        "get_dependencies" => handle_get_dependencies(request, store).await,
+        // Dependency operations (forge)
+        "add_dependency" => handle_add_dependency(request, &stores.forge).await,
+        "remove_dependency" => handle_remove_dependency(request, &stores.forge).await,
+        "get_dependencies" => handle_get_dependencies(request, &stores.forge).await,
 
-        // Memo operations
-        "record_memo" => handle_record_memo(request, store).await,
-        "list_memos" => handle_list_memos(request, store).await,
-        "get_memo" => handle_get_memo(request, store).await,
-        "delete_memo" => handle_delete_memo(request, store).await,
+        // Memo operations (atlas)
+        "record_memo" => handle_record_memo(request, &stores.atlas).await,
+        "list_memos" => handle_list_memos(request, &stores.atlas).await,
+        "get_memo" => handle_get_memo(request, &stores.atlas).await,
+        "delete_memo" => handle_delete_memo(request, &stores.atlas).await,
 
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
@@ -275,7 +303,7 @@ async fn dispatch_request(request: &Request, store: &Store) -> Result<serde_json
 
 // ========== Task Handlers ==========
 
-async fn handle_create_task(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_create_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let task: Task = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid task: {}", e)))?;
 
@@ -292,7 +320,7 @@ struct ListTasksParams {
     status: Option<String>,
 }
 
-async fn handle_list_tasks(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_list_tasks(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: ListTasksParams = serde_json::from_value(request.params.clone())
         .unwrap_or(ListTasksParams { project: None, status: None });
 
@@ -310,7 +338,7 @@ struct ReadyTasksParams {
     project: Option<String>,
 }
 
-async fn handle_ready_tasks(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_ready_tasks(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: ReadyTasksParams = serde_json::from_value(request.params.clone())
         .unwrap_or(ReadyTasksParams { project: None });
 
@@ -326,7 +354,7 @@ struct GetTaskParams {
     id: String,
 }
 
-async fn handle_get_task(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_get_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: GetTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Missing id: {}", e)))?;
 
@@ -344,7 +372,7 @@ struct UpdateTaskParams {
     priority: Option<i32>,
 }
 
-async fn handle_update_task(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_update_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: UpdateTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -366,7 +394,7 @@ struct CloseTaskParams {
     reason: Option<String>,
 }
 
-async fn handle_close_task(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_close_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: CloseTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -382,7 +410,7 @@ struct DeleteTaskParams {
     id: String,
 }
 
-async fn handle_delete_task(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_delete_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: DeleteTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -401,7 +429,7 @@ struct AddNoteParams {
     content: String,
 }
 
-async fn handle_add_note(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_add_note(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: AddNoteParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -417,7 +445,7 @@ struct GetNotesParams {
     task_id: String,
 }
 
-async fn handle_get_notes(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_get_notes(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: GetNotesParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -434,7 +462,7 @@ struct EditNoteParams {
     content: String,
 }
 
-async fn handle_edit_note(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_edit_note(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: EditNoteParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -450,7 +478,7 @@ struct DeleteNoteParams {
     note_id: String,
 }
 
-async fn handle_delete_note(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_delete_note(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: DeleteNoteParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -470,7 +498,7 @@ struct AddDependencyParams {
     relation: String,
 }
 
-async fn handle_add_dependency(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_add_dependency(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: AddDependencyParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -488,7 +516,7 @@ struct RemoveDependencyParams {
     relation: String,
 }
 
-async fn handle_remove_dependency(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_remove_dependency(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: RemoveDependencyParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -504,7 +532,7 @@ struct GetDependenciesParams {
     task_id: String,
 }
 
-async fn handle_get_dependencies(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_get_dependencies(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
     let params: GetDependenciesParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -525,7 +553,7 @@ struct RecordMemoParams {
     actor: Option<String>,
 }
 
-async fn handle_record_memo(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_record_memo(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
     let params: RecordMemoParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -548,7 +576,7 @@ struct ListMemosParams {
     limit: Option<usize>,
 }
 
-async fn handle_list_memos(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_list_memos(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
     let params: ListMemosParams = serde_json::from_value(request.params.clone())
         .unwrap_or(ListMemosParams { limit: None });
 
@@ -564,7 +592,7 @@ struct GetMemoParams {
     id: String,
 }
 
-async fn handle_get_memo(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_get_memo(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
     let params: GetMemoParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -580,7 +608,7 @@ struct DeleteMemoParams {
     id: String,
 }
 
-async fn handle_delete_memo(request: &Request, store: &Store) -> Result<serde_json::Value, IpcError> {
+async fn handle_delete_memo(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
     let params: DeleteMemoParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 

@@ -381,11 +381,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "forge",
+ "db",
  "ipc",
  "serde",
  "serde_json",
+ "surrealdb",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -832,6 +834,7 @@ dependencies = [
  "atlas",
  "chrono",
  "clap",
+ "db",
  "directories",
  "forge",
  "ipc",
@@ -1041,6 +1044,16 @@ name = "data-encoding"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
+
+[[package]]
+name = "db"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "surrealdb",
+ "tracing",
+]
 
 [[package]]
 name = "deranged"
@@ -1298,6 +1311,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "db",
  "ipc",
  "serde",
  "serde_json",

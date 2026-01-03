@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use forge::Memo;
+use crate::Memo;
 use ipc::Client as IpcClient;
 
 /// Client for memo operations via the daemon

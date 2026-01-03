@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 atlas = { path = "../atlas" }
+db = { path = "../db" }
 forge = { path = "../forge" }
 ipc = { path = "../ipc" }
 mcp = { path = "../mcp" }

@@ -1,4 +1,4 @@
--- Migration 002: Memo schema for Atlas
+-- Atlas Memo Schema
 -- Memos are standalone pieces of information recorded on request
 
 DEFINE TABLE memo SCHEMAFULL;

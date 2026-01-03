@@ -12,6 +12,8 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+surrealdb.workspace = true
+tracing.workspace = true
 
-ipc.path = "../ipc"
-forge.path = "../forge"
+db = { path = "../db" }
+ipc = { path = "../ipc" }

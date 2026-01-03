@@ -1,49 +1,29 @@
 //! Database store for Forge task management
 //!
-//! Provides connection to SurrealDB and runs migrations on startup.
+//! Handles task, note, and dependency operations.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use surrealdb::engine::local::{Db, RocksDb};
+use db::Database;
 use surrealdb::sql::{Datetime, Thing};
-use surrealdb::Surreal;
-use tracing::info;
 
-use crate::memo::{Memo, MemoSource};
-use crate::migrations;
 use crate::task::{Task, TaskDependency, TaskId, TaskNote, TaskStatus};
 
 /// Database store for task management
 #[derive(Clone)]
 pub struct Store {
-    db: Surreal<Db>,
+    db: Database,
 }
 
 impl Store {
-    /// Create a new store with a connection to the database at the given path
-    pub async fn new(path: &Path) -> Result<Self> {
-        info!("Opening database at: {}", path.display());
-
-        let db = Surreal::new::<RocksDb>(path)
-            .await
-            .context("Failed to open database")?;
-
-        db.use_ns("memex")
-            .use_db("forge")
-            .await
-            .context("Failed to select namespace/database")?;
-
-        let store = Self { db };
-
-        // Run migrations
-        migrations::run_migrations(&store.db).await?;
-
-        Ok(store)
+    /// Create a new store with the given database connection
+    pub fn new(db: Database) -> Self {
+        Self { db }
     }
 
-    /// Get a reference to the database connection
-    pub fn db(&self) -> &Surreal<Db> {
+    /// Get the database connection
+    pub fn db(&self) -> &Database {
         &self.db
     }
 
@@ -53,6 +33,7 @@ impl Store {
     pub async fn create_task(&self, task: Task) -> Result<Task> {
         let created: Option<Task> = self
             .db
+            .client()
             .create("task")
             .content(task)
             .await
@@ -84,7 +65,7 @@ impl Store {
 
         query.push_str(" ORDER BY priority DESC, created_at DESC");
 
-        let mut stmt = self.db.query(&query);
+        let mut stmt = self.db.client().query(&query);
 
         if let Some(p) = project {
             stmt = stmt.bind(("project", p.to_string()));
@@ -126,7 +107,7 @@ impl Store {
             "#
         };
 
-        let mut stmt = self.db.query(query);
+        let mut stmt = self.db.client().query(query);
         if let Some(p) = project {
             stmt = stmt.bind(("project", p.to_string()));
         }
@@ -141,6 +122,7 @@ impl Store {
     pub async fn get_task(&self, id: &TaskId) -> Result<Option<Task>> {
         let task: Option<Task> = self
             .db
+            .client()
             .select(("task", id.as_str()))
             .await
             .context("Failed to get task")?;
@@ -173,6 +155,7 @@ impl Store {
 
         let updated: Option<Task> = self
             .db
+            .client()
             .update(("task", id.as_str()))
             .content(task)
             .await
@@ -196,12 +179,14 @@ impl Store {
     pub async fn delete_task(&self, id: &TaskId) -> Result<Option<Task>> {
         // First delete related notes and dependencies
         self.db
+            .client()
             .query("DELETE FROM task_note WHERE task_id = $task_id")
             .bind(("task_id", Thing::from(("task", id.as_str()))))
             .await
             .context("Failed to delete task notes")?;
 
         self.db
+            .client()
             .query("DELETE FROM task_dependency WHERE from_task = $task_id OR to_task = $task_id")
             .bind(("task_id", Thing::from(("task", id.as_str()))))
             .await
@@ -209,6 +194,7 @@ impl Store {
 
         let deleted: Option<Task> = self
             .db
+            .client()
             .delete(("task", id.as_str()))
             .await
             .context("Failed to delete task")?;
@@ -231,6 +217,7 @@ impl Store {
 
         let created: Option<TaskNote> = self
             .db
+            .client()
             .create("task_note")
             .content(note)
             .await
@@ -243,6 +230,7 @@ impl Store {
     pub async fn get_notes(&self, task_id: &TaskId) -> Result<Vec<TaskNote>> {
         let mut response = self
             .db
+            .client()
             .query("SELECT * FROM task_note WHERE task_id = $task_id ORDER BY created_at ASC")
             .bind(("task_id", Thing::from(("task", task_id.as_str()))))
             .await
@@ -256,6 +244,7 @@ impl Store {
     pub async fn edit_note(&self, note_id: &str, content: &str) -> Result<Option<TaskNote>> {
         let mut response = self
             .db
+            .client()
             .query("UPDATE task_note SET content = $content, updated_at = $now WHERE id = $id")
             .bind(("id", Thing::from(("task_note", note_id))))
             .bind(("content", content.to_string()))
@@ -271,6 +260,7 @@ impl Store {
     pub async fn delete_note(&self, note_id: &str) -> Result<Option<TaskNote>> {
         let deleted: Option<TaskNote> = self
             .db
+            .client()
             .delete(("task_note", note_id))
             .await
             .context("Failed to delete note")?;
@@ -297,6 +287,7 @@ impl Store {
 
         let created: Option<TaskDependency> = self
             .db
+            .client()
             .create("task_dependency")
             .content(dep)
             .await
@@ -314,6 +305,7 @@ impl Store {
     ) -> Result<bool> {
         let mut response = self
             .db
+            .client()
             .query(
                 "DELETE FROM task_dependency WHERE from_task = $from AND to_task = $to AND relation = $rel",
             )
@@ -332,6 +324,7 @@ impl Store {
     pub async fn get_dependencies(&self, task_id: &TaskId) -> Result<Vec<TaskDependency>> {
         let mut response = self
             .db
+            .client()
             .query("SELECT * FROM task_dependency WHERE from_task = $task_id OR to_task = $task_id")
             .bind(("task_id", Thing::from(("task", task_id.as_str()))))
             .await
@@ -356,61 +349,11 @@ impl Store {
 
         // Execute the SQL
         self.db
+            .client()
             .query(&content)
             .await
             .context("Failed to execute import SQL")?;
 
         Ok(statement_count)
-    }
-
-    // ========== Memo Operations ==========
-
-    /// Record a new memo
-    pub async fn record_memo(&self, content: &str, source: MemoSource) -> Result<Memo> {
-        let memo = Memo::new(content, source);
-
-        let created: Option<Memo> = self
-            .db
-            .create("memo")
-            .content(memo)
-            .await
-            .context("Failed to create memo")?;
-
-        created.context("Memo creation returned no result")
-    }
-
-    /// List memos with optional limit
-    pub async fn list_memos(&self, limit: Option<usize>) -> Result<Vec<Memo>> {
-        let query = match limit {
-            Some(n) => format!("SELECT * FROM memo ORDER BY created_at DESC LIMIT {}", n),
-            None => "SELECT * FROM memo ORDER BY created_at DESC".to_string(),
-        };
-
-        let mut response = self.db.query(&query).await.context("Failed to query memos")?;
-        let memos: Vec<Memo> = response.take(0).context("Failed to parse memos")?;
-
-        Ok(memos)
-    }
-
-    /// Get a memo by ID
-    pub async fn get_memo(&self, id: &str) -> Result<Option<Memo>> {
-        let memo: Option<Memo> = self
-            .db
-            .select(("memo", id))
-            .await
-            .context("Failed to get memo")?;
-
-        Ok(memo)
-    }
-
-    /// Delete a memo
-    pub async fn delete_memo(&self, id: &str) -> Result<Option<Memo>> {
-        let deleted: Option<Memo> = self
-            .db
-            .delete(("memo", id))
-            .await
-            .context("Failed to delete memo")?;
-
-        Ok(deleted)
     }
 }

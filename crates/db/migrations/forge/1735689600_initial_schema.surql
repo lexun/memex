@@ -35,7 +35,3 @@ DEFINE FIELD created_at ON task_dependency TYPE datetime DEFAULT time::now();
 
 DEFINE INDEX task_dep_from ON task_dependency FIELDS from_task;
 DEFINE INDEX task_dep_to ON task_dependency FIELDS to_task;
-
--- Schema version tracking
-DEFINE TABLE schema_version SCHEMAFULL;
-DEFINE FIELD version ON schema_version TYPE int;

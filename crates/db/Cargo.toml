@@ -1,0 +1,12 @@
+[package]
+name = "db"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+surrealdb.workspace = true
+tracing.workspace = true

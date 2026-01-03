@@ -29,16 +29,8 @@ impl Default for DaemonConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DatabaseConfig {
-    pub path: Option<PathBuf>,
-}
-
-impl Default for DatabaseConfig {
-    fn default() -> Self {
-        Self { path: None }
-    }
-}
+/// Database configuration - re-exported from db crate
+pub use db::DatabaseConfig;
 
 pub fn get_config_dir() -> Result<PathBuf> {
     // MEMEX_CONFIG_PATH overrides the default config directory
@@ -125,6 +117,10 @@ pub fn get_config_value(config: &Config, key: &str) -> Option<String> {
         "daemon.socket_path" => config.daemon.socket_path.as_ref().map(|p| p.display().to_string()),
         "daemon.pid_file" => config.daemon.pid_file.as_ref().map(|p| p.display().to_string()),
         "database.path" => config.database.path.as_ref().map(|p| p.display().to_string()),
+        "database.url" => config.database.url.clone(),
+        "database.namespace" => config.database.namespace.clone(),
+        "database.username" => config.database.username.clone(),
+        "database.password" => Some("********".to_string()), // Don't expose password
         _ => None,
     }
 }
@@ -134,6 +130,10 @@ pub fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(
         "daemon.socket_path" => config.daemon.socket_path = Some(PathBuf::from(value)),
         "daemon.pid_file" => config.daemon.pid_file = Some(PathBuf::from(value)),
         "database.path" => config.database.path = Some(PathBuf::from(value)),
+        "database.url" => config.database.url = Some(value.to_string()),
+        "database.namespace" => config.database.namespace = Some(value.to_string()),
+        "database.username" => config.database.username = Some(value.to_string()),
+        "database.password" => config.database.password = Some(value.to_string()),
         _ => anyhow::bail!("Unknown config key: {}", key),
     }
     Ok(())
