@@ -10,3 +10,8 @@ anyhow.workspace = true
 serde.workspace = true
 surrealdb.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+dirs = "5"
+toml = "0.8"
