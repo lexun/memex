@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -38,9 +37,10 @@ pub fn get_config_dir() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
 
-    ProjectDirs::from("", "", APP_NAME)
-        .map(|dirs| dirs.config_dir().to_path_buf())
-        .context("Could not determine config directory")
+    // Use XDG-style config directory (~/.config/memex)
+    let home = std::env::var("HOME")
+        .context("HOME environment variable not set")?;
+    Ok(PathBuf::from(home).join(".config").join(APP_NAME))
 }
 
 pub fn get_config_file() -> Result<PathBuf> {
