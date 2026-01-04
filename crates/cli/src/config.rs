@@ -11,6 +11,8 @@ pub struct Config {
     pub daemon: DaemonConfig,
     #[serde(default)]
     pub database: DatabaseConfig,
+    #[serde(default)]
+    pub llm: LlmConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +32,40 @@ impl Default for DaemonConfig {
 
 /// Database configuration - re-exported from db crate
 pub use db::DatabaseConfig;
+
+/// LLM provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmConfig {
+    /// Provider name (openai, anthropic, ollama)
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    /// Model to use
+    #[serde(default = "default_model")]
+    pub model: String,
+    /// API key (optional if using env var or local provider)
+    pub api_key: Option<String>,
+    /// Base URL override (for custom endpoints)
+    pub base_url: Option<String>,
+}
+
+fn default_provider() -> String {
+    "openai".to_string()
+}
+
+fn default_model() -> String {
+    "gpt-4o-mini".to_string()
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_provider(),
+            model: default_model(),
+            api_key: None,
+            base_url: None,
+        }
+    }
+}
 
 pub fn get_config_dir() -> Result<PathBuf> {
     // MEMEX_CONFIG_PATH overrides the default config directory
@@ -121,6 +157,10 @@ pub fn get_config_value(config: &Config, key: &str) -> Option<String> {
         "database.namespace" => config.database.namespace.clone(),
         "database.username" => config.database.username.clone(),
         "database.password" => Some("********".to_string()), // Don't expose password
+        "llm.provider" => Some(config.llm.provider.clone()),
+        "llm.model" => Some(config.llm.model.clone()),
+        "llm.api_key" => Some("********".to_string()), // Don't expose API key
+        "llm.base_url" => config.llm.base_url.clone(),
         _ => None,
     }
 }
@@ -134,6 +174,10 @@ pub fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(
         "database.namespace" => config.database.namespace = Some(value.to_string()),
         "database.username" => config.database.username = Some(value.to_string()),
         "database.password" => config.database.password = Some(value.to_string()),
+        "llm.provider" => config.llm.provider = value.to_string(),
+        "llm.model" => config.llm.model = value.to_string(),
+        "llm.api_key" => config.llm.api_key = Some(value.to_string()),
+        "llm.base_url" => config.llm.base_url = Some(value.to_string()),
         _ => anyhow::bail!("Unknown config key: {}", key),
     }
     Ok(())
