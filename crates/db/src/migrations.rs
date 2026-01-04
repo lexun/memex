@@ -41,6 +41,11 @@ const ATLAS_MIGRATIONS: &[Migration] = &[
         name: "event_schema",
         sql: include_str!("../migrations/atlas/1767398400_event_schema.surql"),
     },
+    Migration {
+        timestamp: 1767571200,
+        name: "fact_extraction",
+        sql: include_str!("../migrations/atlas/1767571200_fact_extraction.surql"),
+    },
 ];
 
 /// Run all pending migrations for the given database

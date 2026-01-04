@@ -6,6 +6,7 @@
 pub mod cli;
 pub mod client;
 pub mod event;
+pub mod fact;
 pub mod handler;
 pub mod memo;
 pub mod store;
@@ -13,6 +14,7 @@ pub mod store;
 pub use cli::{ContextCommand, EventCommand, MemoCommand};
 pub use client::{ContextClient, ContextResult, EventClient, MemoClient};
 pub use event::{Event, EventAuthority, EventSource};
+pub use fact::{Entity, EntityType, EpisodeRef, Fact, FactType};
 pub use handler::{handle_context_command, handle_event_command, handle_memo_command};
 pub use memo::{Memo, MemoAuthority, MemoSource};
 pub use store::Store;
