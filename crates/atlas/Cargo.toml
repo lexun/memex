@@ -17,3 +17,4 @@ tracing.workspace = true
 
 db = { path = "../db" }
 ipc = { path = "../ipc" }
+llm = { path = "../llm" }

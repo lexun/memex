@@ -1,11 +1,14 @@
 //! Database store for Atlas knowledge management
 //!
-//! Handles memo and event storage, plus future knowledge graph operations.
+//! Handles memo, event, fact, and entity storage.
 
 use anyhow::{Context, Result};
 use db::Database;
+use serde::{Deserialize, Serialize};
+use surrealdb::sql::Thing;
 
 use crate::event::Event;
+use crate::fact::{Entity, Fact};
 use crate::memo::{Memo, MemoSource};
 
 /// Database store for Atlas
@@ -142,4 +145,266 @@ impl Store {
 
         Ok(event)
     }
+
+    // ========== Fact Operations ==========
+
+    /// Create a new fact
+    pub async fn create_fact(&self, fact: Fact) -> Result<Fact> {
+        let created: Option<Fact> = self
+            .db
+            .client()
+            .create("fact")
+            .content(fact)
+            .await
+            .context("Failed to create fact")?;
+
+        created.context("Fact creation returned no result")
+    }
+
+    /// Search facts using full-text search
+    pub async fn search_facts(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<FactSearchResult>> {
+        let mut sql = String::from(
+            "SELECT *, search::score(1) AS score FROM fact WHERE content @1@ $query",
+        );
+
+        if project.is_some() {
+            sql.push_str(" AND project = $project");
+        }
+
+        sql.push_str(" ORDER BY score DESC");
+
+        if let Some(n) = limit {
+            sql.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("query", query.to_string()))
+            .bind(("project", project.map(|s| s.to_string())))
+            .await
+            .context("Failed to search facts")?;
+
+        let results: Vec<FactSearchResult> = response.take(0).context("Failed to parse search results")?;
+        Ok(results)
+    }
+
+    /// Get a fact by ID
+    pub async fn get_fact(&self, id: &str) -> Result<Option<Fact>> {
+        let fact: Option<Fact> = self
+            .db
+            .client()
+            .select(("fact", id))
+            .await
+            .context("Failed to get fact")?;
+
+        Ok(fact)
+    }
+
+    /// List facts with optional project filter
+    pub async fn list_facts(&self, project: Option<&str>, limit: Option<usize>) -> Result<Vec<Fact>> {
+        let mut query = String::from("SELECT * FROM fact");
+
+        if project.is_some() {
+            query.push_str(" WHERE project = $project");
+        }
+
+        query.push_str(" ORDER BY created_at DESC");
+
+        if let Some(n) = limit {
+            query.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("project", project.map(|s| s.to_string())))
+            .await
+            .context("Failed to query facts")?;
+
+        let facts: Vec<Fact> = response.take(0).context("Failed to parse facts")?;
+        Ok(facts)
+    }
+
+    // ========== Entity Operations ==========
+
+    /// Create a new entity (or return existing if name+project match)
+    pub async fn create_entity(&self, entity: Entity) -> Result<Entity> {
+        let created: Option<Entity> = self
+            .db
+            .client()
+            .create("entity")
+            .content(entity)
+            .await
+            .context("Failed to create entity")?;
+
+        created.context("Entity creation returned no result")
+    }
+
+    /// Find entity by name (exact match) within project
+    pub async fn find_entity_by_name(
+        &self,
+        name: &str,
+        project: Option<&str>,
+    ) -> Result<Option<Entity>> {
+        let sql = "SELECT * FROM entity WHERE name = $name AND project = $project LIMIT 1";
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("name", name.to_string()))
+            .bind(("project", project.map(|s| s.to_string())))
+            .await
+            .context("Failed to query entity")?;
+
+        let entities: Vec<Entity> = response.take(0).context("Failed to parse entity")?;
+        Ok(entities.into_iter().next())
+    }
+
+    /// Get an entity by ID
+    pub async fn get_entity(&self, id: &str) -> Result<Option<Entity>> {
+        let entity: Option<Entity> = self
+            .db
+            .client()
+            .select(("entity", id))
+            .await
+            .context("Failed to get entity")?;
+
+        Ok(entity)
+    }
+
+    /// List entities with optional project and type filter
+    pub async fn list_entities(
+        &self,
+        project: Option<&str>,
+        entity_type: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Entity>> {
+        let mut query = String::from("SELECT * FROM entity");
+        let mut conditions = Vec::new();
+
+        if project.is_some() {
+            conditions.push("project = $project");
+        }
+        if entity_type.is_some() {
+            conditions.push("entity_type = $entity_type");
+        }
+
+        if !conditions.is_empty() {
+            query.push_str(" WHERE ");
+            query.push_str(&conditions.join(" AND "));
+        }
+
+        query.push_str(" ORDER BY name ASC");
+
+        if let Some(n) = limit {
+            query.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("project", project.map(|s| s.to_string())))
+            .bind(("entity_type", entity_type.map(|s| s.to_string())))
+            .await
+            .context("Failed to query entities")?;
+
+        let entities: Vec<Entity> = response.take(0).context("Failed to parse entities")?;
+        Ok(entities)
+    }
+
+    /// Link a fact to an entity
+    pub async fn link_fact_entity(
+        &self,
+        fact_id: &Thing,
+        entity_id: &Thing,
+        role: &str,
+    ) -> Result<()> {
+        let sql = "CREATE fact_entity SET fact = $fact, entity = $entity, role = $role";
+
+        self.db
+            .client()
+            .query(sql)
+            .bind(("fact", fact_id.clone()))
+            .bind(("entity", entity_id.clone()))
+            .bind(("role", role.to_string()))
+            .await
+            .context("Failed to link fact to entity")?;
+
+        Ok(())
+    }
+
+    // ========== Extraction State ==========
+
+    /// Get extraction state for an episode type
+    pub async fn get_extraction_state(&self, episode_type: &str) -> Result<Option<ExtractionState>> {
+        let sql = "SELECT * FROM extraction_state WHERE episode_type = $type LIMIT 1";
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("type", episode_type.to_string()))
+            .await
+            .context("Failed to query extraction state")?;
+
+        let states: Vec<ExtractionState> = response.take(0).context("Failed to parse extraction state")?;
+        Ok(states.into_iter().next())
+    }
+
+    /// Update extraction state for an episode type
+    pub async fn update_extraction_state(
+        &self,
+        episode_type: &str,
+        last_processed_id: &str,
+    ) -> Result<()> {
+        let sql = r#"
+            UPSERT extraction_state SET
+                episode_type = $type,
+                last_processed_id = $id,
+                last_processed_at = time::now()
+            WHERE episode_type = $type
+        "#;
+
+        self.db
+            .client()
+            .query(sql)
+            .bind(("type", episode_type.to_string()))
+            .bind(("id", last_processed_id.to_string()))
+            .await
+            .context("Failed to update extraction state")?;
+
+        Ok(())
+    }
+}
+
+/// Search result with score
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FactSearchResult {
+    #[serde(flatten)]
+    pub fact: Fact,
+    pub score: f32,
+}
+
+/// Extraction state for tracking processed episodes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractionState {
+    pub episode_type: String,
+    pub last_processed_id: Option<String>,
+    pub last_processed_at: Option<surrealdb::sql::Datetime>,
+    #[serde(default = "default_version")]
+    pub processing_version: i32,
+}
+
+fn default_version() -> i32 {
+    1
 }

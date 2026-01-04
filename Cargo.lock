@@ -418,6 +418,7 @@ dependencies = [
  "clap",
  "db",
  "ipc",
+ "llm",
  "serde",
  "serde_json",
  "surrealdb",
