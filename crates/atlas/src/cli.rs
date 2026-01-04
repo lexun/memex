@@ -52,14 +52,13 @@ pub enum EventCommand {
 /// Context discovery commands
 #[derive(Debug, Subcommand)]
 pub enum ContextCommand {
-    /// Search for context matching a query
+    /// Search for facts matching a query
+    ///
+    /// Facts are automatically extracted from memos and events.
+    /// This searches the extracted knowledge, not raw episodes.
     Search {
         /// The search query
         query: String,
-
-        /// Filter by entity type (memo, task)
-        #[arg(short = 't', long)]
-        entity_type: Option<String>,
 
         /// Filter by project
         #[arg(short, long)]

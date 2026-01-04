@@ -662,66 +662,42 @@ impl McpServer for MemexMcpServer {
     }
 
     /// Discover context based on a query
+    ///
+    /// Searches extracted facts from memos and events. Facts are medium-granularity
+    /// assertions that have been automatically extracted from recorded knowledge.
     #[tool]
     async fn discover_context(
         &self,
         query: String,
         project: Option<String>,
-        entity_type: Option<String>,
         limit: Option<i32>,
     ) -> mcp_attr::Result<String> {
         let limit = limit.map(|l| l as usize);
         match self
             .context_client
-            .discover(&query, entity_type.as_deref(), project.as_deref(), limit)
+            .discover(&query, project.as_deref(), limit)
             .await
         {
             Ok(result) => {
                 if result.results.is_empty() {
-                    Ok(format!("No results found for: \"{}\"", query))
+                    Ok(format!("No facts found for: \"{}\"\n\nNote: Facts are extracted from memos. Try recording some memos first.", query))
                 } else {
                     let mut output = String::new();
+                    output.push_str(&format!("Found {} fact(s) for: \"{}\"\n\n", result.count, query));
 
-                    // Show summary first if available
-                    if let Some(ref summary) = result.summary {
-                        output.push_str(&format!("Summary: {}\n\n", summary));
-                    }
+                    for fact in result.results {
+                        let content = fact.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        let fact_type = fact.get("fact_type").and_then(|v| v.as_str()).unwrap_or("statement");
+                        let confidence = fact.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                        let score = fact.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-                    output.push_str(&format!("Found {} result(s) for: \"{}\"\n\n", result.count, query));
-                    for item in result.results {
-                        let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
-                        match item_type {
-                            "memo" => {
-                                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                                let truncated = if content.len() > 100 {
-                                    format!("{}...", &content[..100])
-                                } else {
-                                    content.to_string()
-                                };
-                                output.push_str(&format!("[memo:{}] {}\n", id, truncated));
-                            }
-                            "task" => {
-                                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                                let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                                let priority = item.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
-                                output.push_str(&format!("[task:{}] [P{}] [{}] {}\n", id, priority, status, title));
-                            }
-                            "task_note" => {
-                                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                                let truncated = if content.len() > 100 {
-                                    format!("{}...", &content[..100])
-                                } else {
-                                    content.to_string()
-                                };
-                                output.push_str(&format!("[note:{}] {}\n", id, truncated));
-                            }
-                            _ => {
-                                output.push_str(&format!("[{}] {:?}\n", item_type, item));
-                            }
-                        }
+                        output.push_str(&format!(
+                            "[{}] (conf: {:.0}%, score: {:.2}) {}\n",
+                            fact_type,
+                            confidence * 100.0,
+                            score,
+                            content
+                        ));
                     }
                     Ok(output)
                 }

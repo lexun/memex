@@ -212,18 +212,16 @@ impl ContextClient {
         }
     }
 
-    /// Discover context matching a query
+    /// Discover context matching a query (searches extracted facts)
     pub async fn discover(
         &self,
         query: &str,
-        entity_type: Option<&str>,
         project: Option<&str>,
         limit: Option<usize>,
     ) -> Result<ContextResult> {
         #[derive(Serialize)]
         struct Params<'a> {
             query: &'a str,
-            entity_type: Option<&'a str>,
             project: Option<&'a str>,
             limit: Option<usize>,
         }
@@ -234,7 +232,6 @@ impl ContextClient {
                 "discover_context",
                 Params {
                     query,
-                    entity_type,
                     project,
                     limit,
                 },

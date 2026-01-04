@@ -132,27 +132,22 @@ pub async fn handle_context_command(cmd: ContextCommand, socket_path: &Path) -> 
     match cmd {
         ContextCommand::Search {
             query,
-            entity_type,
             project,
             limit,
         } => {
             let result = client
-                .discover(&query, entity_type.as_deref(), project.as_deref(), Some(limit))
+                .discover(&query, project.as_deref(), Some(limit))
                 .await?;
 
             if result.results.is_empty() {
-                println!("No results found for: {}", query);
-            } else {
-                // Show summary first if available
-                if let Some(ref summary) = result.summary {
-                    println!("Summary: {}", summary);
-                    println!();
-                }
-
-                println!("Found {} result(s) for: {}", result.count, query);
+                println!("No facts found for: {}", query);
                 println!();
-                for item in result.results {
-                    print_context_result(&item);
+                println!("Note: Facts are extracted from memos. Try recording some memos first.");
+            } else {
+                println!("Found {} fact(s) for: {}", result.count, query);
+                println!();
+                for fact in result.results {
+                    print_fact(&fact);
                 }
             }
             Ok(())
@@ -160,41 +155,17 @@ pub async fn handle_context_command(cmd: ContextCommand, socket_path: &Path) -> 
     }
 }
 
-fn print_context_result(item: &serde_json::Value) {
-    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+fn print_fact(fact: &serde_json::Value) {
+    let content = fact.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let fact_type = fact.get("fact_type").and_then(|v| v.as_str()).unwrap_or("statement");
+    let confidence = fact.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let score = fact.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-    match item_type {
-        "memo" => {
-            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let truncated = if content.len() > 80 {
-                format!("{}...", &content[..80])
-            } else {
-                content.to_string()
-            };
-            println!("[memo:{}] {}", id, truncated);
-        }
-        "task" => {
-            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let priority = item.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
-            println!("[task:{}] [P{}] [{}] {}", id, priority, status, title);
-        }
-        "task_note" => {
-            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let truncated = if content.len() > 80 {
-                format!("{}...", &content[..80])
-            } else {
-                content.to_string()
-            };
-            println!("[note:{}] {}", id, truncated);
-        }
-        _ => {
-            if let Ok(json) = serde_json::to_string(item) {
-                println!("[{}] {}", item_type, json);
-            }
-        }
-    }
+    println!(
+        "[{}] (conf: {:.0}%, score: {:.2}) {}",
+        fact_type,
+        confidence * 100.0,
+        score,
+        content
+    );
 }
