@@ -614,69 +614,6 @@ impl McpServer for MemexMcpServer {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Knowledge tools (placeholders for future Atlas features)
-    // -------------------------------------------------------------------------
-
-    /// Store knowledge in the knowledge base
-    #[tool]
-    async fn store_knowledge(
-        &self,
-        entity_type: String,
-        name: String,
-        content: String,
-        _project: Option<String>,
-        _metadata: Option<serde_json::Value>,
-    ) -> mcp_attr::Result<String> {
-        // Knowledge storage will be implemented when Atlas is integrated
-        Ok(format!(
-            "Knowledge storage not yet implemented. Would store: {} ({}) - {} bytes",
-            name,
-            entity_type,
-            content.len()
-        ))
-    }
-
-    /// Query knowledge from the knowledge base
-    #[tool]
-    async fn query_knowledge(
-        &self,
-        _search: Option<String>,
-        _entity_type: Option<String>,
-        _project: Option<String>,
-    ) -> mcp_attr::Result<String> {
-        // Knowledge query will be implemented when Atlas is integrated
-        Ok("Knowledge query not yet implemented".to_string())
-    }
-
-    /// Update existing knowledge
-    #[tool]
-    async fn update_knowledge(
-        &self,
-        id: String,
-        _name: Option<String>,
-        _content: Option<String>,
-        _confidence: Option<f32>,
-    ) -> mcp_attr::Result<String> {
-        // Knowledge update will be implemented when Atlas is integrated
-        Ok(format!("Knowledge update not yet implemented. Would update: {}", id))
-    }
-
-    /// Relate two knowledge entities
-    #[tool]
-    async fn relate_entities(
-        &self,
-        from_id: String,
-        to_id: String,
-        relation_type: String,
-    ) -> mcp_attr::Result<String> {
-        // Knowledge relation will be implemented when Atlas is integrated
-        Ok(format!(
-            "Knowledge relation not yet implemented. Would relate: {} -> {} ({})",
-            from_id, to_id, relation_type
-        ))
-    }
-
     /// Get project context (tasks + knowledge)
     #[tool]
     async fn get_project_context(&self, project: String) -> mcp_attr::Result<String> {
