@@ -662,7 +662,14 @@ impl McpServer for MemexMcpServer {
                 if result.results.is_empty() {
                     Ok(format!("No results found for: \"{}\"", query))
                 } else {
-                    let mut output = format!("Found {} result(s) for: \"{}\"\n\n", result.count, query);
+                    let mut output = String::new();
+
+                    // Show summary first if available
+                    if let Some(ref summary) = result.summary {
+                        output.push_str(&format!("Summary: {}\n\n", summary));
+                    }
+
+                    output.push_str(&format!("Found {} result(s) for: \"{}\"\n\n", result.count, query));
                     for item in result.results {
                         let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
                         match item_type {

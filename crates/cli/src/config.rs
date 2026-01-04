@@ -33,39 +33,8 @@ impl Default for DaemonConfig {
 /// Database configuration - re-exported from db crate
 pub use db::DatabaseConfig;
 
-/// LLM provider configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmConfig {
-    /// Provider name (openai, anthropic, ollama)
-    #[serde(default = "default_provider")]
-    pub provider: String,
-    /// Model to use
-    #[serde(default = "default_model")]
-    pub model: String,
-    /// API key (optional if using env var or local provider)
-    pub api_key: Option<String>,
-    /// Base URL override (for custom endpoints)
-    pub base_url: Option<String>,
-}
-
-fn default_provider() -> String {
-    "openai".to_string()
-}
-
-fn default_model() -> String {
-    "gpt-4o-mini".to_string()
-}
-
-impl Default for LlmConfig {
-    fn default() -> Self {
-        Self {
-            provider: default_provider(),
-            model: default_model(),
-            api_key: None,
-            base_url: None,
-        }
-    }
-}
+/// LLM provider configuration - re-exported from llm crate
+pub use llm::LlmConfig;
 
 pub fn get_config_dir() -> Result<PathBuf> {
     // MEMEX_CONFIG_PATH overrides the default config directory

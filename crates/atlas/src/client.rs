@@ -195,6 +195,7 @@ pub struct ContextResult {
     pub query: String,
     pub results: Vec<serde_json::Value>,
     pub count: usize,
+    pub summary: Option<String>,
 }
 
 /// Client for context discovery via the daemon

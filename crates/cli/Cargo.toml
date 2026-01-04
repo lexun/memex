@@ -15,6 +15,7 @@ atlas = { path = "../atlas" }
 db = { path = "../db" }
 forge = { path = "../forge" }
 ipc = { path = "../ipc" }
+llm = { path = "../llm" }
 mcp = { path = "../mcp" }
 tokio.workspace = true
 serde.workspace = true

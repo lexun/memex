@@ -25,10 +25,11 @@ use serde_json::json;
 use crate::config::{get_config_dir, get_db_path, get_pid_file, get_socket_path, load_config, Config};
 use crate::pid::{check_daemon, remove_pid_file, write_pid_file, PidInfo};
 
-/// Container for both stores
+/// Container for stores and services
 struct Stores {
     forge: ForgeStore,
     atlas: AtlasStore,
+    llm: Option<llm::LlmClient>,
 }
 
 /// The daemon process
@@ -143,10 +144,25 @@ impl Daemon {
         .await
         .context("Failed to connect to atlas database")?;
 
+        // Create LLM client if configured
+        let llm_client = if self.config.llm.api_key.is_some() {
+            tracing::info!("LLM configured: {} / {}", self.config.llm.provider, self.config.llm.model);
+            Some(llm::LlmClient::new(llm::LlmConfig {
+                provider: self.config.llm.provider.clone(),
+                model: self.config.llm.model.clone(),
+                api_key: self.config.llm.api_key.clone(),
+                base_url: self.config.llm.base_url.clone(),
+            }))
+        } else {
+            tracing::info!("LLM not configured (no API key)");
+            None
+        };
+
         // Create stores
         let stores = Arc::new(Stores {
             forge: ForgeStore::new(forge_db),
             atlas: AtlasStore::new(atlas_db),
+            llm: llm_client,
         });
 
         // Bind the socket
@@ -920,10 +936,63 @@ async fn handle_discover_context(request: &Request, stores: &Stores) -> Result<s
     // Truncate to limit
     results.truncate(params.limit);
 
+    // If LLM is available, generate a summary
+    let summary = if let Some(ref llm) = stores.llm {
+        if !results.is_empty() {
+            let context = results
+                .iter()
+                .map(|r| {
+                    let item_type = r.get("type").and_then(|v| v.as_str()).unwrap_or("item");
+                    match item_type {
+                        "memo" => {
+                            let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                            format!("- Memo: {}", content)
+                        }
+                        "task" => {
+                            let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                            let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                            let desc = r.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                            if desc.is_empty() {
+                                format!("- Task [{}]: {}", status, title)
+                            } else {
+                                format!("- Task [{}]: {} - {}", status, title, desc)
+                            }
+                        }
+                        "task_note" => {
+                            let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                            format!("- Note: {}", content)
+                        }
+                        _ => format!("- {}: {:?}", item_type, r)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let prompt = format!(
+                "The user asked: \"{}\"\n\nHere is the relevant context found:\n{}\n\nProvide a brief, helpful summary that answers the user's question based on this context. Be concise (2-4 sentences).",
+                params.query,
+                context
+            );
+
+            match llm.complete("You are a helpful assistant summarizing project context.", &prompt).await {
+                Ok(summary) => Some(summary),
+                Err(e) => {
+                    tracing::warn!("LLM summarization failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     Ok(json!({
         "query": params.query,
         "results": results,
-        "count": results.len()
+        "count": results.len(),
+        "summary": summary
     }))
 }
 

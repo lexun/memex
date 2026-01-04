@@ -143,6 +143,12 @@ pub async fn handle_context_command(cmd: ContextCommand, socket_path: &Path) -> 
             if result.results.is_empty() {
                 println!("No results found for: {}", query);
             } else {
+                // Show summary first if available
+                if let Some(ref summary) = result.summary {
+                    println!("Summary: {}", summary);
+                    println!();
+                }
+
                 println!("Found {} result(s) for: {}", result.count, query);
                 println!();
                 for item in result.results {
