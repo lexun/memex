@@ -214,7 +214,7 @@ impl Store {
             .db
             .client()
             .query(&sql)
-            .bind(("query", query))
+            .bind(("query", query.to_string()))
             .await
             .context("Failed to search tasks")?;
         let tasks: Vec<Task> = response.take(0).context("Failed to parse tasks")?;
@@ -234,7 +234,7 @@ impl Store {
             .db
             .client()
             .query(&sql)
-            .bind(("query", query))
+            .bind(("query", query.to_string()))
             .await
             .context("Failed to search notes")?;
         let notes: Vec<TaskNote> = response.take(0).context("Failed to parse notes")?;

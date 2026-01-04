@@ -96,7 +96,7 @@ impl Store {
             .db
             .client()
             .query(&sql)
-            .bind(("query", query))
+            .bind(("query", query.to_string()))
             .await
             .context("Failed to search memos")?;
         let memos: Vec<Memo> = response.take(0).context("Failed to parse memos")?;
