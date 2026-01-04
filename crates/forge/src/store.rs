@@ -202,46 +202,6 @@ impl Store {
         Ok(deleted)
     }
 
-    /// Search tasks by title or description (full-text search)
-    pub async fn search_tasks(&self, query: &str, limit: Option<usize>) -> Result<Vec<Task>> {
-        let limit_clause = limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default();
-        let sql = format!(
-            "SELECT * FROM task WHERE title @@ $query OR description @@ $query ORDER BY priority ASC, created_at DESC{}",
-            limit_clause
-        );
-
-        let mut response = self
-            .db
-            .client()
-            .query(&sql)
-            .bind(("query", query.to_string()))
-            .await
-            .context("Failed to search tasks")?;
-        let tasks: Vec<Task> = response.take(0).context("Failed to parse tasks")?;
-
-        Ok(tasks)
-    }
-
-    /// Search task notes by content (full-text search)
-    pub async fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<TaskNote>> {
-        let limit_clause = limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default();
-        let sql = format!(
-            "SELECT * FROM task_note WHERE content @@ $query ORDER BY created_at DESC{}",
-            limit_clause
-        );
-
-        let mut response = self
-            .db
-            .client()
-            .query(&sql)
-            .bind(("query", query.to_string()))
-            .await
-            .context("Failed to search notes")?;
-        let notes: Vec<TaskNote> = response.take(0).context("Failed to parse notes")?;
-
-        Ok(notes)
-    }
-
     // ========== Note Operations ==========
 
     /// Add a note to a task

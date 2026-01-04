@@ -863,141 +863,17 @@ fn default_limit() -> usize {
     10
 }
 
-async fn handle_discover_context(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+async fn handle_discover_context(request: &Request, _stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: DiscoverContextParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let mut results = Vec::new();
-
-    // Search based on entity_type filter (or all if none specified)
-    let search_memos = params.entity_type.is_none() || params.entity_type.as_deref() == Some("memo");
-    let search_tasks = params.entity_type.is_none() || params.entity_type.as_deref() == Some("task");
-
-    // Search memos
-    if search_memos {
-        match stores.atlas.search_memos(&params.query, Some(params.limit)).await {
-            Ok(memos) => {
-                for memo in memos {
-                    results.push(json!({
-                        "type": "memo",
-                        "id": memo.id,
-                        "content": memo.content,
-                        "created_at": memo.created_at,
-                    }));
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to search memos: {}", e);
-            }
-        }
-    }
-
-    // Search tasks
-    if search_tasks {
-        match stores.forge.search_tasks(&params.query, Some(params.limit)).await {
-            Ok(tasks) => {
-                for task in tasks {
-                    // Apply project filter if specified
-                    if let Some(ref proj) = params.project {
-                        if task.project.as_ref() != Some(proj) {
-                            continue;
-                        }
-                    }
-                    results.push(json!({
-                        "type": "task",
-                        "id": task.id,
-                        "title": task.title,
-                        "description": task.description,
-                        "status": task.status.to_string(),
-                        "project": task.project,
-                        "priority": task.priority,
-                    }));
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to search tasks: {}", e);
-            }
-        }
-
-        // Also search task notes
-        match stores.forge.search_notes(&params.query, Some(params.limit)).await {
-            Ok(notes) => {
-                for note in notes {
-                    results.push(json!({
-                        "type": "task_note",
-                        "id": note.id,
-                        "task_id": note.task_id,
-                        "content": note.content,
-                        "created_at": note.created_at,
-                    }));
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to search notes: {}", e);
-            }
-        }
-    }
-
-    // Truncate to limit
-    results.truncate(params.limit);
-
-    // If LLM is available, generate a summary
-    let summary = if let Some(ref llm) = stores.llm {
-        if !results.is_empty() {
-            let context = results
-                .iter()
-                .map(|r| {
-                    let item_type = r.get("type").and_then(|v| v.as_str()).unwrap_or("item");
-                    match item_type {
-                        "memo" => {
-                            let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                            format!("- Memo: {}", content)
-                        }
-                        "task" => {
-                            let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                            let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                            let desc = r.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                            if desc.is_empty() {
-                                format!("- Task [{}]: {}", status, title)
-                            } else {
-                                format!("- Task [{}]: {} - {}", status, title, desc)
-                            }
-                        }
-                        "task_note" => {
-                            let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                            format!("- Note: {}", content)
-                        }
-                        _ => format!("- {}: {:?}", item_type, r)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let prompt = format!(
-                "The user asked: \"{}\"\n\nHere is the relevant context found:\n{}\n\nProvide a brief, helpful summary that answers the user's question based on this context. Be concise (2-4 sentences).",
-                params.query,
-                context
-            );
-
-            match llm.complete("You are a helpful assistant summarizing project context.", &prompt).await {
-                Ok(summary) => Some(summary),
-                Err(e) => {
-                    tracing::warn!("LLM summarization failed: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
+    // TODO: Implement fact-based search (Phase 1.7)
+    // For now, return empty results - fact extraction not yet implemented
     Ok(json!({
         "query": params.query,
-        "results": results,
-        "count": results.len(),
-        "summary": summary
+        "results": [],
+        "count": 0,
+        "summary": null
     }))
 }
 
