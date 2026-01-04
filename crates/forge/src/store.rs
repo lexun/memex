@@ -63,7 +63,7 @@ impl Store {
             query.push_str(&conditions.join(" AND "));
         }
 
-        query.push_str(" ORDER BY priority DESC, created_at DESC");
+        query.push_str(" ORDER BY priority ASC, created_at DESC");
 
         let mut stmt = self.db.client().query(&query);
 
@@ -92,7 +92,7 @@ impl Store {
                 WHERE relation = 'blocked_by'
                 AND (SELECT status FROM task WHERE id = to_task)[0] != 'completed'
             )
-            ORDER BY priority DESC, created_at ASC
+            ORDER BY priority ASC, created_at ASC
             "#
         } else {
             r#"
@@ -103,7 +103,7 @@ impl Store {
                 WHERE relation = 'blocked_by'
                 AND (SELECT status FROM task WHERE id = to_task)[0] != 'completed'
             )
-            ORDER BY priority DESC, created_at ASC
+            ORDER BY priority ASC, created_at ASC
             "#
         };
 
