@@ -23,18 +23,37 @@ struct Migration {
 }
 
 /// Forge migrations
-const FORGE_MIGRATIONS: &[Migration] = &[Migration {
-    timestamp: 1735689600,
-    name: "initial_schema",
-    sql: include_str!("../migrations/forge/1735689600_initial_schema.surql"),
-}];
+const FORGE_MIGRATIONS: &[Migration] = &[
+    Migration {
+        timestamp: 1735689600,
+        name: "initial_schema",
+        sql: include_str!("../migrations/forge/1735689600_initial_schema.surql"),
+    },
+    Migration {
+        timestamp: 1767484800,
+        name: "fulltext_search",
+        sql: include_str!("../migrations/forge/1767484800_fulltext_search.surql"),
+    },
+];
 
 /// Atlas migrations
-const ATLAS_MIGRATIONS: &[Migration] = &[Migration {
-    timestamp: 1735776000,
-    name: "memo_schema",
-    sql: include_str!("../migrations/atlas/1735776000_memo_schema.surql"),
-}];
+const ATLAS_MIGRATIONS: &[Migration] = &[
+    Migration {
+        timestamp: 1735776000,
+        name: "memo_schema",
+        sql: include_str!("../migrations/atlas/1735776000_memo_schema.surql"),
+    },
+    Migration {
+        timestamp: 1767398400,
+        name: "event_schema",
+        sql: include_str!("../migrations/atlas/1767398400_event_schema.surql"),
+    },
+    Migration {
+        timestamp: 1767484800,
+        name: "fulltext_search",
+        sql: include_str!("../migrations/atlas/1767484800_fulltext_search.surql"),
+    },
+];
 
 /// Run all pending migrations for the given database
 pub async fn run_migrations(db: &Surreal<Any>, database_name: &str) -> Result<()> {
