@@ -84,6 +84,26 @@ impl Store {
         Ok(deleted)
     }
 
+    /// Search memos by content (full-text search)
+    pub async fn search_memos(&self, query: &str, limit: Option<usize>) -> Result<Vec<Memo>> {
+        let limit_clause = limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default();
+        let sql = format!(
+            "SELECT * FROM memo WHERE content @@ $query ORDER BY created_at DESC{}",
+            limit_clause
+        );
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("query", query))
+            .await
+            .context("Failed to search memos")?;
+        let memos: Vec<Memo> = response.take(0).context("Failed to parse memos")?;
+
+        Ok(memos)
+    }
+
     // ========== Event Operations ==========
 
     /// Record a new event
