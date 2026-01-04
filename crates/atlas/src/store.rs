@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use db::Database;
 
-use crate::event::{Event, EventSource};
+use crate::event::Event;
 use crate::memo::{Memo, MemoSource};
 
 /// Database store for Atlas

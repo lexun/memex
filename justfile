@@ -11,7 +11,7 @@ test:
     cargo test
 
 # Run dev CLI with local config
-run *args='-h':
+memex *args='-h':
     @MEMEX_CONFIG_PATH=./.memex cargo run --bin memex -- {{args}}
 
 # Clean build artifacts and dev database
