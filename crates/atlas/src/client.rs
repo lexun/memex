@@ -198,6 +198,14 @@ pub struct ContextResult {
     pub summary: Option<String>,
 }
 
+/// Response from extract_facts IPC call
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ExtractFactsResult {
+    pub memos_processed: usize,
+    pub facts_created: usize,
+    pub entities_created: usize,
+}
+
 /// Client for context discovery via the daemon
 #[derive(Debug, Clone)]
 pub struct ContextClient {
@@ -240,5 +248,32 @@ impl ContextClient {
             .context("Failed to discover context")?;
 
         serde_json::from_value(result).context("Failed to parse context response")
+    }
+
+    /// Extract facts from memos (for backfill)
+    pub async fn extract_facts(
+        &self,
+        project: Option<&str>,
+        batch_size: Option<usize>,
+    ) -> Result<ExtractFactsResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            project: Option<&'a str>,
+            batch_size: Option<usize>,
+        }
+
+        let result = self
+            .client
+            .request(
+                "extract_facts",
+                Params {
+                    project,
+                    batch_size,
+                },
+            )
+            .await
+            .context("Failed to extract facts")?;
+
+        serde_json::from_value(result).context("Failed to parse extraction response")
     }
 }

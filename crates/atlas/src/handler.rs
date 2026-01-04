@@ -152,6 +152,22 @@ pub async fn handle_context_command(cmd: ContextCommand, socket_path: &Path) -> 
             }
             Ok(())
         }
+
+        ContextCommand::Extract {
+            project,
+            batch_size,
+        } => {
+            println!("Extracting facts from memos...");
+            let result = client
+                .extract_facts(project.as_deref(), Some(batch_size))
+                .await?;
+
+            println!("Extraction complete:");
+            println!("  Memos processed: {}", result.memos_processed);
+            println!("  Facts created: {}", result.facts_created);
+            println!("  Entities created: {}", result.entities_created);
+            Ok(())
+        }
     }
 }
 

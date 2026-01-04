@@ -68,4 +68,18 @@ pub enum ContextCommand {
         #[arg(short, long, default_value = "10")]
         limit: usize,
     },
+
+    /// Extract facts from existing memos
+    ///
+    /// This is useful for backfilling facts from memos recorded
+    /// before extraction was enabled.
+    Extract {
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Maximum number of memos to process
+        #[arg(short, long, default_value = "20")]
+        batch_size: usize,
+    },
 }

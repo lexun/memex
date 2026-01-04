@@ -327,6 +327,9 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         // Context discovery (cross-store search)
         "discover_context" => handle_discover_context(request, stores).await,
 
+        // Extraction operations
+        "extract_facts" => handle_extract_facts(request, stores).await,
+
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
     }
@@ -928,6 +931,78 @@ async fn handle_discover_context(request: &Request, stores: &Stores) -> Result<s
         "query": params.query,
         "results": facts,
         "count": count,
+    }))
+}
+
+// ========== Extraction Handlers ==========
+
+#[derive(Deserialize)]
+struct ExtractFactsParams {
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default = "default_batch_size")]
+    batch_size: usize,
+}
+
+fn default_batch_size() -> usize {
+    20
+}
+
+async fn handle_extract_facts(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    let params: ExtractFactsParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(ExtractFactsParams { project: None, batch_size: 20 });
+
+    let extractor = match &stores.extractor {
+        Some(e) => e,
+        None => {
+            return Err(IpcError::internal("LLM not configured - cannot extract facts".to_string()));
+        }
+    };
+
+    let mut facts_created = 0;
+    let mut entities_created = 0;
+    let mut memos_processed = 0;
+
+    // Get all memos (TODO: use extraction_state to track what's already processed)
+    let memos = stores
+        .atlas
+        .list_memos(Some(params.batch_size))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    for memo in memos {
+        memos_processed += 1;
+        match extractor.extract_from_memo(&memo, params.project.as_deref()).await {
+            Ok(result) => {
+                for fact in result.facts {
+                    if let Ok(_) = stores.atlas.create_fact(fact).await {
+                        facts_created += 1;
+                    }
+                }
+                for entity in result.entities {
+                    match stores.atlas.find_entity_by_name(&entity.name, entity.project.as_deref()).await {
+                        Ok(Some(_)) => {
+                            // Entity exists, skip
+                        }
+                        Ok(None) => {
+                            if let Ok(_) = stores.atlas.create_entity(entity).await {
+                                entities_created += 1;
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Extraction failed for memo {}: {}", memo.id_str().unwrap_or_default(), e);
+            }
+        }
+    }
+
+    Ok(json!({
+        "memos_processed": memos_processed,
+        "facts_created": facts_created,
+        "entities_created": entities_created,
     }))
 }
 
