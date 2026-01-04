@@ -1,5 +1,7 @@
 # Memex
 
-A knowledge management system for AI.
+A comprehensive AI knowledge management system.
 
-**Status:** Early development
+## Status
+
+🌱 **Early development**
