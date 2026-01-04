@@ -16,10 +16,11 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use atlas::{MemoSource, Store as AtlasStore};
+use atlas::{Event, EventSource, MemoSource, Store as AtlasStore};
 use db::Database;
 use forge::{Store as ForgeStore, Task, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
+use serde_json::json;
 
 use crate::config::{get_config_dir, get_db_path, get_pid_file, get_socket_path, load_config, Config};
 use crate::pid::{check_daemon, remove_pid_file, write_pid_file, PidInfo};
@@ -270,24 +271,24 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
             "pid": process::id()
         })),
 
-        // Task operations (forge)
-        "create_task" => handle_create_task(request, &stores.forge).await,
+        // Task operations (forge) - these also emit events to atlas
+        "create_task" => handle_create_task(request, stores).await,
         "list_tasks" => handle_list_tasks(request, &stores.forge).await,
         "ready_tasks" => handle_ready_tasks(request, &stores.forge).await,
         "get_task" => handle_get_task(request, &stores.forge).await,
-        "update_task" => handle_update_task(request, &stores.forge).await,
-        "close_task" => handle_close_task(request, &stores.forge).await,
-        "delete_task" => handle_delete_task(request, &stores.forge).await,
+        "update_task" => handle_update_task(request, stores).await,
+        "close_task" => handle_close_task(request, stores).await,
+        "delete_task" => handle_delete_task(request, stores).await,
 
-        // Note operations (forge)
-        "add_note" => handle_add_note(request, &stores.forge).await,
+        // Note operations (forge) - these also emit events to atlas
+        "add_note" => handle_add_note(request, stores).await,
         "get_notes" => handle_get_notes(request, &stores.forge).await,
-        "edit_note" => handle_edit_note(request, &stores.forge).await,
-        "delete_note" => handle_delete_note(request, &stores.forge).await,
+        "edit_note" => handle_edit_note(request, stores).await,
+        "delete_note" => handle_delete_note(request, stores).await,
 
-        // Dependency operations (forge)
-        "add_dependency" => handle_add_dependency(request, &stores.forge).await,
-        "remove_dependency" => handle_remove_dependency(request, &stores.forge).await,
+        // Dependency operations (forge) - these also emit events to atlas
+        "add_dependency" => handle_add_dependency(request, stores).await,
+        "remove_dependency" => handle_remove_dependency(request, stores).await,
         "get_dependencies" => handle_get_dependencies(request, &stores.forge).await,
 
         // Memo operations (atlas)
@@ -303,15 +304,28 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
 
 // ========== Task Handlers ==========
 
-async fn handle_create_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_create_task(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let task: Task = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid task: {}", e)))?;
 
-    store
+    let created = stores
+        .forge
         .create_task(task)
         .await
-        .map(|t| serde_json::to_value(t).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit task.created event to Atlas
+    let task_json = serde_json::to_value(&created).unwrap();
+    let event = Event::new(
+        "task.created",
+        EventSource::system("forge").with_via("daemon"),
+        json!({ "task": task_json }),
+    );
+    if let Err(e) = stores.atlas.record_event(event).await {
+        tracing::warn!("Failed to record task.created event: {}", e);
+    }
+
+    Ok(serde_json::to_value(created).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -372,20 +386,46 @@ struct UpdateTaskParams {
     priority: Option<i32>,
 }
 
-async fn handle_update_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: UpdateTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let status = match params.status {
+    let status = match &params.status {
         Some(s) => Some(s.parse::<TaskStatus>().map_err(|e| IpcError::invalid_params(e.to_string()))?),
         None => None,
     };
 
-    store
+    let updated = stores
+        .forge
         .update_task(&params.id, status, params.priority)
         .await
-        .map(|task| serde_json::to_value(task).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit task.updated event to Atlas
+    if let Some(ref task) = updated {
+        let task_json = serde_json::to_value(task).unwrap();
+        let mut changes = serde_json::Map::new();
+        if let Some(s) = &params.status {
+            changes.insert("status".to_string(), json!(s));
+        }
+        if let Some(p) = params.priority {
+            changes.insert("priority".to_string(), json!(p));
+        }
+        let event = Event::new(
+            "task.updated",
+            EventSource::system("forge").with_via("daemon"),
+            json!({
+                "task_id": params.id,
+                "changes": changes,
+                "snapshot": task_json
+            }),
+        );
+        if let Err(e) = stores.atlas.record_event(event).await {
+            tracing::warn!("Failed to record task.updated event: {}", e);
+        }
+    }
+
+    Ok(serde_json::to_value(updated).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -394,15 +434,34 @@ struct CloseTaskParams {
     reason: Option<String>,
 }
 
-async fn handle_close_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_close_task(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: CloseTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    store
+    let closed = stores
+        .forge
         .close_task(&params.id, params.reason.as_deref())
         .await
-        .map(|task| serde_json::to_value(task).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit task.closed event to Atlas
+    if let Some(ref task) = closed {
+        let task_json = serde_json::to_value(task).unwrap();
+        let event = Event::new(
+            "task.closed",
+            EventSource::system("forge").with_via("daemon"),
+            json!({
+                "task_id": params.id,
+                "reason": params.reason,
+                "snapshot": task_json
+            }),
+        );
+        if let Err(e) = stores.atlas.record_event(event).await {
+            tracing::warn!("Failed to record task.closed event: {}", e);
+        }
+    }
+
+    Ok(serde_json::to_value(closed).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -410,15 +469,33 @@ struct DeleteTaskParams {
     id: String,
 }
 
-async fn handle_delete_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_delete_task(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: DeleteTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    store
+    let deleted = stores
+        .forge
         .delete_task(&params.id)
         .await
-        .map(|task| serde_json::to_value(task).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit task.deleted event to Atlas
+    if let Some(ref task) = deleted {
+        let task_json = serde_json::to_value(task).unwrap();
+        let event = Event::new(
+            "task.deleted",
+            EventSource::system("forge").with_via("daemon"),
+            json!({
+                "task_id": params.id,
+                "snapshot": task_json
+            }),
+        );
+        if let Err(e) = stores.atlas.record_event(event).await {
+            tracing::warn!("Failed to record task.deleted event: {}", e);
+        }
+    }
+
+    Ok(serde_json::to_value(deleted).unwrap())
 }
 
 // ========== Note Handlers ==========
@@ -429,15 +506,31 @@ struct AddNoteParams {
     content: String,
 }
 
-async fn handle_add_note(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_add_note(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: AddNoteParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    store
+    let note = stores
+        .forge
         .add_note(&params.task_id, &params.content)
         .await
-        .map(|note| serde_json::to_value(note).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit task.note_added event to Atlas
+    let note_json = serde_json::to_value(&note).unwrap();
+    let event = Event::new(
+        "task.note_added",
+        EventSource::system("forge").with_via("daemon"),
+        json!({
+            "task_id": params.task_id,
+            "note": note_json
+        }),
+    );
+    if let Err(e) = stores.atlas.record_event(event).await {
+        tracing::warn!("Failed to record task.note_added event: {}", e);
+    }
+
+    Ok(serde_json::to_value(note).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -462,15 +555,34 @@ struct EditNoteParams {
     content: String,
 }
 
-async fn handle_edit_note(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_edit_note(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: EditNoteParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    store
+    let updated = stores
+        .forge
         .edit_note(&params.note_id, &params.content)
         .await
-        .map(|note| serde_json::to_value(note).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit task.note_updated event to Atlas
+    if let Some(ref note) = updated {
+        let note_json = serde_json::to_value(note).unwrap();
+        let event = Event::new(
+            "task.note_updated",
+            EventSource::system("forge").with_via("daemon"),
+            json!({
+                "note_id": params.note_id,
+                "new_content": params.content,
+                "note": note_json
+            }),
+        );
+        if let Err(e) = stores.atlas.record_event(event).await {
+            tracing::warn!("Failed to record task.note_updated event: {}", e);
+        }
+    }
+
+    Ok(serde_json::to_value(updated).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -478,15 +590,33 @@ struct DeleteNoteParams {
     note_id: String,
 }
 
-async fn handle_delete_note(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_delete_note(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: DeleteNoteParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    store
+    let deleted = stores
+        .forge
         .delete_note(&params.note_id)
         .await
-        .map(|note| serde_json::to_value(note).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit task.note_deleted event to Atlas
+    if let Some(ref note) = deleted {
+        let note_json = serde_json::to_value(note).unwrap();
+        let event = Event::new(
+            "task.note_deleted",
+            EventSource::system("forge").with_via("daemon"),
+            json!({
+                "note_id": params.note_id,
+                "note": note_json
+            }),
+        );
+        if let Err(e) = stores.atlas.record_event(event).await {
+            tracing::warn!("Failed to record task.note_deleted event: {}", e);
+        }
+    }
+
+    Ok(serde_json::to_value(deleted).unwrap())
 }
 
 // ========== Dependency Handlers ==========
@@ -498,15 +628,31 @@ struct AddDependencyParams {
     relation: String,
 }
 
-async fn handle_add_dependency(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_add_dependency(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: AddDependencyParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    store
+    let dep = stores
+        .forge
         .add_dependency(&params.from_id, &params.to_id, &params.relation)
         .await
-        .map(|dep| serde_json::to_value(dep).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit task.dependency_added event to Atlas
+    let event = Event::new(
+        "task.dependency_added",
+        EventSource::system("forge").with_via("daemon"),
+        json!({
+            "from_task_id": params.from_id,
+            "to_task_id": params.to_id,
+            "relation": params.relation
+        }),
+    );
+    if let Err(e) = stores.atlas.record_event(event).await {
+        tracing::warn!("Failed to record task.dependency_added event: {}", e);
+    }
+
+    Ok(serde_json::to_value(dep).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -516,15 +662,33 @@ struct RemoveDependencyParams {
     relation: String,
 }
 
-async fn handle_remove_dependency(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_remove_dependency(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: RemoveDependencyParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    store
+    let removed = stores
+        .forge
         .remove_dependency(&params.from_id, &params.to_id, &params.relation)
         .await
-        .map(|removed| serde_json::to_value(removed).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit task.dependency_removed event to Atlas
+    if removed {
+        let event = Event::new(
+            "task.dependency_removed",
+            EventSource::system("forge").with_via("daemon"),
+            json!({
+                "from_task_id": params.from_id,
+                "to_task_id": params.to_id,
+                "relation": params.relation
+            }),
+        );
+        if let Err(e) = stores.atlas.record_event(event).await {
+            tracing::warn!("Failed to record task.dependency_removed event: {}", e);
+        }
+    }
+
+    Ok(serde_json::to_value(removed).unwrap())
 }
 
 #[derive(Deserialize)]

@@ -5,12 +5,14 @@
 
 pub mod cli;
 pub mod client;
+pub mod event;
 pub mod handler;
 pub mod memo;
 pub mod store;
 
 pub use cli::MemoCommand;
 pub use client::MemoClient;
+pub use event::{Event, EventAuthority, EventSource};
 pub use handler::handle_memo_command;
 pub use memo::{Memo, MemoAuthority, MemoSource};
 pub use store::Store;

@@ -1,10 +1,11 @@
 //! Database store for Atlas knowledge management
 //!
-//! Handles memo storage and future knowledge graph operations.
+//! Handles memo and event storage, plus future knowledge graph operations.
 
 use anyhow::{Context, Result};
 use db::Database;
 
+use crate::event::{Event, EventSource};
 use crate::memo::{Memo, MemoSource};
 
 /// Database store for Atlas
@@ -81,5 +82,64 @@ impl Store {
             .context("Failed to delete memo")?;
 
         Ok(deleted)
+    }
+
+    // ========== Event Operations ==========
+
+    /// Record a new event
+    pub async fn record_event(&self, event: Event) -> Result<Event> {
+        let created: Option<Event> = self
+            .db
+            .client()
+            .create("event")
+            .content(event)
+            .await
+            .context("Failed to create event")?;
+
+        created.context("Event creation returned no result")
+    }
+
+    /// List events with optional filters
+    pub async fn list_events(
+        &self,
+        event_type_prefix: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Event>> {
+        let mut query = String::from("SELECT * FROM event");
+
+        if let Some(prefix) = event_type_prefix {
+            query.push_str(&format!(
+                " WHERE string::starts_with(event_type, '{}')",
+                prefix
+            ));
+        }
+
+        query.push_str(" ORDER BY timestamp DESC");
+
+        if let Some(n) = limit {
+            query.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .await
+            .context("Failed to query events")?;
+        let events: Vec<Event> = response.take(0).context("Failed to parse events")?;
+
+        Ok(events)
+    }
+
+    /// Get an event by ID
+    pub async fn get_event(&self, id: &str) -> Result<Option<Event>> {
+        let event: Option<Event> = self
+            .db
+            .client()
+            .select(("event", id))
+            .await
+            .context("Failed to get event")?;
+
+        Ok(event)
     }
 }
