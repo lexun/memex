@@ -115,4 +115,29 @@ impl Database {
     async fn run_migrations(&self) -> Result<()> {
         migrations::run_migrations(&self.client, &self.database_name).await
     }
+
+    /// Create a new Database using the same underlying connection but different database
+    ///
+    /// This is useful for embedded mode where only one RocksDB connection can exist.
+    /// The new Database shares the underlying client but selects a different database.
+    pub async fn with_database(&self, database_name: &str) -> Result<Self> {
+        // Clone the client (shares the underlying connection)
+        let client = self.client.clone();
+
+        // Select the new database (namespace is shared)
+        client
+            .use_db(database_name)
+            .await
+            .context("Failed to select database")?;
+
+        let db = Self {
+            client,
+            database_name: database_name.to_string(),
+        };
+
+        // Run migrations for this database
+        db.run_migrations().await?;
+
+        Ok(db)
+    }
 }

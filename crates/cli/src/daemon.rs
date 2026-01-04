@@ -123,6 +123,7 @@ impl Daemon {
 
         // Get default database path for embedded mode
         let default_db_path = get_db_path(&self.config)?;
+        let is_embedded = self.config.database.url.is_none();
 
         // Connect to forge database
         tracing::info!("Connecting to forge database...");
@@ -135,14 +136,18 @@ impl Daemon {
         .context("Failed to connect to forge database")?;
 
         // Connect to atlas database
+        // For embedded mode, share the connection to avoid RocksDB lock conflicts
         tracing::info!("Connecting to atlas database...");
-        let atlas_db = Database::connect(
-            &self.config.database,
-            "atlas",
-            Some(default_db_path),
-        )
-        .await
-        .context("Failed to connect to atlas database")?;
+        let atlas_db = if is_embedded {
+            forge_db
+                .with_database("atlas")
+                .await
+                .context("Failed to connect to atlas database")?
+        } else {
+            Database::connect(&self.config.database, "atlas", Some(default_db_path))
+                .await
+                .context("Failed to connect to atlas database")?
+        };
 
         // Create LLM client if configured
         let llm_client = if self.config.llm.api_key.is_some() {
