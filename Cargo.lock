@@ -887,6 +887,7 @@ dependencies = [
  "forge",
  "ipc",
  "libc",
+ "llm",
  "mcp",
  "nix",
  "serde",
