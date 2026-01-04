@@ -81,6 +81,11 @@ enum AtlasAction {
         #[command(subcommand)]
         action: atlas::MemoCommand,
     },
+    /// Event management
+    Event {
+        #[command(subcommand)]
+        action: atlas::EventCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -155,6 +160,9 @@ async fn async_main(cli: Cli) -> Result<()> {
             match action {
                 AtlasAction::Memo { action } => {
                     atlas::handle_memo_command(action, &socket_path).await
+                }
+                AtlasAction::Event { action } => {
+                    atlas::handle_event_command(action, &socket_path).await
                 }
             }
         }

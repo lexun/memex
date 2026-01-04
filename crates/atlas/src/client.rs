@@ -1,12 +1,13 @@
-//! IPC client for memo operations
+//! IPC client for memo and event operations
 //!
-//! Provides access to memo storage via the daemon.
+//! Provides access to memo and event storage via the daemon.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+use crate::event::Event;
 use crate::Memo;
 use ipc::Client as IpcClient;
 
@@ -121,5 +122,69 @@ impl MemoClient {
         let memo: Memo =
             serde_json::from_value(result).context("Failed to parse memo response")?;
         Ok(Some(memo))
+    }
+}
+
+/// Client for event operations via the daemon
+#[derive(Debug, Clone)]
+pub struct EventClient {
+    client: IpcClient,
+}
+
+impl EventClient {
+    /// Create a new client for the given socket path
+    pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        Self {
+            client: IpcClient::new(socket_path),
+        }
+    }
+
+    /// List events with optional filters
+    pub async fn list_events(
+        &self,
+        event_type_prefix: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Event>> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            event_type_prefix: Option<&'a str>,
+            limit: Option<usize>,
+        }
+
+        let result = self
+            .client
+            .request(
+                "list_events",
+                Params {
+                    event_type_prefix,
+                    limit,
+                },
+            )
+            .await
+            .context("Failed to list events")?;
+
+        serde_json::from_value(result).context("Failed to parse events response")
+    }
+
+    /// Get an event by ID
+    pub async fn get_event(&self, id: &str) -> Result<Option<Event>> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+        }
+
+        let result = self
+            .client
+            .request("get_event", Params { id })
+            .await
+            .context("Failed to get event")?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let event: Event =
+            serde_json::from_value(result).context("Failed to parse event response")?;
+        Ok(Some(event))
     }
 }

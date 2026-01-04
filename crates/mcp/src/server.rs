@@ -9,7 +9,7 @@ use anyhow::Result;
 use mcp_attr::server::{mcp_server, serve_stdio, McpServer};
 use mcp_attr::ErrorCode;
 
-use atlas::MemoClient;
+use atlas::{EventClient, MemoClient};
 use forge::task::{Task, TaskStatus};
 use forge::TaskClient;
 
@@ -17,6 +17,7 @@ use forge::TaskClient;
 pub struct MemexMcpServer {
     task_client: TaskClient,
     memo_client: MemoClient,
+    event_client: EventClient,
 }
 
 impl MemexMcpServer {
@@ -24,9 +25,11 @@ impl MemexMcpServer {
     pub fn new(socket_path: &Path) -> Self {
         let task_client = TaskClient::new(socket_path);
         let memo_client = MemoClient::new(socket_path);
+        let event_client = EventClient::new(socket_path);
         Self {
             task_client,
             memo_client,
+            event_client,
         }
     }
 
@@ -528,6 +531,81 @@ impl McpServer for MemexMcpServer {
             }
             Err(e) => {
                 let msg = format!("Failed to delete memo: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Event tools (Atlas event history)
+    // -------------------------------------------------------------------------
+
+    /// List events from the event log
+    ///
+    /// Events are immutable records of things that happened - task changes,
+    /// notes added, dependencies modified, etc. Use event_type to filter
+    /// by prefix (e.g., "task" for all task events, "task.created" for just creations).
+    #[tool]
+    async fn list_events(
+        &self,
+        event_type: Option<String>,
+        limit: Option<i32>,
+    ) -> mcp_attr::Result<String> {
+        let limit = limit.map(|l| l as usize);
+        match self
+            .event_client
+            .list_events(event_type.as_deref(), limit)
+            .await
+        {
+            Ok(events) => {
+                if events.is_empty() {
+                    Ok("No events found".to_string())
+                } else {
+                    let output = events
+                        .iter()
+                        .map(|e| {
+                            let id = e.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+                            format!("[{}] {} {}", id, e.timestamp.format("%Y-%m-%d %H:%M"), e.event_type)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to list events: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Get a specific event by ID
+    #[tool]
+    async fn get_event(&self, id: String) -> mcp_attr::Result<String> {
+        match self.event_client.get_event(&id).await {
+            Ok(Some(event)) => {
+                let id_str = event.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+                let payload_str = serde_json::to_string_pretty(&event.payload)
+                    .unwrap_or_else(|_| "{}".to_string());
+                Ok(format!(
+                    "Event: {}\n  Timestamp: {}\n  Type: {}\n  Actor: {}\n  Payload:\n{}",
+                    id_str,
+                    event.timestamp,
+                    event.event_type,
+                    event.source.actor,
+                    payload_str
+                        .lines()
+                        .map(|l| format!("    {}", l))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ))
+            }
+            Ok(None) => {
+                let msg = format!("Event not found: {}", id);
+                Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS).with_message(msg, true))
+            }
+            Err(e) => {
+                let msg = format!("Failed to get event: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
             }
         }

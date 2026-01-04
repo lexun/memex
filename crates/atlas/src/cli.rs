@@ -1,4 +1,4 @@
-//! CLI command definitions for Atlas memo management
+//! CLI command definitions for Atlas memo and event management
 //!
 //! This module defines the clap subcommands that can be imported
 //! by the main CLI crate.
@@ -24,6 +24,27 @@ pub enum MemoCommand {
     /// Delete a memo
     Delete {
         /// Memo ID
+        id: String,
+    },
+}
+
+/// Event management commands
+#[derive(Debug, Subcommand)]
+pub enum EventCommand {
+    /// List events
+    List {
+        /// Filter by event type prefix (e.g., "task" or "task.created")
+        #[arg(short = 't', long)]
+        event_type: Option<String>,
+
+        /// Maximum number of events to show
+        #[arg(short, long)]
+        limit: Option<usize>,
+    },
+
+    /// Show event details
+    Get {
+        /// Event ID
         id: String,
     },
 }

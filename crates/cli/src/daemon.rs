@@ -297,6 +297,10 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "get_memo" => handle_get_memo(request, &stores.atlas).await,
         "delete_memo" => handle_delete_memo(request, &stores.atlas).await,
 
+        // Event operations (atlas)
+        "list_events" => handle_list_events(request, &stores.atlas).await,
+        "get_event" => handle_get_event(request, &stores.atlas).await,
+
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
     }
@@ -780,6 +784,41 @@ async fn handle_delete_memo(request: &Request, store: &AtlasStore) -> Result<ser
         .delete_memo(&params.id)
         .await
         .map(|memo| serde_json::to_value(memo).unwrap())
+        .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+// ========== Event Handlers ==========
+
+#[derive(Deserialize)]
+struct ListEventsParams {
+    event_type_prefix: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn handle_list_events(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: ListEventsParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(ListEventsParams { event_type_prefix: None, limit: None });
+
+    store
+        .list_events(params.event_type_prefix.as_deref(), params.limit)
+        .await
+        .map(|events| serde_json::to_value(events).unwrap())
+        .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct GetEventParams {
+    id: String,
+}
+
+async fn handle_get_event(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: GetEventParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    store
+        .get_event(&params.id)
+        .await
+        .map(|event| serde_json::to_value(event).unwrap())
         .map_err(|e| IpcError::internal(e.to_string()))
 }
 

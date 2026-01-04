@@ -10,9 +10,9 @@ pub mod handler;
 pub mod memo;
 pub mod store;
 
-pub use cli::MemoCommand;
-pub use client::MemoClient;
+pub use cli::{EventCommand, MemoCommand};
+pub use client::{EventClient, MemoClient};
 pub use event::{Event, EventAuthority, EventSource};
-pub use handler::handle_memo_command;
+pub use handler::{handle_event_command, handle_memo_command};
 pub use memo::{Memo, MemoAuthority, MemoSource};
 pub use store::Store;
