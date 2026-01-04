@@ -16,10 +16,11 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use atlas::{Event, EventSource, MemoSource, Store as AtlasStore};
+use atlas::{Event, EventSource, Extractor, MemoSource, Store as AtlasStore};
 use db::Database;
 use forge::{Store as ForgeStore, Task, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
+use llm::LlmClient;
 use serde_json::json;
 
 use crate::config::{get_config_dir, get_db_path, get_pid_file, get_socket_path, load_config, Config};
@@ -29,7 +30,7 @@ use crate::pid::{check_daemon, remove_pid_file, write_pid_file, PidInfo};
 struct Stores {
     forge: ForgeStore,
     atlas: AtlasStore,
-    llm: Option<llm::LlmClient>,
+    extractor: Option<Extractor>,
 }
 
 /// The daemon process
@@ -149,17 +150,18 @@ impl Daemon {
                 .context("Failed to connect to atlas database")?
         };
 
-        // Create LLM client if configured
-        let llm_client = if self.config.llm.api_key.is_some() {
+        // Create extractor if LLM configured
+        let extractor = if self.config.llm.api_key.is_some() {
             tracing::info!("LLM configured: {} / {}", self.config.llm.provider, self.config.llm.model);
-            Some(llm::LlmClient::new(llm::LlmConfig {
+            let llm_client = LlmClient::new(llm::LlmConfig {
                 provider: self.config.llm.provider.clone(),
                 model: self.config.llm.model.clone(),
                 api_key: self.config.llm.api_key.clone(),
                 base_url: self.config.llm.base_url.clone(),
-            }))
+            });
+            Some(Extractor::new(llm_client))
         } else {
-            tracing::info!("LLM not configured (no API key)");
+            tracing::info!("LLM not configured (no API key) - fact extraction disabled");
             None
         };
 
@@ -167,7 +169,7 @@ impl Daemon {
         let stores = Arc::new(Stores {
             forge: ForgeStore::new(forge_db),
             atlas: AtlasStore::new(atlas_db),
-            llm: llm_client,
+            extractor,
         });
 
         // Bind the socket
@@ -312,8 +314,8 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "remove_dependency" => handle_remove_dependency(request, stores).await,
         "get_dependencies" => handle_get_dependencies(request, &stores.forge).await,
 
-        // Memo operations (atlas)
-        "record_memo" => handle_record_memo(request, &stores.atlas).await,
+        // Memo operations (atlas) - record_memo also triggers extraction
+        "record_memo" => handle_record_memo(request, stores).await,
         "list_memos" => handle_list_memos(request, &stores.atlas).await,
         "get_memo" => handle_get_memo(request, &stores.atlas).await,
         "delete_memo" => handle_delete_memo(request, &stores.atlas).await,
@@ -745,7 +747,7 @@ struct RecordMemoParams {
     actor: Option<String>,
 }
 
-async fn handle_record_memo(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_record_memo(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: RecordMemoParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -756,11 +758,46 @@ async fn handle_record_memo(request: &Request, store: &AtlasStore) -> Result<ser
         MemoSource::agent(actor)
     };
 
-    store
+    let memo = stores
+        .atlas
         .record_memo(&params.content, source)
         .await
-        .map(|memo| serde_json::to_value(memo).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Extract facts from the memo if extractor is available
+    if let Some(ref extractor) = stores.extractor {
+        match extractor.extract_from_memo(&memo, None).await {
+            Ok(result) => {
+                for fact in result.facts {
+                    if let Err(e) = stores.atlas.create_fact(fact).await {
+                        tracing::warn!("Failed to store extracted fact: {}", e);
+                    }
+                }
+                for entity in result.entities {
+                    // Try to find existing entity or create new
+                    match stores.atlas.find_entity_by_name(&entity.name, entity.project.as_deref()).await {
+                        Ok(Some(_existing)) => {
+                            // Entity already exists, skip for now
+                            // TODO: merge source_episodes
+                        }
+                        Ok(None) => {
+                            if let Err(e) = stores.atlas.create_entity(entity).await {
+                                tracing::warn!("Failed to store extracted entity: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to check for existing entity: {}", e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Fact extraction failed: {}", e);
+            }
+        }
+    }
+
+    Ok(serde_json::to_value(memo).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -852,8 +889,6 @@ async fn handle_get_event(request: &Request, store: &AtlasStore) -> Result<serde
 struct DiscoverContextParams {
     query: String,
     #[serde(default)]
-    entity_type: Option<String>,
-    #[serde(default)]
     project: Option<String>,
     #[serde(default = "default_limit")]
     limit: usize,
@@ -863,17 +898,36 @@ fn default_limit() -> usize {
     10
 }
 
-async fn handle_discover_context(request: &Request, _stores: &Stores) -> Result<serde_json::Value, IpcError> {
+async fn handle_discover_context(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: DiscoverContextParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    // TODO: Implement fact-based search (Phase 1.7)
-    // For now, return empty results - fact extraction not yet implemented
+    // Search facts using full-text search
+    let results = stores
+        .atlas
+        .search_facts(&params.query, params.project.as_deref(), Some(params.limit))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    let count = results.len();
+    let facts: Vec<_> = results
+        .into_iter()
+        .map(|r| {
+            json!({
+                "content": r.fact.content,
+                "fact_type": r.fact.fact_type.to_string(),
+                "confidence": r.fact.confidence,
+                "score": r.score,
+                "project": r.fact.project,
+                "source_episodes": r.fact.source_episodes,
+            })
+        })
+        .collect();
+
     Ok(json!({
         "query": params.query,
-        "results": [],
-        "count": 0,
-        "summary": null
+        "results": facts,
+        "count": count,
     }))
 }
 
