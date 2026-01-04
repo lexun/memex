@@ -16,16 +16,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Daemon management
-    Daemon {
-        #[command(subcommand)]
-        action: DaemonAction,
-    },
-    /// Configuration management
-    Config {
-        #[command(subcommand)]
-        action: ConfigAction,
-    },
     /// Task management
     Task {
         #[command(subcommand)]
@@ -41,10 +31,20 @@ enum Commands {
         #[command(subcommand)]
         action: AtlasAction,
     },
+    /// Daemon management
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
     /// MCP server
     Mcp {
         #[command(subcommand)]
         action: McpAction,
+    },
+    /// Configuration management
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
     },
     /// Initialize memex configuration
     Init,
@@ -144,8 +144,6 @@ async fn async_main(cli: Cli) -> Result<()> {
         .init();
 
     match cli.command {
-        Commands::Daemon { action } => handle_daemon(action).await,
-        Commands::Config { action } => handle_config(action),
         Commands::Task { action } => {
             let cfg = config::load_config()?;
             let socket_path = config::get_socket_path(&cfg)?;
@@ -174,7 +172,9 @@ async fn async_main(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Daemon { action } => handle_daemon(action).await,
         Commands::Mcp { action } => handle_mcp(action).await,
+        Commands::Config { action } => handle_config(action),
         Commands::Init => handle_init(),
     }
 }
