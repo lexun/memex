@@ -1,3 +1,5 @@
+set positional-arguments
+
 # List available commands
 default:
     @just --list --unsorted
@@ -12,7 +14,9 @@ test:
 
 # Run dev CLI with local config
 memex *args='-h':
-    @MEMEX_CONFIG_PATH=./.memex cargo run --bin memex -- {{args}}
+    #!/usr/bin/env bash
+    # OBJC_DISABLE_INITIALIZE_FORK_SAFETY works around macOS fork-after-init crash
+    OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES MEMEX_CONFIG_PATH=./.memex cargo run --bin memex -- "$@"
 
 # Clean build artifacts and dev database
 clean:
