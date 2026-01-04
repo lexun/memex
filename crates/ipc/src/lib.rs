@@ -7,19 +7,19 @@
 //! # Architecture
 //!
 //! ```text
-//! Domain Crate (forge, atlas)     IPC Crate
-//! ┌─────────────────────────┐    ┌─────────────────────┐
-//! │  TaskClient / AtlasClient│───>│  Client             │
-//! │  (typed wrapper)         │    │  (generic JSON-RPC) │
-//! └─────────────────────────┘    └──────────┬──────────┘
-//!                                           │
-//!                                           v
-//!                                    Unix Socket
-//!                                           │
-//!                                           v
-//!                                    ┌──────────────┐
-//!                                    │   Daemon     │
-//!                                    └──────────────┘
+//! Domain Crate (forge, atlas)        IPC Crate
+//! +---------------------------+     +---------------------+
+//! | TaskClient / AtlasClient  |---->| Client              |
+//! | (typed wrapper)           |     | (generic JSON-RPC)  |
+//! +---------------------------+     +---------+-----------+
+//!                                             |
+//!                                             v
+//!                                       Unix Socket
+//!                                             |
+//!                                             v
+//!                                      +-----------+
+//!                                      |  Daemon   |
+//!                                      +-----------+
 //! ```
 //!
 //! # Usage
