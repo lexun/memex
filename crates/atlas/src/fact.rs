@@ -6,6 +6,10 @@
 use serde::{Deserialize, Serialize};
 use surrealdb::sql::{Datetime, Thing};
 
+fn default_confidence() -> f32 {
+    1.0
+}
+
 /// A fact - a medium-granularity assertion extracted from episodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fact {
@@ -16,10 +20,12 @@ pub struct Fact {
     /// The fact content - a self-contained assertion
     pub content: String,
 
-    /// Fact type classification
-    pub fact_type: FactType,
+    /// Fact type classification (stored as string for DB compatibility)
+    #[serde(default)]
+    pub fact_type: String,
 
     /// Confidence score (0.0 - 1.0)
+    #[serde(default = "default_confidence")]
     pub confidence: f32,
 
     /// Project/context boundary
@@ -97,14 +103,16 @@ pub struct Entity {
     /// Canonical name of the entity
     pub name: String,
 
-    /// Entity type classification
-    pub entity_type: EntityType,
+    /// Entity type classification (stored as string for DB compatibility)
+    #[serde(default)]
+    pub entity_type: String,
 
     /// Project/context boundary
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
 
     /// Confidence in this entity's existence/relevance
+    #[serde(default = "default_confidence")]
     pub confidence: f32,
 
     /// Alternative names/aliases
@@ -165,7 +173,7 @@ impl Fact {
         Self {
             id: None,
             content: content.into(),
-            fact_type,
+            fact_type: fact_type.to_string(),
             confidence,
             project: None,
             source_episodes: Vec::new(),
@@ -204,7 +212,7 @@ impl Entity {
         Self {
             id: None,
             name: name.into(),
-            entity_type,
+            entity_type: entity_type.to_string(),
             project: None,
             confidence: 1.0,
             aliases: Vec::new(),

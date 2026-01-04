@@ -917,12 +917,12 @@ async fn handle_discover_context(request: &Request, stores: &Stores) -> Result<s
         .into_iter()
         .map(|r| {
             json!({
-                "content": r.fact.content,
-                "fact_type": r.fact.fact_type.to_string(),
-                "confidence": r.fact.confidence,
+                "content": r.content,
+                "fact_type": r.fact_type,
+                "confidence": r.confidence,
                 "score": r.score,
-                "project": r.fact.project,
-                "source_episodes": r.fact.source_episodes,
+                "project": r.project,
+                "source_episodes": r.source_episodes,
             })
         })
         .collect();

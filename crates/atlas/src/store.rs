@@ -182,6 +182,8 @@ impl Store {
             sql.push_str(&format!(" LIMIT {}", n));
         }
 
+        tracing::info!("Searching facts with query: {}", sql);
+
         let mut response = self
             .db
             .client()
@@ -191,7 +193,11 @@ impl Store {
             .await
             .context("Failed to search facts")?;
 
-        let results: Vec<FactSearchResult> = response.take(0).context("Failed to parse search results")?;
+        // Deserialize directly to the target type
+        let results: Vec<FactSearchResult> = response
+            .take(0)
+            .context("Failed to parse search results")?;
+
         Ok(results)
     }
 
@@ -221,6 +227,8 @@ impl Store {
             query.push_str(&format!(" LIMIT {}", n));
         }
 
+        tracing::info!("Listing facts with query: {}", query);
+
         let mut response = self
             .db
             .client()
@@ -230,6 +238,7 @@ impl Store {
             .context("Failed to query facts")?;
 
         let facts: Vec<Fact> = response.take(0).context("Failed to parse facts")?;
+        tracing::info!("Found {} facts", facts.len());
         Ok(facts)
     }
 
@@ -390,9 +399,50 @@ impl Store {
 /// Search result with score
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FactSearchResult {
-    #[serde(flatten)]
-    pub fact: Fact,
-    pub score: f32,
+    /// Unique identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<surrealdb::sql::Thing>,
+
+    /// The fact content
+    pub content: String,
+
+    /// Fact type
+    #[serde(default)]
+    pub fact_type: String,
+
+    /// Confidence score
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
+
+    /// Project context
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+
+    /// Source episodes
+    #[serde(default)]
+    pub source_episodes: Vec<crate::fact::EpisodeRef>,
+
+    /// When created
+    pub created_at: surrealdb::sql::Datetime,
+
+    /// When updated
+    pub updated_at: surrealdb::sql::Datetime,
+
+    /// Access count
+    #[serde(default)]
+    pub access_count: u32,
+
+    /// Last accessed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_accessed: Option<surrealdb::sql::Datetime>,
+
+    /// Search score
+    #[serde(default)]
+    pub score: f64,
+}
+
+fn default_confidence() -> f32 {
+    1.0
 }
 
 /// Extraction state for tracking processed episodes
