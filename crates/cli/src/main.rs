@@ -86,6 +86,11 @@ enum AtlasAction {
         #[command(subcommand)]
         action: atlas::EventCommand,
     },
+    /// Context discovery
+    Context {
+        #[command(subcommand)]
+        action: atlas::ContextCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -163,6 +168,9 @@ async fn async_main(cli: Cli) -> Result<()> {
                 }
                 AtlasAction::Event { action } => {
                     atlas::handle_event_command(action, &socket_path).await
+                }
+                AtlasAction::Context { action } => {
+                    atlas::handle_context_command(action, &socket_path).await
                 }
             }
         }

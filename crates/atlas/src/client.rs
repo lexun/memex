@@ -188,3 +188,59 @@ impl EventClient {
         Ok(Some(event))
     }
 }
+
+/// Response from discover_context
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ContextResult {
+    pub query: String,
+    pub results: Vec<serde_json::Value>,
+    pub count: usize,
+}
+
+/// Client for context discovery via the daemon
+#[derive(Debug, Clone)]
+pub struct ContextClient {
+    client: IpcClient,
+}
+
+impl ContextClient {
+    /// Create a new client for the given socket path
+    pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        Self {
+            client: IpcClient::new(socket_path),
+        }
+    }
+
+    /// Discover context matching a query
+    pub async fn discover(
+        &self,
+        query: &str,
+        entity_type: Option<&str>,
+        project: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<ContextResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            query: &'a str,
+            entity_type: Option<&'a str>,
+            project: Option<&'a str>,
+            limit: Option<usize>,
+        }
+
+        let result = self
+            .client
+            .request(
+                "discover_context",
+                Params {
+                    query,
+                    entity_type,
+                    project,
+                    limit,
+                },
+            )
+            .await
+            .context("Failed to discover context")?;
+
+        serde_json::from_value(result).context("Failed to parse context response")
+    }
+}

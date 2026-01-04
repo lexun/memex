@@ -6,8 +6,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::cli::{EventCommand, MemoCommand};
-use crate::client::{EventClient, MemoClient};
+use crate::cli::{ContextCommand, EventCommand, MemoCommand};
+use crate::client::{ContextClient, EventClient, MemoClient};
 use crate::event::Event;
 use crate::Memo;
 
@@ -121,6 +121,74 @@ fn print_event_detail(event: &Event) {
     if let Ok(pretty) = serde_json::to_string_pretty(&event.payload) {
         for line in pretty.lines() {
             println!("    {}", line);
+        }
+    }
+}
+
+/// Handle a context command via the daemon
+pub async fn handle_context_command(cmd: ContextCommand, socket_path: &Path) -> Result<()> {
+    let client = ContextClient::new(socket_path);
+
+    match cmd {
+        ContextCommand::Search {
+            query,
+            entity_type,
+            project,
+            limit,
+        } => {
+            let result = client
+                .discover(&query, entity_type.as_deref(), project.as_deref(), Some(limit))
+                .await?;
+
+            if result.results.is_empty() {
+                println!("No results found for: {}", query);
+            } else {
+                println!("Found {} result(s) for: {}", result.count, query);
+                println!();
+                for item in result.results {
+                    print_context_result(&item);
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_context_result(item: &serde_json::Value) {
+    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+
+    match item_type {
+        "memo" => {
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let truncated = if content.len() > 80 {
+                format!("{}...", &content[..80])
+            } else {
+                content.to_string()
+            };
+            println!("[memo:{}] {}", id, truncated);
+        }
+        "task" => {
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let priority = item.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
+            println!("[task:{}] [P{}] [{}] {}", id, priority, status, title);
+        }
+        "task_note" => {
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let truncated = if content.len() > 80 {
+                format!("{}...", &content[..80])
+            } else {
+                content.to_string()
+            };
+            println!("[note:{}] {}", id, truncated);
+        }
+        _ => {
+            if let Ok(json) = serde_json::to_string(item) {
+                println!("[{}] {}", item_type, json);
+            }
         }
     }
 }

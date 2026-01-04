@@ -9,7 +9,7 @@ use anyhow::Result;
 use mcp_attr::server::{mcp_server, serve_stdio, McpServer};
 use mcp_attr::ErrorCode;
 
-use atlas::{EventClient, MemoClient};
+use atlas::{ContextClient, EventClient, MemoClient};
 use forge::task::{Task, TaskStatus};
 use forge::TaskClient;
 
@@ -18,6 +18,7 @@ pub struct MemexMcpServer {
     task_client: TaskClient,
     memo_client: MemoClient,
     event_client: EventClient,
+    context_client: ContextClient,
 }
 
 impl MemexMcpServer {
@@ -26,10 +27,12 @@ impl MemexMcpServer {
         let task_client = TaskClient::new(socket_path);
         let memo_client = MemoClient::new(socket_path);
         let event_client = EventClient::new(socket_path);
+        let context_client = ContextClient::new(socket_path);
         Self {
             task_client,
             memo_client,
             event_client,
+            context_client,
         }
     }
 
@@ -708,15 +711,64 @@ impl McpServer for MemexMcpServer {
     async fn discover_context(
         &self,
         query: String,
-        _project: Option<String>,
-        _entity_type: Option<String>,
-        _limit: Option<i32>,
+        project: Option<String>,
+        entity_type: Option<String>,
+        limit: Option<i32>,
     ) -> mcp_attr::Result<String> {
-        // Context discovery will be implemented when Atlas is integrated
-        Ok(format!(
-            "Context discovery not yet implemented. Would search for: \"{}\"",
-            query
-        ))
+        let limit = limit.map(|l| l as usize);
+        match self
+            .context_client
+            .discover(&query, entity_type.as_deref(), project.as_deref(), limit)
+            .await
+        {
+            Ok(result) => {
+                if result.results.is_empty() {
+                    Ok(format!("No results found for: \"{}\"", query))
+                } else {
+                    let mut output = format!("Found {} result(s) for: \"{}\"\n\n", result.count, query);
+                    for item in result.results {
+                        let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        match item_type {
+                            "memo" => {
+                                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                let truncated = if content.len() > 100 {
+                                    format!("{}...", &content[..100])
+                                } else {
+                                    content.to_string()
+                                };
+                                output.push_str(&format!("[memo:{}] {}\n", id, truncated));
+                            }
+                            "task" => {
+                                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                                let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                                let priority = item.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
+                                output.push_str(&format!("[task:{}] [P{}] [{}] {}\n", id, priority, status, title));
+                            }
+                            "task_note" => {
+                                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                let truncated = if content.len() > 100 {
+                                    format!("{}...", &content[..100])
+                                } else {
+                                    content.to_string()
+                                };
+                                output.push_str(&format!("[note:{}] {}\n", id, truncated));
+                            }
+                            _ => {
+                                output.push_str(&format!("[{}] {:?}\n", item_type, item));
+                            }
+                        }
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to discover context: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
     }
 }
 

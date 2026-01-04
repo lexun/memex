@@ -301,6 +301,9 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "list_events" => handle_list_events(request, &stores.atlas).await,
         "get_event" => handle_get_event(request, &stores.atlas).await,
 
+        // Context discovery (cross-store search)
+        "discover_context" => handle_discover_context(request, stores).await,
+
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
     }
@@ -820,6 +823,108 @@ async fn handle_get_event(request: &Request, store: &AtlasStore) -> Result<serde
         .await
         .map(|event| serde_json::to_value(event).unwrap())
         .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+// ========== Context Discovery Handlers ==========
+
+#[derive(Deserialize)]
+struct DiscoverContextParams {
+    query: String,
+    #[serde(default)]
+    entity_type: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+fn default_limit() -> usize {
+    10
+}
+
+async fn handle_discover_context(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    let params: DiscoverContextParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let mut results = Vec::new();
+
+    // Search based on entity_type filter (or all if none specified)
+    let search_memos = params.entity_type.is_none() || params.entity_type.as_deref() == Some("memo");
+    let search_tasks = params.entity_type.is_none() || params.entity_type.as_deref() == Some("task");
+
+    // Search memos
+    if search_memos {
+        match stores.atlas.search_memos(&params.query, Some(params.limit)).await {
+            Ok(memos) => {
+                for memo in memos {
+                    results.push(json!({
+                        "type": "memo",
+                        "id": memo.id,
+                        "content": memo.content,
+                        "created_at": memo.created_at,
+                    }));
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to search memos: {}", e);
+            }
+        }
+    }
+
+    // Search tasks
+    if search_tasks {
+        match stores.forge.search_tasks(&params.query, Some(params.limit)).await {
+            Ok(tasks) => {
+                for task in tasks {
+                    // Apply project filter if specified
+                    if let Some(ref proj) = params.project {
+                        if task.project.as_ref() != Some(proj) {
+                            continue;
+                        }
+                    }
+                    results.push(json!({
+                        "type": "task",
+                        "id": task.id,
+                        "title": task.title,
+                        "description": task.description,
+                        "status": task.status.to_string(),
+                        "project": task.project,
+                        "priority": task.priority,
+                    }));
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to search tasks: {}", e);
+            }
+        }
+
+        // Also search task notes
+        match stores.forge.search_notes(&params.query, Some(params.limit)).await {
+            Ok(notes) => {
+                for note in notes {
+                    results.push(json!({
+                        "type": "task_note",
+                        "id": note.id,
+                        "task_id": note.task_id,
+                        "content": note.content,
+                        "created_at": note.created_at,
+                    }));
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to search notes: {}", e);
+            }
+        }
+    }
+
+    // Truncate to limit
+    results.truncate(params.limit);
+
+    Ok(json!({
+        "query": params.query,
+        "results": results,
+        "count": results.len()
+    }))
 }
 
 // ========== Public Functions ==========

@@ -48,3 +48,25 @@ pub enum EventCommand {
         id: String,
     },
 }
+
+/// Context discovery commands
+#[derive(Debug, Subcommand)]
+pub enum ContextCommand {
+    /// Search for context matching a query
+    Search {
+        /// The search query
+        query: String,
+
+        /// Filter by entity type (memo, task)
+        #[arg(short = 't', long)]
+        entity_type: Option<String>,
+
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Maximum number of results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+}
