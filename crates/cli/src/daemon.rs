@@ -1032,7 +1032,7 @@ async fn handle_extract_facts(request: &Request, stores: &Stores) -> Result<serd
     let mut entities_created = 0;
     let mut memos_processed = 0;
 
-    // Get all memos (TODO: use extraction_state to track what's already processed)
+    // Get all memos
     let memos = stores
         .atlas
         .list_memos(Some(params.batch_size))

@@ -352,48 +352,6 @@ impl Store {
         Ok(())
     }
 
-    // ========== Extraction State ==========
-
-    /// Get extraction state for an episode type
-    pub async fn get_extraction_state(&self, episode_type: &str) -> Result<Option<ExtractionState>> {
-        let sql = "SELECT * FROM extraction_state WHERE episode_type = $type LIMIT 1";
-
-        let mut response = self
-            .db
-            .client()
-            .query(sql)
-            .bind(("type", episode_type.to_string()))
-            .await
-            .context("Failed to query extraction state")?;
-
-        let states: Vec<ExtractionState> = response.take(0).context("Failed to parse extraction state")?;
-        Ok(states.into_iter().next())
-    }
-
-    /// Update extraction state for an episode type
-    pub async fn update_extraction_state(
-        &self,
-        episode_type: &str,
-        last_processed_id: &str,
-    ) -> Result<()> {
-        let sql = r#"
-            UPSERT extraction_state SET
-                episode_type = $type,
-                last_processed_id = $id,
-                last_processed_at = time::now()
-            WHERE episode_type = $type
-        "#;
-
-        self.db
-            .client()
-            .query(sql)
-            .bind(("type", episode_type.to_string()))
-            .bind(("id", last_processed_id.to_string()))
-            .await
-            .context("Failed to update extraction state")?;
-
-        Ok(())
-    }
 }
 
 /// Search result with score
@@ -445,16 +403,3 @@ fn default_confidence() -> f32 {
     1.0
 }
 
-/// Extraction state for tracking processed episodes
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtractionState {
-    pub episode_type: String,
-    pub last_processed_id: Option<String>,
-    pub last_processed_at: Option<surrealdb::sql::Datetime>,
-    #[serde(default = "default_version")]
-    pub processing_version: i32,
-}
-
-fn default_version() -> i32 {
-    1
-}

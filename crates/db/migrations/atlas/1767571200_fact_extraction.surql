@@ -76,12 +76,3 @@ DEFINE FIELD entity ON fact_entity TYPE record<entity>;
 DEFINE FIELD role ON fact_entity TYPE string DEFAULT "subject";
 DEFINE INDEX fact_entity_fact ON fact_entity FIELDS fact;
 DEFINE INDEX fact_entity_entity ON fact_entity FIELDS entity;
-
--- ========== Processing state table ==========
--- Tracks which episodes have been processed for extraction
-DEFINE TABLE extraction_state SCHEMAFULL;
-DEFINE FIELD episode_type ON extraction_state TYPE string;
-DEFINE FIELD last_processed_id ON extraction_state TYPE option<string>;
-DEFINE FIELD last_processed_at ON extraction_state TYPE option<datetime>;
-DEFINE FIELD processing_version ON extraction_state TYPE int DEFAULT 1;
-DEFINE INDEX extraction_state_type ON extraction_state FIELDS episode_type UNIQUE;
