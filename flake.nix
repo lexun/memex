@@ -86,6 +86,12 @@
                   git
                   surrealdb
                 ];
+                git-hooks.hooks.single-line-commit = {
+                  enable = true;
+                  name = "single-line commit";
+                  entry = "bash -c 'test $(grep -cv \"^#\" \"$1\") -le 1' --";
+                  stages = [ "commit-msg" ];
+                };
               }
             ];
           };

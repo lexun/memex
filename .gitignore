@@ -5,6 +5,7 @@
 .devenv*
 devenv.lock
 .direnv
+.pre-commit-config.yaml
 
 # SurrealDB data
 *.db
