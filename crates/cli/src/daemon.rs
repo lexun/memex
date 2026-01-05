@@ -324,10 +324,11 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "list_events" => handle_list_events(request, &stores.atlas).await,
         "get_event" => handle_get_event(request, &stores.atlas).await,
 
-        // Knowledge operations (query, search, extract)
+        // Knowledge operations (query, search, extract, rebuild)
         "query_knowledge" => handle_query_knowledge(request, stores).await,
         "search_knowledge" => handle_search_knowledge(request, stores).await,
         "extract_facts" => handle_extract_facts(request, stores).await,
+        "rebuild_knowledge" => handle_rebuild_knowledge(request, stores).await,
 
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
@@ -1069,6 +1070,77 @@ async fn handle_extract_facts(request: &Request, stores: &Stores) -> Result<serd
     }
 
     Ok(json!({
+        "memos_processed": memos_processed,
+        "facts_created": facts_created,
+        "entities_created": entities_created,
+    }))
+}
+
+#[derive(Deserialize)]
+struct RebuildKnowledgeParams {
+    #[serde(default)]
+    project: Option<String>,
+}
+
+async fn handle_rebuild_knowledge(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    let params: RebuildKnowledgeParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(RebuildKnowledgeParams { project: None });
+
+    let extractor = match &stores.extractor {
+        Some(e) => e,
+        None => {
+            return Err(IpcError::internal("LLM not configured - cannot rebuild knowledge".to_string()));
+        }
+    };
+
+    // Step 1: Delete all derived data
+    let (facts_deleted, entities_deleted) = stores
+        .atlas
+        .delete_derived_data(params.project.as_deref())
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to delete derived data: {}", e)))?;
+
+    // Step 2: Re-extract from all memos
+    let memos = stores
+        .atlas
+        .list_memos(None) // Get all memos
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    let mut facts_created = 0;
+    let mut entities_created = 0;
+    let mut memos_processed = 0;
+
+    for memo in memos {
+        memos_processed += 1;
+        match extractor.extract_from_memo(&memo, params.project.as_deref()).await {
+            Ok(result) => {
+                for fact in result.facts {
+                    if stores.atlas.create_fact(fact).await.is_ok() {
+                        facts_created += 1;
+                    }
+                }
+                for entity in result.entities {
+                    match stores.atlas.find_entity_by_name(&entity.name, entity.project.as_deref()).await {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            if stores.atlas.create_entity(entity).await.is_ok() {
+                                entities_created += 1;
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Extraction failed for memo {}: {}", memo.id_str().unwrap_or_default(), e);
+            }
+        }
+    }
+
+    Ok(json!({
+        "facts_deleted": facts_deleted,
+        "entities_deleted": entities_deleted,
         "memos_processed": memos_processed,
         "facts_created": facts_created,
         "entities_created": entities_created,

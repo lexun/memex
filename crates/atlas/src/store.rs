@@ -352,6 +352,67 @@ impl Store {
         Ok(())
     }
 
+    // ========== Rebuild Operations ==========
+
+    /// Delete all derived data (facts, entities, fact_entity relationships)
+    ///
+    /// This preserves immutable data (memos, events) while clearing
+    /// the knowledge graph for rebuild.
+    pub async fn delete_derived_data(&self, project: Option<&str>) -> Result<(usize, usize)> {
+        let (fact_sql, entity_sql, link_sql) = if let Some(p) = project {
+            (
+                format!("DELETE FROM fact WHERE project = '{}'", p),
+                format!("DELETE FROM entity WHERE project = '{}'", p),
+                format!("DELETE FROM fact_entity WHERE fact.project = '{}'", p),
+            )
+        } else {
+            (
+                "DELETE FROM fact".to_string(),
+                "DELETE FROM entity".to_string(),
+                "DELETE FROM fact_entity".to_string(),
+            )
+        };
+
+        // Delete fact_entity links first (references facts and entities)
+        self.db
+            .client()
+            .query(&link_sql)
+            .await
+            .context("Failed to delete fact_entity links")?;
+
+        // Count before deleting
+        let fact_count = self.db.client()
+            .query("SELECT count() FROM fact GROUP ALL")
+            .await
+            .ok()
+            .and_then(|mut r| r.take::<Option<serde_json::Value>>(0).ok().flatten())
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        let entity_count = self.db.client()
+            .query("SELECT count() FROM entity GROUP ALL")
+            .await
+            .ok()
+            .and_then(|mut r| r.take::<Option<serde_json::Value>>(0).ok().flatten())
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Delete facts
+        self.db
+            .client()
+            .query(&fact_sql)
+            .await
+            .context("Failed to delete facts")?;
+
+        // Delete entities
+        self.db
+            .client()
+            .query(&entity_sql)
+            .await
+            .context("Failed to delete entities")?;
+
+        Ok((fact_count, entity_count))
+    }
 }
 
 /// Search result with score

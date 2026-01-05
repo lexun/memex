@@ -187,6 +187,40 @@ pub async fn handle_knowledge_command(cmd: KnowledgeCommand, socket_path: &Path)
             println!("  Entities created: {}", result.entities_created);
             Ok(())
         }
+
+        KnowledgeCommand::Rebuild { project, yes } => {
+            // Confirmation prompt unless --yes flag is set
+            if !yes {
+                println!("This will delete all facts and entities and re-extract from memos.");
+                if project.is_some() {
+                    println!("Scope: project '{}'", project.as_ref().unwrap());
+                } else {
+                    println!("Scope: ALL projects");
+                }
+                println!();
+                print!("Continue? [y/N] ");
+                use std::io::{self, Write};
+                io::stdout().flush()?;
+
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+
+            println!("Rebuilding knowledge graph...");
+            let result = client.rebuild(project.as_deref()).await?;
+
+            println!("Rebuild complete:");
+            println!("  Facts deleted: {}", result.facts_deleted);
+            println!("  Entities deleted: {}", result.entities_deleted);
+            println!("  Memos processed: {}", result.memos_processed);
+            println!("  Facts created: {}", result.facts_created);
+            println!("  Entities created: {}", result.entities_created);
+            Ok(())
+        }
     }
 }
 

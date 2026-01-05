@@ -99,4 +99,19 @@ pub enum KnowledgeCommand {
         #[arg(short, long, default_value = "20")]
         batch_size: usize,
     },
+
+    /// Rebuild the knowledge graph from scratch
+    ///
+    /// Deletes all derived data (facts, entities) and re-extracts
+    /// from all memos. Use this after schema changes or to regenerate
+    /// with improved extraction logic.
+    Rebuild {
+        /// Filter by project (only rebuild facts for this project)
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }

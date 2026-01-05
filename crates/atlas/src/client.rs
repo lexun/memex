@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::event::Event;
 use crate::Memo;
@@ -213,6 +213,16 @@ pub struct ExtractFactsResult {
     pub entities_created: usize,
 }
 
+/// Result of a knowledge rebuild
+#[derive(Debug, Clone, Deserialize)]
+pub struct RebuildResult {
+    pub facts_deleted: usize,
+    pub entities_deleted: usize,
+    pub memos_processed: usize,
+    pub facts_created: usize,
+    pub entities_created: usize,
+}
+
 /// Client for knowledge operations via the daemon
 #[derive(Debug, Clone)]
 pub struct KnowledgeClient {
@@ -312,5 +322,23 @@ impl KnowledgeClient {
             .context("Failed to extract facts")?;
 
         serde_json::from_value(result).context("Failed to parse extraction response")
+    }
+
+    /// Rebuild the knowledge graph from scratch
+    ///
+    /// Deletes all derived data and re-extracts from all memos.
+    pub async fn rebuild(&self, project: Option<&str>) -> Result<RebuildResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            project: Option<&'a str>,
+        }
+
+        let result = self
+            .client
+            .request("rebuild_knowledge", Params { project })
+            .await
+            .context("Failed to rebuild knowledge")?;
+
+        serde_json::from_value(result).context("Failed to parse rebuild response")
     }
 }
