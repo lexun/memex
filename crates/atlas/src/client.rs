@@ -189,13 +189,20 @@ impl EventClient {
     }
 }
 
-/// Response from discover_context
+/// Response from search_knowledge
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct ContextResult {
+pub struct SearchResult {
     pub query: String,
     pub results: Vec<serde_json::Value>,
     pub count: usize,
-    pub summary: Option<String>,
+}
+
+/// Response from query_knowledge
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct QueryResult {
+    pub query: String,
+    pub answer: String,
+    pub facts_used: usize,
 }
 
 /// Response from extract_facts IPC call
@@ -206,13 +213,13 @@ pub struct ExtractFactsResult {
     pub entities_created: usize,
 }
 
-/// Client for context discovery via the daemon
+/// Client for knowledge operations via the daemon
 #[derive(Debug, Clone)]
-pub struct ContextClient {
+pub struct KnowledgeClient {
     client: IpcClient,
 }
 
-impl ContextClient {
+impl KnowledgeClient {
     /// Create a new client for the given socket path
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
         Self {
@@ -220,13 +227,13 @@ impl ContextClient {
         }
     }
 
-    /// Discover context matching a query (searches extracted facts)
-    pub async fn discover(
+    /// Query knowledge and get an LLM-summarized answer
+    pub async fn query(
         &self,
         query: &str,
         project: Option<&str>,
         limit: Option<usize>,
-    ) -> Result<ContextResult> {
+    ) -> Result<QueryResult> {
         #[derive(Serialize)]
         struct Params<'a> {
             query: &'a str,
@@ -237,7 +244,7 @@ impl ContextClient {
         let result = self
             .client
             .request(
-                "discover_context",
+                "query_knowledge",
                 Params {
                     query,
                     project,
@@ -245,9 +252,39 @@ impl ContextClient {
                 },
             )
             .await
-            .context("Failed to discover context")?;
+            .context("Failed to query knowledge")?;
 
-        serde_json::from_value(result).context("Failed to parse context response")
+        serde_json::from_value(result).context("Failed to parse query response")
+    }
+
+    /// Search for raw facts matching a query
+    pub async fn search(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<SearchResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            query: &'a str,
+            project: Option<&'a str>,
+            limit: Option<usize>,
+        }
+
+        let result = self
+            .client
+            .request(
+                "search_knowledge",
+                Params {
+                    query,
+                    project,
+                    limit,
+                },
+            )
+            .await
+            .context("Failed to search knowledge")?;
+
+        serde_json::from_value(result).context("Failed to parse search response")
     }
 
     /// Extract facts from memos (for backfill)

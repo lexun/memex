@@ -324,10 +324,9 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "list_events" => handle_list_events(request, &stores.atlas).await,
         "get_event" => handle_get_event(request, &stores.atlas).await,
 
-        // Context discovery (cross-store search)
-        "discover_context" => handle_discover_context(request, stores).await,
-
-        // Extraction operations
+        // Knowledge operations (query, search, extract)
+        "query_knowledge" => handle_query_knowledge(request, stores).await,
+        "search_knowledge" => handle_search_knowledge(request, stores).await,
         "extract_facts" => handle_extract_facts(request, stores).await,
 
         // Unknown method
@@ -886,10 +885,10 @@ async fn handle_get_event(request: &Request, store: &AtlasStore) -> Result<serde
         .map_err(|e| IpcError::internal(e.to_string()))
 }
 
-// ========== Context Discovery Handlers ==========
+// ========== Knowledge Handlers ==========
 
 #[derive(Deserialize)]
-struct DiscoverContextParams {
+struct KnowledgeParams {
     query: String,
     #[serde(default)]
     project: Option<String>,
@@ -901,8 +900,78 @@ fn default_limit() -> usize {
     10
 }
 
-async fn handle_discover_context(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
-    let params: DiscoverContextParams = serde_json::from_value(request.params.clone())
+/// Query knowledge and return an LLM-summarized answer
+async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    let params: KnowledgeParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    // Search facts using full-text search
+    let results = stores
+        .atlas
+        .search_facts(&params.query, params.project.as_deref(), Some(params.limit))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    let facts_used = results.len();
+
+    // If no facts found, return empty answer
+    if results.is_empty() {
+        return Ok(json!({
+            "query": params.query,
+            "answer": "",
+            "facts_used": 0,
+        }));
+    }
+
+    // Check if LLM is configured
+    let Some(ref extractor) = stores.extractor else {
+        // No LLM configured, return a simple concatenation of facts
+        let answer = results
+            .iter()
+            .map(|r| format!("- {}", r.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Ok(json!({
+            "query": params.query,
+            "answer": answer,
+            "facts_used": facts_used,
+        }));
+    };
+
+    // Build context from facts
+    let context = results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("{}. {} (confidence: {:.0}%)", i + 1, r.content, r.confidence * 100.0))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Use LLM to summarize
+    let system = "You are a helpful assistant that answers questions based on facts from a knowledge base. \
+        Provide direct, concise answers. If the facts don't fully answer the question, say what you know and note what's missing.";
+
+    let user = format!(
+        "Question: {}\n\nKnown facts:\n{}\n\nAnswer the question based on these facts.",
+        params.query,
+        context
+    );
+
+    let answer = extractor
+        .client()
+        .complete(system, &user)
+        .await
+        .map_err(|e| IpcError::internal(format!("LLM completion failed: {}", e)))?;
+
+    Ok(json!({
+        "query": params.query,
+        "answer": answer,
+        "facts_used": facts_used,
+    }))
+}
+
+/// Search for raw facts matching a query
+async fn handle_search_knowledge(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    let params: KnowledgeParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
     // Search facts using full-text search

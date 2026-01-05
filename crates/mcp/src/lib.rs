@@ -26,7 +26,7 @@ use anyhow::Result;
 use mcp_attr::server::{mcp_server, serve_stdio, McpServer};
 use mcp_attr::ErrorCode;
 
-use atlas::{ContextClient, EventClient, MemoClient};
+use atlas::{EventClient, KnowledgeClient, MemoClient};
 use forge::task::{Task, TaskStatus};
 use forge::TaskClient;
 
@@ -35,7 +35,7 @@ pub struct MemexMcpServer {
     task_client: TaskClient,
     memo_client: MemoClient,
     event_client: EventClient,
-    context_client: ContextClient,
+    knowledge_client: KnowledgeClient,
 }
 
 impl MemexMcpServer {
@@ -44,12 +44,12 @@ impl MemexMcpServer {
         let task_client = TaskClient::new(socket_path);
         let memo_client = MemoClient::new(socket_path);
         let event_client = EventClient::new(socket_path);
-        let context_client = ContextClient::new(socket_path);
+        let knowledge_client = KnowledgeClient::new(socket_path);
         Self {
             task_client,
             memo_client,
             event_client,
-            context_client,
+            knowledge_client,
         }
     }
 
@@ -661,12 +661,12 @@ impl McpServer for MemexMcpServer {
         }
     }
 
-    /// Discover context based on a query
+    /// Query knowledge and get an LLM-summarized answer
     ///
-    /// Searches extracted facts from memos and events. Facts are medium-granularity
-    /// assertions that have been automatically extracted from recorded knowledge.
+    /// Searches extracted facts and uses an LLM to synthesize a natural language
+    /// answer. Use this when you want a direct answer to a question.
     #[tool]
-    async fn discover_context(
+    async fn query_knowledge(
         &self,
         query: String,
         project: Option<String>,
@@ -674,8 +674,39 @@ impl McpServer for MemexMcpServer {
     ) -> mcp_attr::Result<String> {
         let limit = limit.map(|l| l as usize);
         match self
-            .context_client
-            .discover(&query, project.as_deref(), limit)
+            .knowledge_client
+            .query(&query, project.as_deref(), limit)
+            .await
+        {
+            Ok(result) => {
+                if result.answer.is_empty() {
+                    Ok(format!("No relevant knowledge found for: \"{}\"\n\nNote: Facts are extracted from memos. Try recording some memos first.", query))
+                } else {
+                    Ok(result.answer)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to query knowledge: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Search for raw facts matching a query
+    ///
+    /// Returns the raw extracted facts without LLM processing.
+    /// Use this when you want to see the underlying data.
+    #[tool]
+    async fn search_knowledge(
+        &self,
+        query: String,
+        project: Option<String>,
+        limit: Option<i32>,
+    ) -> mcp_attr::Result<String> {
+        let limit = limit.map(|l| l as usize);
+        match self
+            .knowledge_client
+            .search(&query, project.as_deref(), limit)
             .await
         {
             Ok(result) => {
@@ -703,7 +734,7 @@ impl McpServer for MemexMcpServer {
                 }
             }
             Err(e) => {
-                let msg = format!("Failed to discover context: {}", e);
+                let msg = format!("Failed to search knowledge: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
             }
         }

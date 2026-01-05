@@ -12,11 +12,11 @@ pub mod handler;
 pub mod memo;
 pub mod store;
 
-pub use cli::{ContextCommand, EventCommand, MemoCommand};
-pub use client::{ContextClient, ContextResult, EventClient, MemoClient};
+pub use cli::{EventCommand, KnowledgeCommand, MemoCommand};
+pub use client::{EventClient, KnowledgeClient, MemoClient, QueryResult, SearchResult};
 pub use event::{Event, EventAuthority, EventSource};
 pub use extraction::{ExtractionResult, Extractor};
 pub use fact::{Entity, EntityType, EpisodeRef, Fact, FactType};
-pub use handler::{handle_context_command, handle_event_command, handle_memo_command};
+pub use handler::{handle_event_command, handle_knowledge_command, handle_memo_command};
 pub use memo::{Memo, MemoAuthority, MemoSource};
 pub use store::Store;

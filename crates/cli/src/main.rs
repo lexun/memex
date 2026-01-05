@@ -26,6 +26,15 @@ enum Commands {
         /// The content to record
         content: String,
     },
+    /// Query the knowledge base (LLM-summarized answer)
+    Query {
+        /// The query to answer
+        query: String,
+
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+    },
     /// Atlas knowledge base management
     Atlas {
         #[command(subcommand)]
@@ -86,10 +95,10 @@ enum AtlasAction {
         #[command(subcommand)]
         action: atlas::EventCommand,
     },
-    /// Context discovery
-    Context {
+    /// Knowledge discovery (query, search, extract)
+    Knowledge {
         #[command(subcommand)]
-        action: atlas::ContextCommand,
+        action: atlas::KnowledgeCommand,
     },
 }
 
@@ -157,6 +166,20 @@ async fn async_main(cli: Cli) -> Result<()> {
             println!("Recorded: {}", memo.id_str().unwrap_or_default());
             Ok(())
         }
+        Commands::Query { query, project } => {
+            let cfg = config::load_config()?;
+            let socket_path = config::get_socket_path(&cfg)?;
+            let client = atlas::KnowledgeClient::new(&socket_path);
+            let result = client.query(&query, project.as_deref(), Some(10)).await?;
+            if result.answer.is_empty() {
+                println!("No relevant knowledge found for: {}", query);
+                println!();
+                println!("Note: Facts are extracted from memos. Try recording some memos first.");
+            } else {
+                println!("{}", result.answer);
+            }
+            Ok(())
+        }
         Commands::Atlas { action } => {
             let cfg = config::load_config()?;
             let socket_path = config::get_socket_path(&cfg)?;
@@ -167,8 +190,8 @@ async fn async_main(cli: Cli) -> Result<()> {
                 AtlasAction::Event { action } => {
                     atlas::handle_event_command(action, &socket_path).await
                 }
-                AtlasAction::Context { action } => {
-                    atlas::handle_context_command(action, &socket_path).await
+                AtlasAction::Knowledge { action } => {
+                    atlas::handle_knowledge_command(action, &socket_path).await
                 }
             }
         }

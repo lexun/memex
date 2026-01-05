@@ -49,13 +49,30 @@ pub enum EventCommand {
     },
 }
 
-/// Context discovery commands
+/// Knowledge discovery commands
 #[derive(Debug, Subcommand)]
-pub enum ContextCommand {
-    /// Search for facts matching a query
+pub enum KnowledgeCommand {
+    /// Query knowledge and get an LLM-summarized response
     ///
-    /// Facts are automatically extracted from memos and events.
-    /// This searches the extracted knowledge, not raw episodes.
+    /// Searches extracted facts and uses an LLM to summarize
+    /// the results into a natural language response.
+    Query {
+        /// The query to answer
+        query: String,
+
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Maximum number of facts to consider
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Search for raw facts matching a query
+    ///
+    /// Returns the raw extracted facts without LLM processing.
+    /// Use this when you want to see the underlying data.
     Search {
         /// The search query
         query: String,

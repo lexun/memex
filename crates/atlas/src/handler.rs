@@ -6,8 +6,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::cli::{ContextCommand, EventCommand, MemoCommand};
-use crate::client::{ContextClient, EventClient, MemoClient};
+use crate::cli::{EventCommand, KnowledgeCommand, MemoCommand};
+use crate::client::{EventClient, KnowledgeClient, MemoClient};
 use crate::event::Event;
 use crate::Memo;
 
@@ -125,18 +125,37 @@ fn print_event_detail(event: &Event) {
     }
 }
 
-/// Handle a context command via the daemon
-pub async fn handle_context_command(cmd: ContextCommand, socket_path: &Path) -> Result<()> {
-    let client = ContextClient::new(socket_path);
+/// Handle a knowledge command via the daemon
+pub async fn handle_knowledge_command(cmd: KnowledgeCommand, socket_path: &Path) -> Result<()> {
+    let client = KnowledgeClient::new(socket_path);
 
     match cmd {
-        ContextCommand::Search {
+        KnowledgeCommand::Query {
             query,
             project,
             limit,
         } => {
             let result = client
-                .discover(&query, project.as_deref(), Some(limit))
+                .query(&query, project.as_deref(), Some(limit))
+                .await?;
+
+            if result.answer.is_empty() {
+                println!("No relevant knowledge found for: {}", query);
+                println!();
+                println!("Note: Facts are extracted from memos. Try recording some memos first.");
+            } else {
+                println!("{}", result.answer);
+            }
+            Ok(())
+        }
+
+        KnowledgeCommand::Search {
+            query,
+            project,
+            limit,
+        } => {
+            let result = client
+                .search(&query, project.as_deref(), Some(limit))
                 .await?;
 
             if result.results.is_empty() {
@@ -153,7 +172,7 @@ pub async fn handle_context_command(cmd: ContextCommand, socket_path: &Path) -> 
             Ok(())
         }
 
-        ContextCommand::Extract {
+        KnowledgeCommand::Extract {
             project,
             batch_size,
         } => {

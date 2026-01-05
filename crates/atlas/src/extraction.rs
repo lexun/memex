@@ -61,6 +61,11 @@ impl Extractor {
         Self { llm }
     }
 
+    /// Get a reference to the LLM client
+    pub fn client(&self) -> &LlmClient {
+        &self.llm
+    }
+
     /// Extract facts and entities from a memo
     pub async fn extract_from_memo(
         &self,
