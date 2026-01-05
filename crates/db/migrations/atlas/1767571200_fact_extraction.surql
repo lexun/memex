@@ -42,6 +42,7 @@ DEFINE TABLE entity SCHEMAFULL;
 
 -- Core fields
 DEFINE FIELD name ON entity TYPE string;
+DEFINE FIELD description ON entity TYPE string DEFAULT "";
 DEFINE FIELD entity_type ON entity TYPE string DEFAULT "concept";
 DEFINE FIELD project ON entity TYPE option<string>;
 DEFINE FIELD confidence ON entity TYPE float DEFAULT 1.0;

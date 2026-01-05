@@ -41,6 +41,8 @@ struct RawFact {
 struct RawEntity {
     name: String,
     #[serde(default)]
+    description: String,
+    #[serde(default)]
     entity_type: String,
     #[serde(default)]
     aliases: Vec<String>,
@@ -142,6 +144,7 @@ impl Extractor {
             .map(|e| {
                 let entity_type = parse_entity_type(&e.entity_type);
                 let mut entity = Entity::new(e.name, entity_type);
+                entity.description = e.description;
                 entity.source_episodes.push(episode_ref.clone());
                 entity.aliases = e.aliases;
                 if let Some(p) = project {
@@ -209,6 +212,7 @@ FACTS are medium-granularity assertions - not too specific, not too vague. Each 
 - Include relevant context (e.g., "The memex project uses SurrealDB" not just "uses SurrealDB")
 
 ENTITIES are named things mentioned in the text: projects, people, technologies, concepts, tasks, or documents.
+Each entity needs a description that clarifies what it represents in this specific context.
 
 Respond with JSON only (no markdown, no explanation):
 {
@@ -222,6 +226,7 @@ Respond with JSON only (no markdown, no explanation):
   "entities": [
     {
       "name": "Canonical name",
+      "description": "Brief description of what this entity represents in context",
       "entity_type": "project|person|technology|concept|task|document",
       "aliases": ["alternative", "names"]
     }

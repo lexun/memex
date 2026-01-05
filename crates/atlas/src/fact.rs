@@ -103,6 +103,10 @@ pub struct Entity {
     /// Canonical name of the entity
     pub name: String,
 
+    /// Brief description of what this entity represents in context
+    #[serde(default)]
+    pub description: String,
+
     /// Entity type classification (stored as string for DB compatibility)
     #[serde(default)]
     pub entity_type: String,
@@ -212,6 +216,7 @@ impl Entity {
         Self {
             id: None,
             name: name.into(),
+            description: String::new(),
             entity_type: entity_type.to_string(),
             project: None,
             confidence: 1.0,
@@ -220,6 +225,12 @@ impl Entity {
             created_at: now.clone(),
             updated_at: now,
         }
+    }
+
+    /// Set the description
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
     }
 
     /// Set the project context
