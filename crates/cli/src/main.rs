@@ -1,9 +1,25 @@
+mod completions;
 mod config;
 mod daemon;
 mod pid;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::env::CompleteEnv;
+
+/// Supported shells for completion generation
+#[derive(Clone, Debug, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Elvish,
+    Fish,
+    Powershell,
+    Zsh,
+    /// Generate carapace spec (YAML)
+    Carapace,
+    /// Auto-detect and install completions
+    Install,
+}
 
 #[derive(Parser)]
 #[command(name = "memex")]
@@ -57,6 +73,12 @@ enum Commands {
     },
     /// Initialize memex configuration
     Init,
+    /// Generate shell completions
+    #[command(hide = true)]
+    Completions {
+        /// Shell to generate completions for
+        shell: CompletionShell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -112,7 +134,16 @@ enum McpAction {
 }
 
 fn main() -> Result<()> {
+    // Handle dynamic shell completions (if triggered by shell completion request)
+    CompleteEnv::with_factory(Cli::command).complete();
+
     let cli = Cli::parse();
+
+    // Handle completions command synchronously
+    if let Commands::Completions { shell } = &cli.command {
+        completions::generate_completions(shell.clone());
+        return Ok(());
+    }
 
     // Handle daemon start/restart/run synchronously (before any tokio runtime)
     // This allows proper fork() without runtime conflicts
@@ -206,6 +237,7 @@ async fn async_main(cli: Cli) -> Result<()> {
         Commands::Mcp { action } => handle_mcp(action).await,
         Commands::Config { action } => handle_config(action),
         Commands::Init => handle_init(),
+        Commands::Completions { .. } => unreachable!("Handled in main()"),
     }
 }
 
