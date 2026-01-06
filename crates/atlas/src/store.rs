@@ -577,8 +577,21 @@ impl Store {
 
     /// Count facts with and without embeddings (diagnostic)
     pub async fn count_fact_embeddings(&self) -> Result<(usize, usize)> {
-        // Count facts with non-empty embeddings
-        let sql_with = "SELECT count() FROM fact WHERE array::len(embedding) > 0 GROUP ALL";
+        // Count total facts
+        let sql_total = "SELECT count() FROM fact GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(sql_total)
+            .await
+            .context("Failed to count facts")?;
+        let total_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let total = total_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Count facts with non-empty embeddings (handle null with coalesce)
+        let sql_with = "SELECT count() FROM fact WHERE array::len(embedding ?? []) > 0 GROUP ALL";
         let mut response = self
             .db
             .client()
@@ -590,18 +603,7 @@ impl Store {
             .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
             .unwrap_or(0) as usize;
 
-        // Count facts with empty embeddings
-        let sql_without = "SELECT count() FROM fact WHERE array::len(embedding) = 0 GROUP ALL";
-        let mut response = self
-            .db
-            .client()
-            .query(sql_without)
-            .await
-            .context("Failed to count facts without embeddings")?;
-        let without_count: Option<serde_json::Value> = response.take(0).ok().flatten();
-        let without_embeddings = without_count
-            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
-            .unwrap_or(0) as usize;
+        let without_embeddings = total.saturating_sub(with_embeddings);
 
         Ok((with_embeddings, without_embeddings))
     }
