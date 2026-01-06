@@ -247,7 +247,61 @@ pub async fn handle_knowledge_command(cmd: KnowledgeCommand, socket_path: &Path)
 
             Ok(())
         }
+
+        KnowledgeCommand::Entities {
+            project,
+            entity_type,
+            limit,
+        } => {
+            let entities = client
+                .list_entities(project.as_deref(), entity_type.as_deref(), limit)
+                .await?;
+
+            if entities.is_empty() {
+                println!("No entities found.");
+                println!();
+                println!("Note: Entities are extracted from memos. Try recording some memos first.");
+            } else {
+                println!("Found {} entities:", entities.len());
+                println!();
+                for entity in entities {
+                    print_entity_summary(&entity);
+                }
+            }
+            Ok(())
+        }
+
+        KnowledgeCommand::Entity { name, project } => {
+            let result = client
+                .get_entity_facts(&name, project.as_deref())
+                .await?;
+
+            if result.facts.is_empty() {
+                println!("No facts found for entity: {}", name);
+                println!();
+                println!("The entity may not exist or have no linked facts.");
+            } else {
+                println!("Found {} fact(s) about \"{}\":", result.count, result.entity);
+                println!();
+                for fact in result.facts {
+                    print_entity_fact(&fact);
+                }
+            }
+            Ok(())
+        }
     }
+}
+
+fn print_entity_summary(entity: &crate::Entity) {
+    let id = entity.id_str().unwrap_or_default();
+    println!("[{}] {} ({})", entity.entity_type, entity.name, id);
+    if !entity.description.is_empty() {
+        println!("      {}", entity.description);
+    }
+}
+
+fn print_entity_fact(fact: &crate::Fact) {
+    println!("[{}] {}", fact.fact_type, fact.content);
 }
 
 fn print_fact(fact: &serde_json::Value) {

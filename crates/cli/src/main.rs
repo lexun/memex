@@ -97,6 +97,31 @@ enum KnowledgeCommands {
     /// Show knowledge system status
     #[command(display_order = 7)]
     Status,
+    /// List known entities
+    #[command(display_order = 8)]
+    Entities {
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Filter by entity type
+        #[arg(short = 't', long)]
+        entity_type: Option<String>,
+
+        /// Maximum results
+        #[arg(short, long)]
+        limit: Option<usize>,
+    },
+    /// Get facts about a specific entity
+    #[command(display_order = 9)]
+    Entity {
+        /// Entity name to look up
+        name: String,
+
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -321,6 +346,44 @@ async fn async_main(command: Commands) -> Result<()> {
                     println!("         Set OPENAI_API_KEY or configure llm.api_key.");
                 }
 
+                Ok(())
+            }
+            KnowledgeCommands::Entities { project, entity_type, limit } => {
+                let client = atlas::KnowledgeClient::new(&socket_path);
+                let entities = client.list_entities(project.as_deref(), entity_type.as_deref(), limit).await?;
+
+                if entities.is_empty() {
+                    println!("No entities found.");
+                    println!();
+                    println!("Note: Entities are extracted from memos.");
+                } else {
+                    println!("Found {} entities:", entities.len());
+                    println!();
+                    for entity in entities {
+                        let id = entity.id_str().unwrap_or_default();
+                        println!("[{}] {} ({})", entity.entity_type, entity.name, id);
+                        if !entity.description.is_empty() {
+                            println!("      {}", entity.description);
+                        }
+                    }
+                }
+                Ok(())
+            }
+            KnowledgeCommands::Entity { name, project } => {
+                let client = atlas::KnowledgeClient::new(&socket_path);
+                let result = client.get_entity_facts(&name, project.as_deref()).await?;
+
+                if result.facts.is_empty() {
+                    println!("No facts found for entity: {}", name);
+                    println!();
+                    println!("The entity may not exist or have no linked facts.");
+                } else {
+                    println!("Found {} fact(s) about \"{}\":", result.count, result.entity);
+                    println!();
+                    for fact in result.facts {
+                        println!("[{}] {}", fact.fact_type, fact.content);
+                    }
+                }
                 Ok(())
             }
         },

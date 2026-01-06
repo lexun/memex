@@ -120,4 +120,34 @@ pub enum KnowledgeCommand {
     /// Displays statistics about facts and embeddings, useful for
     /// diagnosing search issues.
     Status,
+
+    /// List known entities
+    ///
+    /// Shows entities (projects, people, technologies, concepts) that have
+    /// been extracted from memos.
+    Entities {
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Filter by entity type (project, person, technology, concept, task, document)
+        #[arg(short = 't', long)]
+        entity_type: Option<String>,
+
+        /// Maximum number of entities to show
+        #[arg(short, long)]
+        limit: Option<usize>,
+    },
+
+    /// Get facts about a specific entity
+    ///
+    /// Shows all facts that reference the named entity.
+    Entity {
+        /// Entity name to look up
+        name: String,
+
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+    },
 }

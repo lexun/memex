@@ -96,6 +96,16 @@ pub fn command_registry() -> Vec<CommandInfo> {
             description: "Knowledge system status",
             category: Category::Explore,
         },
+        CommandInfo {
+            name: "entities",
+            description: "List known entities",
+            category: Category::Explore,
+        },
+        CommandInfo {
+            name: "entity",
+            description: "Get facts about entity",
+            category: Category::Explore,
+        },
 
         // Services - background processes
         CommandInfo {
