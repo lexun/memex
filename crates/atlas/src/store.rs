@@ -362,17 +362,15 @@ impl Store {
         Ok(entities)
     }
 
-    /// Link a fact to an entity using a graph edge
-    ///
-    /// Creates a proper graph edge for graph traversal queries.
+    /// Link a fact to an entity
     pub async fn link_fact_entity(
         &self,
         fact_id: &Thing,
         entity_id: &Thing,
         role: &str,
     ) -> Result<()> {
-        // Use RELATE to create a proper graph edge for traversal
-        let sql = "RELATE $fact->fact_entity->$entity SET role = $role";
+        // Use regular CREATE for compatibility with SCHEMAFULL table
+        let sql = "CREATE fact_entity SET fact = $fact, entity = $entity, role = $role";
 
         self.db
             .client()
@@ -388,10 +386,11 @@ impl Store {
 
     /// Get facts related to an entity
     pub async fn get_facts_for_entity(&self, entity_id: &str) -> Result<Vec<Fact>> {
-        // Traverse graph edge: entity <- fact_entity <- fact
+        // Query via fact_entity join table
         let sql = r#"
-            SELECT <-fact_entity<-fact.* AS facts
-            FROM type::thing("entity", $entity_id)
+            SELECT * FROM fact WHERE id IN (
+                SELECT fact FROM fact_entity WHERE entity = type::thing("entity", $entity_id)
+            )
         "#;
 
         let mut response = self
@@ -402,13 +401,7 @@ impl Store {
             .await
             .context("Failed to get facts for entity")?;
 
-        // The result is an array of objects with 'facts' field
-        #[derive(Deserialize)]
-        struct Row {
-            facts: Vec<Fact>,
-        }
-        let rows: Vec<Row> = response.take(0).unwrap_or_default();
-        let facts = rows.into_iter().flat_map(|r| r.facts).collect();
+        let facts: Vec<Fact> = response.take(0).unwrap_or_default();
         Ok(facts)
     }
 
@@ -432,10 +425,11 @@ impl Store {
 
     /// Get entities mentioned by a fact
     pub async fn get_entities_for_fact(&self, fact_id: &str) -> Result<Vec<Entity>> {
-        // Traverse graph edge: fact -> fact_entity -> entity
+        // Query via fact_entity join table
         let sql = r#"
-            SELECT ->fact_entity->entity.* AS entities
-            FROM type::thing("fact", $fact_id)
+            SELECT * FROM entity WHERE id IN (
+                SELECT entity FROM fact_entity WHERE fact = type::thing("fact", $fact_id)
+            )
         "#;
 
         let mut response = self
@@ -446,13 +440,7 @@ impl Store {
             .await
             .context("Failed to get entities for fact")?;
 
-        // The result is an array of objects with 'entities' field
-        #[derive(Deserialize)]
-        struct Row {
-            entities: Vec<Entity>,
-        }
-        let rows: Vec<Row> = response.take(0).unwrap_or_default();
-        let entities = rows.into_iter().flat_map(|r| r.entities).collect();
+        let entities: Vec<Entity> = response.take(0).unwrap_or_default();
         Ok(entities)
     }
 
@@ -462,11 +450,16 @@ impl Store {
     pub async fn get_related_facts(&self, fact_id: &str, limit: Option<usize>) -> Result<Vec<Fact>> {
         let limit = limit.unwrap_or(10);
 
-        // Find facts that share entities with the given fact
-        // Traversal: source_fact -> fact_entity -> entity <- fact_entity <- other_fact
+        // Find facts that share entities with the given fact via join table
+        // 1. Get entities linked to this fact
+        // 2. Get other facts linked to those entities
         let sql = r#"
-            SELECT ->fact_entity->entity<-fact_entity<-fact.* AS related_facts
-            FROM type::thing("fact", $fact_id)
+            SELECT * FROM fact WHERE id IN (
+                SELECT fact FROM fact_entity WHERE entity IN (
+                    SELECT entity FROM fact_entity WHERE fact = type::thing("fact", $fact_id)
+                )
+            ) AND id != type::thing("fact", $fact_id)
+            LIMIT $limit
         "#;
 
         let mut response = self
@@ -474,35 +467,11 @@ impl Store {
             .client()
             .query(sql)
             .bind(("fact_id", fact_id.to_string()))
+            .bind(("limit", limit))
             .await
             .context("Failed to get related facts")?;
 
-        // The result is an object with 'related_facts' containing arrays of facts
-        #[derive(Deserialize)]
-        struct Row {
-            #[serde(default)]
-            related_facts: Vec<Fact>,
-        }
-
-        let rows: Vec<Row> = response.take(0).unwrap_or_default();
-
-        // Flatten, deduplicate, and exclude the source fact
-        let source_id = format!("fact:{}", fact_id);
-        let mut facts: Vec<Fact> = rows
-            .into_iter()
-            .flat_map(|r| r.related_facts)
-            .filter(|f| f.id_str().map(|id| id != source_id).unwrap_or(true))
-            .collect();
-
-        // Deduplicate by fact ID
-        let mut seen = std::collections::HashSet::new();
-        facts.retain(|f| {
-            let id = f.id_str().unwrap_or_default();
-            seen.insert(id)
-        });
-
-        // Apply limit
-        facts.truncate(limit);
+        let facts: Vec<Fact> = response.take(0).unwrap_or_default();
         Ok(facts)
     }
 

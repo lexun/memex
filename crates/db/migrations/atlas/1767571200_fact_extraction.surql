@@ -75,18 +75,10 @@ DEFINE INDEX entity_type ON entity FIELDS entity_type;
 -- Unique constraint: name + project should be unique
 DEFINE INDEX entity_unique ON entity FIELDS name, project UNIQUE;
 
--- ========== Fact-Entity relationship (graph edge) ==========
--- Uses RELATE to create graph edges for traversal queries
--- Example: RELATE fact:abc->fact_entity->entity:xyz SET role = "mentions"
+-- ========== Fact-Entity relationship ==========
 DEFINE TABLE fact_entity SCHEMAFULL;
-
--- Graph edge fields (created automatically by RELATE)
-DEFINE FIELD in ON fact_entity TYPE record<fact>;
-DEFINE FIELD out ON fact_entity TYPE record<entity>;
-
--- Relationship metadata
+DEFINE FIELD fact ON fact_entity TYPE record<fact>;
+DEFINE FIELD entity ON fact_entity TYPE record<entity>;
 DEFINE FIELD role ON fact_entity TYPE string DEFAULT "mentions";
-
--- Indexes for efficient traversal
-DEFINE INDEX fact_entity_in ON fact_entity FIELDS in;
-DEFINE INDEX fact_entity_out ON fact_entity FIELDS out;
+DEFINE INDEX fact_entity_fact ON fact_entity FIELDS fact;
+DEFINE INDEX fact_entity_entity ON fact_entity FIELDS entity;
