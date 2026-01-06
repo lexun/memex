@@ -211,6 +211,8 @@ pub struct ExtractFactsResult {
     pub memos_processed: usize,
     pub facts_created: usize,
     pub entities_created: usize,
+    #[serde(default)]
+    pub links_created: usize,
 }
 
 /// Result of a knowledge rebuild
@@ -221,6 +223,8 @@ pub struct RebuildResult {
     pub memos_processed: usize,
     pub facts_created: usize,
     pub entities_created: usize,
+    #[serde(default)]
+    pub links_created: usize,
 }
 
 /// Client for knowledge operations via the daemon

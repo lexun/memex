@@ -15,8 +15,16 @@ use crate::memo::Memo;
 /// Result of extracting facts from an episode
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExtractionResult {
-    pub facts: Vec<Fact>,
+    pub facts: Vec<ExtractedFact>,
     pub entities: Vec<Entity>,
+}
+
+/// A fact with its entity references (for linking)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedFact {
+    pub fact: Fact,
+    /// Entity names referenced by this fact (to be resolved to entity IDs)
+    pub entity_refs: Vec<String>,
 }
 
 /// Raw extraction response from LLM (before processing)
@@ -35,6 +43,9 @@ struct RawFact {
     fact_type: String,
     #[serde(default = "default_confidence")]
     confidence: f32,
+    /// Entity names referenced by this fact
+    #[serde(default)]
+    entities: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,7 +135,7 @@ impl Extractor {
             .with_context(|| format!("Failed to parse extraction response: {}", json_str))?;
 
         // Convert to proper types with provenance
-        let mut facts: Vec<Fact> = raw
+        let mut extracted_facts: Vec<ExtractedFact> = raw
             .facts
             .into_iter()
             .map(|f| {
@@ -134,17 +145,23 @@ impl Extractor {
                 if let Some(p) = project {
                     fact = fact.with_project(p);
                 }
-                fact
+                ExtractedFact {
+                    fact,
+                    entity_refs: f.entities,
+                }
             })
             .collect();
 
         // Generate embeddings for facts
-        if !facts.is_empty() {
-            let texts: Vec<String> = facts.iter().map(|f| f.content.clone()).collect();
+        if !extracted_facts.is_empty() {
+            let texts: Vec<String> = extracted_facts
+                .iter()
+                .map(|ef| ef.fact.content.clone())
+                .collect();
             match self.llm.embed(texts).await {
                 Ok(embeddings) => {
-                    for (fact, embedding) in facts.iter_mut().zip(embeddings.into_iter()) {
-                        fact.embedding = embedding;
+                    for (ef, embedding) in extracted_facts.iter_mut().zip(embeddings.into_iter()) {
+                        ef.fact.embedding = embedding;
                     }
                 }
                 Err(e) => {
@@ -170,7 +187,10 @@ impl Extractor {
             })
             .collect();
 
-        Ok(ExtractionResult { facts, entities })
+        Ok(ExtractionResult {
+            facts: extracted_facts,
+            entities,
+        })
     }
 }
 
@@ -226,6 +246,7 @@ FACTS are medium-granularity assertions - not too specific, not too vague. Each 
 - Be self-contained and understandable without the source text
 - Capture a single assertion, decision, preference, question, or specification
 - Include relevant context (e.g., "The memex project uses SurrealDB" not just "uses SurrealDB")
+- List which entities from the text are referenced by this fact
 
 ENTITIES are named things mentioned in the text: projects, people, technologies, concepts, tasks, or documents.
 Each entity needs a description that clarifies what it represents in this specific context.
@@ -236,7 +257,8 @@ Respond with JSON only (no markdown, no explanation):
     {
       "content": "The fact as a complete assertion",
       "fact_type": "statement|decision|preference|question|specification",
-      "confidence": 0.0-1.0
+      "confidence": 0.0-1.0,
+      "entities": ["Entity Name 1", "Entity Name 2"]
     }
   ],
   "entities": [
@@ -250,7 +272,8 @@ Respond with JSON only (no markdown, no explanation):
 }
 
 If the input contains no extractable facts or entities, return empty arrays.
-Use high confidence (0.9-1.0) for explicit statements, lower (0.6-0.8) for inferences."#;
+Use high confidence (0.9-1.0) for explicit statements, lower (0.6-0.8) for inferences.
+The entities array in each fact should contain canonical names matching the entities list."#;
 
 #[cfg(test)]
 mod tests {

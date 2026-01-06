@@ -18,7 +18,7 @@ pub use client::{
     RebuildResult, SearchResult,
 };
 pub use event::{Event, EventAuthority, EventSource};
-pub use extraction::{ExtractionResult, Extractor};
+pub use extraction::{ExtractedFact, ExtractionResult, Extractor};
 pub use fact::{Entity, EntityType, EpisodeRef, Fact, FactType};
 pub use handler::{handle_event_command, handle_knowledge_command, handle_memo_command};
 pub use memo::{Memo, MemoAuthority, MemoSource};

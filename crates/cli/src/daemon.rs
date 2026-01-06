@@ -793,25 +793,55 @@ async fn handle_record_memo(request: &Request, stores: &Stores) -> Result<serde_
     if let Some(ref extractor) = stores.extractor {
         match extractor.extract_from_memo(&memo, None).await {
             Ok(result) => {
-                for fact in result.facts {
-                    if let Err(e) = stores.atlas.create_fact(fact).await {
-                        tracing::warn!("Failed to store extracted fact: {}", e);
-                    }
-                }
+                // First, store all entities and build a name -> entity map
+                let mut entity_map: std::collections::HashMap<String, atlas::Entity> = std::collections::HashMap::new();
+
                 for entity in result.entities {
+                    let entity_name = entity.name.clone();
+                    let project = entity.project.clone();
+
                     // Try to find existing entity or create new
-                    match stores.atlas.find_entity_by_name(&entity.name, entity.project.as_deref()).await {
-                        Ok(Some(_existing)) => {
-                            // Entity already exists, skip for now
+                    match stores.atlas.find_entity_by_name(&entity_name, project.as_deref()).await {
+                        Ok(Some(existing)) => {
+                            // Entity already exists, use it
+                            entity_map.insert(entity_name, existing);
                             // TODO: merge source_episodes
                         }
                         Ok(None) => {
-                            if let Err(e) = stores.atlas.create_entity(entity).await {
-                                tracing::warn!("Failed to store extracted entity: {}", e);
+                            match stores.atlas.create_entity(entity).await {
+                                Ok(created) => {
+                                    entity_map.insert(entity_name, created);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to store extracted entity: {}", e);
+                                }
                             }
                         }
                         Err(e) => {
                             tracing::warn!("Failed to check for existing entity: {}", e);
+                        }
+                    }
+                }
+
+                // Store facts and create entity links
+                for extracted_fact in result.facts {
+                    match stores.atlas.create_fact(extracted_fact.fact).await {
+                        Ok(created_fact) => {
+                            // Link fact to its referenced entities
+                            if let (Some(ref fact_id), entity_refs) = (&created_fact.id, &extracted_fact.entity_refs) {
+                                for entity_name in entity_refs {
+                                    if let Some(entity) = entity_map.get(entity_name) {
+                                        if let Some(ref entity_id) = entity.id {
+                                            if let Err(e) = stores.atlas.link_fact_entity(fact_id, entity_id, "mentions").await {
+                                                tracing::warn!("Failed to link fact to entity '{}': {}", entity_name, e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to store extracted fact: {}", e);
                         }
                     }
                 }
@@ -1119,6 +1149,7 @@ async fn handle_extract_facts(request: &Request, stores: &Stores) -> Result<serd
     let mut facts_created = 0;
     let mut entities_created = 0;
     let mut memos_processed = 0;
+    let mut links_created = 0;
 
     // Get all memos
     let memos = stores
@@ -1131,22 +1162,43 @@ async fn handle_extract_facts(request: &Request, stores: &Stores) -> Result<serd
         memos_processed += 1;
         match extractor.extract_from_memo(&memo, params.project.as_deref()).await {
             Ok(result) => {
-                for fact in result.facts {
-                    if let Ok(_) = stores.atlas.create_fact(fact).await {
-                        facts_created += 1;
-                    }
-                }
+                // First, store all entities and build a name -> entity map
+                let mut entity_map: std::collections::HashMap<String, atlas::Entity> = std::collections::HashMap::new();
+
                 for entity in result.entities {
-                    match stores.atlas.find_entity_by_name(&entity.name, entity.project.as_deref()).await {
-                        Ok(Some(_)) => {
-                            // Entity exists, skip
+                    let entity_name = entity.name.clone();
+                    let project = entity.project.clone();
+
+                    match stores.atlas.find_entity_by_name(&entity_name, project.as_deref()).await {
+                        Ok(Some(existing)) => {
+                            entity_map.insert(entity_name, existing);
                         }
                         Ok(None) => {
-                            if let Ok(_) = stores.atlas.create_entity(entity).await {
+                            if let Ok(created) = stores.atlas.create_entity(entity).await {
                                 entities_created += 1;
+                                entity_map.insert(entity_name, created);
                             }
                         }
                         Err(_) => {}
+                    }
+                }
+
+                // Store facts and create entity links
+                for extracted_fact in result.facts {
+                    if let Ok(created_fact) = stores.atlas.create_fact(extracted_fact.fact).await {
+                        facts_created += 1;
+
+                        if let Some(ref fact_id) = created_fact.id {
+                            for entity_name in &extracted_fact.entity_refs {
+                                if let Some(entity) = entity_map.get(entity_name) {
+                                    if let Some(ref entity_id) = entity.id {
+                                        if stores.atlas.link_fact_entity(fact_id, entity_id, "mentions").await.is_ok() {
+                                            links_created += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1160,6 +1212,7 @@ async fn handle_extract_facts(request: &Request, stores: &Stores) -> Result<serd
         "memos_processed": memos_processed,
         "facts_created": facts_created,
         "entities_created": entities_created,
+        "links_created": links_created,
     }))
 }
 
@@ -1198,24 +1251,50 @@ async fn handle_rebuild_knowledge(request: &Request, stores: &Stores) -> Result<
     let mut entities_created = 0;
     let mut memos_processed = 0;
 
+    let mut links_created = 0;
+
     for memo in memos {
         memos_processed += 1;
         match extractor.extract_from_memo(&memo, params.project.as_deref()).await {
             Ok(result) => {
-                for fact in result.facts {
-                    if stores.atlas.create_fact(fact).await.is_ok() {
-                        facts_created += 1;
-                    }
-                }
+                // First, store all entities and build a name -> entity map
+                let mut entity_map: std::collections::HashMap<String, atlas::Entity> = std::collections::HashMap::new();
+
                 for entity in result.entities {
-                    match stores.atlas.find_entity_by_name(&entity.name, entity.project.as_deref()).await {
-                        Ok(Some(_)) => {}
+                    let entity_name = entity.name.clone();
+                    let project = entity.project.clone();
+
+                    match stores.atlas.find_entity_by_name(&entity_name, project.as_deref()).await {
+                        Ok(Some(existing)) => {
+                            entity_map.insert(entity_name, existing);
+                        }
                         Ok(None) => {
-                            if stores.atlas.create_entity(entity).await.is_ok() {
+                            if let Ok(created) = stores.atlas.create_entity(entity).await {
                                 entities_created += 1;
+                                entity_map.insert(entity_name, created);
                             }
                         }
                         Err(_) => {}
+                    }
+                }
+
+                // Store facts and create entity links
+                for extracted_fact in result.facts {
+                    if let Ok(created_fact) = stores.atlas.create_fact(extracted_fact.fact).await {
+                        facts_created += 1;
+
+                        // Link fact to its referenced entities
+                        if let Some(ref fact_id) = created_fact.id {
+                            for entity_name in &extracted_fact.entity_refs {
+                                if let Some(entity) = entity_map.get(entity_name) {
+                                    if let Some(ref entity_id) = entity.id {
+                                        if stores.atlas.link_fact_entity(fact_id, entity_id, "mentions").await.is_ok() {
+                                            links_created += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1231,6 +1310,7 @@ async fn handle_rebuild_knowledge(request: &Request, stores: &Stores) -> Result<
         "memos_processed": memos_processed,
         "facts_created": facts_created,
         "entities_created": entities_created,
+        "links_created": links_created,
     }))
 }
 

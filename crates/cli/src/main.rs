@@ -293,8 +293,8 @@ async fn async_main(command: Commands) -> Result<()> {
                 let result = client.rebuild(project.as_deref()).await?;
                 println!("Rebuilt knowledge:");
                 println!("  Deleted: {} facts, {} entities", result.facts_deleted, result.entities_deleted);
-                println!("  Created: {} facts, {} entities from {} memos",
-                    result.facts_created, result.entities_created, result.memos_processed);
+                println!("  Created: {} facts, {} entities, {} links from {} memos",
+                    result.facts_created, result.entities_created, result.links_created, result.memos_processed);
                 Ok(())
             }
             KnowledgeCommands::Status => {
