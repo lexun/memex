@@ -62,7 +62,7 @@ impl Daemon {
         })
     }
 
-    /// Start the daemon (forks to background)
+    /// Start the daemon (forks to background and re-execs to avoid macOS fork issues)
     pub fn start(self) -> Result<()> {
         // Ensure config directory exists before forking
         if let Some(parent) = self.socket_path.parent() {
@@ -88,6 +88,16 @@ impl Daemon {
         // Child process: become session leader
         setsid().context("Failed to create new session")?;
 
+        // Re-exec ourselves with daemon run to get a clean process
+        // This avoids macOS fork() + Objective-C issues
+        let exe = std::env::current_exe()?;
+        let exe_str = exe.to_string_lossy().to_string();
+        let err = exec::execvp(&exe_str, &[&exe_str, "daemon", "run"]);
+        anyhow::bail!("Failed to exec daemon: {}", err);
+    }
+
+    /// Run the daemon directly (called after re-exec)
+    pub fn run_foreground() -> Result<()> {
         // Redirect stdin/stdout/stderr to /dev/null
         let dev_null = File::open("/dev/null")?;
         let null_fd = dev_null.as_raw_fd();
@@ -109,9 +119,19 @@ impl Daemon {
             }
         }
 
+        let config = load_config()?;
+        let socket_path = get_socket_path(&config)?;
+        let pid_path = get_pid_file(&config)?;
+
+        let daemon = Self {
+            config,
+            socket_path,
+            pid_path,
+        };
+
         // Build and run tokio runtime in daemon process
         let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(self.run_daemon())
+        rt.block_on(daemon.run_daemon())
     }
 
     /// Main daemon loop

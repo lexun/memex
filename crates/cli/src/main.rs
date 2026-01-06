@@ -69,6 +69,9 @@ enum DaemonAction {
     Status,
     /// Restart the daemon
     Restart,
+    /// Run daemon in foreground (internal use after fork+exec)
+    #[command(hide = true)]
+    Run,
 }
 
 #[derive(Subcommand)]
@@ -111,7 +114,7 @@ enum McpAction {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Handle daemon start/restart synchronously (before any tokio runtime)
+    // Handle daemon start/restart/run synchronously (before any tokio runtime)
     // This allows proper fork() without runtime conflicts
     match &cli.command {
         Commands::Daemon { action: DaemonAction::Start } => {
@@ -133,6 +136,10 @@ fn main() -> Result<()> {
             }
             let daemon = daemon::Daemon::new()?;
             return daemon.start();
+        }
+        Commands::Daemon { action: DaemonAction::Run } => {
+            // Called after fork+exec, run daemon directly
+            return daemon::Daemon::run_foreground();
         }
         _ => {}
     }
@@ -204,7 +211,7 @@ async fn async_main(cli: Cli) -> Result<()> {
 
 async fn handle_daemon(action: DaemonAction) -> Result<()> {
     match action {
-        DaemonAction::Start | DaemonAction::Restart => {
+        DaemonAction::Start | DaemonAction::Restart | DaemonAction::Run => {
             // Handled in main() before runtime starts
             unreachable!()
         }
