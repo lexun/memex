@@ -43,7 +43,7 @@
       formatter = forEachSupportedSystem ({ pkgs, ... }: pkgs.nixfmt-rfc-style);
 
       packages = forEachSupportedSystem (
-        { pkgs, ... }:
+        { pkgs, system, ... }:
         let
           memexPackage = pkgs.rustPlatform.buildRustPackage {
             pname = "memex";
@@ -60,7 +60,12 @@
 
             nativeBuildInputs = with pkgs; [
               pkg-config
+              # Required for surrealdb-librocksdb-sys bindgen
+              llvmPackages.libclang
             ];
+
+            # Set LIBCLANG_PATH for bindgen
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           };
         in
         {
