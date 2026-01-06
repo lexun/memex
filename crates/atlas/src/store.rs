@@ -352,6 +352,163 @@ impl Store {
         Ok(())
     }
 
+    /// Hybrid search combining BM25 text search and vector similarity
+    ///
+    /// Uses reciprocal rank fusion (RRF) to combine results from both searches.
+    /// Falls back to BM25-only if no query embedding is provided.
+    pub async fn hybrid_search_facts(
+        &self,
+        text_query: &str,
+        query_embedding: Option<&[f32]>,
+        project: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<FactSearchResult>> {
+        let limit = limit.unwrap_or(10);
+
+        // BM25 search
+        let bm25_results = self.search_facts(text_query, project, Some(limit * 2)).await?;
+
+        // If no embedding, return BM25 results only
+        let query_embedding = match query_embedding {
+            Some(e) if !e.is_empty() => e,
+            _ => return Ok(bm25_results.into_iter().take(limit).collect()),
+        };
+
+        // Vector similarity search (gracefully handle failures)
+        let vector_results = match self
+            .vector_search_facts(query_embedding, project, Some(limit * 2))
+            .await
+        {
+            Ok(results) => results,
+            Err(e) => {
+                tracing::warn!("Vector search failed, using BM25 only: {}", e);
+                return Ok(bm25_results.into_iter().take(limit).collect());
+            }
+        };
+
+        // Combine using reciprocal rank fusion
+        let combined = self.fuse_results(bm25_results, vector_results, limit);
+        Ok(combined)
+    }
+
+    /// Search facts using vector similarity
+    async fn vector_search_facts(
+        &self,
+        query_embedding: &[f32],
+        project: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<FactSearchResult>> {
+        // SurrealDB vector search uses the KNN operator <|K,D|>
+        // K = number of results, D = distance (optional, defaults to index distance)
+        let k = limit.unwrap_or(10);
+
+        let mut sql = format!(
+            "SELECT *, vector::similarity::cosine(embedding, $embedding) AS score \
+             FROM fact WHERE embedding <|{k}|> $embedding"
+        );
+
+        if project.is_some() {
+            sql.push_str(" AND project = $project");
+        }
+
+        sql.push_str(" ORDER BY score DESC");
+
+        tracing::info!("Vector searching facts with query embedding");
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("embedding", query_embedding.to_vec()))
+            .bind(("project", project.map(|s| s.to_string())))
+            .await
+            .context("Failed to vector search facts")?;
+
+        let results: Vec<FactSearchResult> = response
+            .take(0)
+            .context("Failed to parse vector search results")?;
+
+        Ok(results)
+    }
+
+    /// Combine results using Reciprocal Rank Fusion (RRF)
+    ///
+    /// Uses RRF for ranking but preserves original scores for display.
+    /// Results appearing in both lists get boosted in ranking.
+    fn fuse_results(
+        &self,
+        bm25_results: Vec<FactSearchResult>,
+        vector_results: Vec<FactSearchResult>,
+        limit: usize,
+    ) -> Vec<FactSearchResult> {
+        use std::collections::HashMap;
+
+        const K: f64 = 60.0; // RRF constant
+
+        // Map: id -> (result, rrf_score, bm25_score, vector_score)
+        let mut scores: HashMap<String, (FactSearchResult, f64, f64, f64)> = HashMap::new();
+
+        // Add BM25 results
+        for (rank, result) in bm25_results.into_iter().enumerate() {
+            let id = result
+                .id
+                .as_ref()
+                .map(|t| t.id.to_raw())
+                .unwrap_or_default();
+            let rrf_score = 1.0 / (K + rank as f64 + 1.0);
+            let bm25_score = result.score;
+            scores.insert(id, (result, rrf_score, bm25_score, 0.0));
+        }
+
+        // Add vector results
+        for (rank, result) in vector_results.into_iter().enumerate() {
+            let id = result
+                .id
+                .as_ref()
+                .map(|t| t.id.to_raw())
+                .unwrap_or_default();
+            let rrf_score = 1.0 / (K + rank as f64 + 1.0);
+            let vector_score = result.score;
+
+            scores
+                .entry(id.clone())
+                .and_modify(|(_, existing_rrf, _, existing_vector)| {
+                    *existing_rrf += rrf_score;
+                    *existing_vector = vector_score; // Capture vector score
+                })
+                .or_insert((result, rrf_score, 0.0, vector_score)); // Vector-only
+        }
+
+        // Sort by combined RRF score and take top N
+        let mut results: Vec<_> = scores.into_values().collect();
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        results
+            .into_iter()
+            .take(limit)
+            .map(|(mut result, _rrf_score, bm25_score, vector_score)| {
+                // Display scoring logic:
+                // - BM25 scores can be negative with small corpora
+                // - Vector similarity is 0.0-1.0 (cosine)
+                // - Prefer positive scores, boost if found by both methods
+                let in_both = bm25_score != 0.0 && vector_score != 0.0;
+
+                result.score = if in_both {
+                    // Found by both - use the better score, boosted
+                    let best = if bm25_score > 0.0 { bm25_score } else { vector_score };
+                    best * 1.5
+                } else if bm25_score > 0.0 {
+                    bm25_score
+                } else if vector_score > 0.0 {
+                    vector_score
+                } else {
+                    0.01 // Fallback
+                };
+                result
+            })
+            .collect()
+    }
+
     // ========== Rebuild Operations ==========
 
     /// Delete all derived data (facts, entities, fact_entity relationships)
@@ -454,6 +611,10 @@ pub struct FactSearchResult {
     /// Last accessed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_accessed: Option<surrealdb::sql::Datetime>,
+
+    /// Vector embedding
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub embedding: Vec<f32>,
 
     /// Search score
     #[serde(default)]

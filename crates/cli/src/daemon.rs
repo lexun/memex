@@ -156,6 +156,7 @@ impl Daemon {
             let llm_client = LlmClient::new(llm::LlmConfig {
                 provider: self.config.llm.provider.clone(),
                 model: self.config.llm.model.clone(),
+                embedding_model: self.config.llm.embedding_model.clone(),
                 api_key: self.config.llm.api_key.clone(),
                 base_url: self.config.llm.base_url.clone(),
             });
@@ -906,10 +907,26 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
     let params: KnowledgeParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    // Search facts using full-text search
+    // Generate query embedding if LLM is available
+    let query_embedding = if let Some(ref extractor) = stores.extractor {
+        extractor
+            .client()
+            .embed_one(&params.query)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
+    // Hybrid search (BM25 + vector if embedding available)
     let results = stores
         .atlas
-        .search_facts(&params.query, params.project.as_deref(), Some(params.limit))
+        .hybrid_search_facts(
+            &params.query,
+            query_embedding.as_deref(),
+            params.project.as_deref(),
+            Some(params.limit),
+        )
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
@@ -975,10 +992,26 @@ async fn handle_search_knowledge(request: &Request, stores: &Stores) -> Result<s
     let params: KnowledgeParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    // Search facts using full-text search
+    // Generate query embedding if LLM is available
+    let query_embedding = if let Some(ref extractor) = stores.extractor {
+        extractor
+            .client()
+            .embed_one(&params.query)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
+    // Hybrid search (BM25 + vector if embedding available)
     let results = stores
         .atlas
-        .search_facts(&params.query, params.project.as_deref(), Some(params.limit))
+        .hybrid_search_facts(
+            &params.query,
+            query_embedding.as_deref(),
+            params.project.as_deref(),
+            Some(params.limit),
+        )
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 

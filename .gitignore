@@ -17,4 +17,6 @@ data/
 
 # MCP config
 .mcp.json.local
+
+# Vibetree
 .vibetree/

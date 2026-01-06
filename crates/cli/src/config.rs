@@ -128,6 +128,7 @@ pub fn get_config_value(config: &Config, key: &str) -> Option<String> {
         "database.password" => Some("********".to_string()), // Don't expose password
         "llm.provider" => Some(config.llm.provider.clone()),
         "llm.model" => Some(config.llm.model.clone()),
+        "llm.embedding_model" => Some(config.llm.embedding_model.clone()),
         "llm.api_key" => Some("********".to_string()), // Don't expose API key
         "llm.base_url" => config.llm.base_url.clone(),
         _ => None,
@@ -145,6 +146,7 @@ pub fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(
         "database.password" => config.database.password = Some(value.to_string()),
         "llm.provider" => config.llm.provider = value.to_string(),
         "llm.model" => config.llm.model = value.to_string(),
+        "llm.embedding_model" => config.llm.embedding_model = value.to_string(),
         "llm.api_key" => config.llm.api_key = Some(value.to_string()),
         "llm.base_url" => config.llm.base_url = Some(value.to_string()),
         _ => anyhow::bail!("Unknown config key: {}", key),

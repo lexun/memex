@@ -124,7 +124,7 @@ impl Extractor {
             .with_context(|| format!("Failed to parse extraction response: {}", json_str))?;
 
         // Convert to proper types with provenance
-        let facts = raw
+        let mut facts: Vec<Fact> = raw
             .facts
             .into_iter()
             .map(|f| {
@@ -137,6 +137,22 @@ impl Extractor {
                 fact
             })
             .collect();
+
+        // Generate embeddings for facts
+        if !facts.is_empty() {
+            let texts: Vec<String> = facts.iter().map(|f| f.content.clone()).collect();
+            match self.llm.embed(texts).await {
+                Ok(embeddings) => {
+                    for (fact, embedding) in facts.iter_mut().zip(embeddings.into_iter()) {
+                        fact.embedding = embedding;
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to generate embeddings: {}", e);
+                    // Continue without embeddings - they can be backfilled later
+                }
+            }
+        }
 
         let entities = raw
             .entities

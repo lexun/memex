@@ -8,6 +8,7 @@ use async_openai::{
     types::{
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
         ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+        CreateEmbeddingRequestArgs, EmbeddingInput,
     },
     Client as OpenAIClient,
 };
@@ -19,9 +20,12 @@ pub struct LlmConfig {
     /// Provider name (openai, anthropic, ollama)
     #[serde(default = "default_provider")]
     pub provider: String,
-    /// Model to use
+    /// Model to use for chat completions
     #[serde(default = "default_model")]
     pub model: String,
+    /// Model to use for embeddings
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
     /// API key (optional if using env var or local provider)
     pub api_key: Option<String>,
     /// Base URL override (for custom endpoints)
@@ -36,11 +40,16 @@ fn default_model() -> String {
     "gpt-4o-mini".to_string()
 }
 
+fn default_embedding_model() -> String {
+    "text-embedding-3-small".to_string()
+}
+
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             provider: default_provider(),
             model: default_model(),
+            embedding_model: default_embedding_model(),
             api_key: None,
             base_url: None,
         }
@@ -108,6 +117,57 @@ impl LlmClient {
     pub async fn complete(&self, system: &str, user: &str) -> Result<String> {
         self.chat(vec![Message::system(system), Message::user(user)])
             .await
+    }
+
+    /// Generate embeddings for a list of texts
+    pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        match self.config.provider.as_str() {
+            "openai" => self.embed_openai(texts).await,
+            provider => anyhow::bail!("Unsupported embedding provider: {}", provider),
+        }
+    }
+
+    /// Generate embedding for a single text
+    pub async fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
+        let results = self.embed(vec![text.to_string()]).await?;
+        results
+            .into_iter()
+            .next()
+            .context("No embedding returned")
+    }
+
+    async fn embed_openai(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        let mut openai_config = OpenAIConfig::new();
+
+        if let Some(api_key) = &self.config.api_key {
+            openai_config = openai_config.with_api_key(api_key);
+        }
+
+        if let Some(base_url) = &self.config.base_url {
+            openai_config = openai_config.with_api_base(base_url);
+        }
+
+        let client = OpenAIClient::with_config(openai_config);
+
+        let request = CreateEmbeddingRequestArgs::default()
+            .model(&self.config.embedding_model)
+            .input(EmbeddingInput::StringArray(texts))
+            .build()
+            .context("Failed to build embedding request")?;
+
+        let response = client
+            .embeddings()
+            .create(request)
+            .await
+            .context("Failed to create embeddings")?;
+
+        let embeddings = response
+            .data
+            .into_iter()
+            .map(|e| e.embedding)
+            .collect();
+
+        Ok(embeddings)
     }
 
     async fn chat_openai(&self, messages: Vec<Message>) -> Result<String> {

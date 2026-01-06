@@ -48,6 +48,10 @@ pub struct Fact {
     /// When this fact was last accessed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_accessed: Option<Datetime>,
+
+    /// Vector embedding for semantic search
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub embedding: Vec<f32>,
 }
 
 /// Reference to a source episode
@@ -185,6 +189,7 @@ impl Fact {
             updated_at: now,
             access_count: 0,
             last_accessed: None,
+            embedding: Vec::new(),
         }
     }
 

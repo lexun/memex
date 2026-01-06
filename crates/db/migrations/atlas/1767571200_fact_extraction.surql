@@ -27,6 +27,9 @@ DEFINE FIELD updated_at ON fact TYPE datetime DEFAULT time::now();
 DEFINE FIELD access_count ON fact TYPE int DEFAULT 0;
 DEFINE FIELD last_accessed ON fact TYPE option<datetime>;
 
+-- Vector embedding for semantic search
+DEFINE FIELD embedding ON fact TYPE array<float> DEFAULT [];
+
 -- Indexes for queries
 DEFINE INDEX fact_project ON fact FIELDS project;
 DEFINE INDEX fact_type ON fact FIELDS fact_type;
@@ -36,6 +39,9 @@ DEFINE INDEX fact_created ON fact FIELDS created_at;
 -- Full-text search on fact content
 DEFINE ANALYZER fact_analyzer TOKENIZERS class FILTERS lowercase, snowball(english);
 DEFINE INDEX fact_content_search ON fact FIELDS content SEARCH ANALYZER fact_analyzer BM25;
+
+-- Vector index for semantic search (text-embedding-3-small = 1536 dimensions)
+DEFINE INDEX fact_embedding ON fact FIELDS embedding MTREE DIMENSION 1536 DIST COSINE;
 
 -- ========== Entity table ==========
 DEFINE TABLE entity SCHEMAFULL;
