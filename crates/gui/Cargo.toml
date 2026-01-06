@@ -1,0 +1,14 @@
+[package]
+name = "memex-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "memex-gui"
+path = "src/main.rs"
+
+[dependencies]
+# Use macos-blade feature to avoid Metal Toolchain requirement
+gpui = { git = "https://github.com/zed-industries/zed", features = ["macos-blade"] }

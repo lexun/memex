@@ -57,6 +57,8 @@ enum Commands {
     },
     /// Initialize memex configuration
     Init,
+    /// Launch the graphical user interface
+    Gui,
 }
 
 #[derive(Subcommand)]
@@ -199,6 +201,39 @@ async fn async_main(cli: Cli) -> Result<()> {
         Commands::Mcp { action } => handle_mcp(action).await,
         Commands::Config { action } => handle_config(action),
         Commands::Init => handle_init(),
+        Commands::Gui => handle_gui(),
+    }
+}
+
+fn handle_gui() -> Result<()> {
+    use std::process::Command;
+
+    // Try to find memex-gui in PATH or next to current executable
+    let gui_name = if cfg!(windows) { "memex-gui.exe" } else { "memex-gui" };
+
+    // First try PATH
+    match Command::new(gui_name).spawn() {
+        Ok(_) => {
+            println!("Launched memex-gui");
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Try next to current executable
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(dir) = exe_path.parent() {
+                    let gui_path = dir.join(gui_name);
+                    if gui_path.exists() {
+                        Command::new(&gui_path).spawn()?;
+                        println!("Launched {}", gui_path.display());
+                        return Ok(());
+                    }
+                }
+            }
+            anyhow::bail!(
+                "memex-gui not found. Build it with: cargo build -p memex-gui"
+            )
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
