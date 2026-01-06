@@ -66,12 +66,21 @@ impl MemexMcpServer {
 #[mcp_server]
 impl McpServer for MemexMcpServer {
     /// Create a new task
+    ///
+    /// Priority is a simple integer where higher numbers mean more important.
+    /// Suggested scale: 0=normal, 1=elevated, 2=high, 3=urgent.
+    /// Most tasks should be priority 0. Reserve higher priorities for truly
+    /// time-sensitive or blocking work.
     #[tool]
     async fn create_task(
         &self,
+        /// Short descriptive title for the task
         title: String,
+        /// Detailed description of what needs to be done
         description: Option<String>,
+        /// Project name for grouping related tasks
         project: Option<String>,
+        /// Priority level (0=normal, higher=more urgent). Default: 0
         priority: Option<i32>,
         _task_type: Option<String>,
     ) -> mcp_attr::Result<String> {
@@ -217,11 +226,17 @@ impl McpServer for MemexMcpServer {
     }
 
     /// Update a task's status or priority
+    ///
+    /// Valid status values: pending, in_progress, blocked, completed, cancelled
+    /// Priority: higher numbers = more urgent (0=normal, 1=elevated, 2=high, 3=urgent)
     #[tool]
     async fn update_task(
         &self,
+        /// Task ID to update
         id: String,
+        /// New status (pending, in_progress, blocked, completed, cancelled)
         status: Option<String>,
+        /// New priority level (0=normal, higher=more urgent)
         priority: Option<i32>,
     ) -> mcp_attr::Result<String> {
         if status.is_none() && priority.is_none() {
@@ -265,9 +280,22 @@ impl McpServer for MemexMcpServer {
         }
     }
 
-    /// Close a task (mark as completed or cancelled if reason provided)
+    /// Close a task, marking it as completed
+    ///
+    /// Use this when work on a task is finished, whether successfully completed
+    /// or no longer needed. Optionally provide a reason to document why the task
+    /// was closed.
+    ///
+    /// Prefer close_task over delete_task - closing preserves the task history
+    /// and any notes/updates, while deletion permanently removes the task.
     #[tool]
-    async fn close_task(&self, id: String, reason: Option<String>) -> mcp_attr::Result<String> {
+    async fn close_task(
+        &self,
+        /// Task ID to close
+        id: String,
+        /// Optional explanation of how/why the task was closed
+        reason: Option<String>,
+    ) -> mcp_attr::Result<String> {
         match self.task_client.close_task(&id, reason.as_deref()).await {
             Ok(Some(task)) => {
                 let id_str = task.id_str().unwrap_or_default();
@@ -284,9 +312,20 @@ impl McpServer for MemexMcpServer {
         }
     }
 
-    /// Delete a task
+    /// Permanently delete a task
+    ///
+    /// This removes the task and all its notes/updates from the database.
+    /// Use this only when you want to completely erase a task, such as
+    /// removing duplicates or test data.
+    ///
+    /// For normal task completion, use close_task instead - it marks the task
+    /// as done while preserving the history for future reference.
     #[tool]
-    async fn delete_task(&self, id: String) -> mcp_attr::Result<String> {
+    async fn delete_task(
+        &self,
+        /// Task ID to permanently delete
+        id: String,
+    ) -> mcp_attr::Result<String> {
         match self.task_client.delete_task(&id).await {
             Ok(Some(_)) => Ok(format!("Deleted task: {}", id)),
             Ok(None) => {
