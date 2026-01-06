@@ -352,6 +352,10 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "rebuild_knowledge" => handle_rebuild_knowledge(request, stores).await,
         "knowledge_status" => handle_knowledge_status(stores).await,
 
+        // Entity operations
+        "list_entities" => handle_list_entities(request, &stores.atlas).await,
+        "get_entity_facts" => handle_get_entity_facts(request, &stores.atlas).await,
+
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
     }
@@ -1118,6 +1122,61 @@ async fn handle_knowledge_status(stores: &Stores) -> Result<serde_json::Value, I
             "without_embeddings": without_embeddings,
         },
         "llm_configured": llm_configured,
+    }))
+}
+
+// ========== Entity Handlers ==========
+
+#[derive(Deserialize)]
+struct ListEntitiesParams {
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    entity_type: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn handle_list_entities(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: ListEntitiesParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(ListEntitiesParams {
+            project: None,
+            entity_type: None,
+            limit: None,
+        });
+
+    let entities = store
+        .list_entities(
+            params.project.as_deref(),
+            params.entity_type.as_deref(),
+            params.limit,
+        )
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(entities).unwrap())
+}
+
+#[derive(Deserialize)]
+struct GetEntityFactsParams {
+    name: String,
+    #[serde(default)]
+    project: Option<String>,
+}
+
+async fn handle_get_entity_facts(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: GetEntityFactsParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let facts = store
+        .get_facts_for_entity_name(&params.name, params.project.as_deref())
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(json!({
+        "entity": params.name,
+        "facts": facts,
+        "count": facts.len(),
     }))
 }
 

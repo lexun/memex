@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::event::Event;
+use crate::fact::{Entity, Fact};
 use crate::Memo;
 use ipc::Client as IpcClient;
 
@@ -356,6 +357,65 @@ impl KnowledgeClient {
 
         serde_json::from_value(result).context("Failed to parse status response")
     }
+
+    /// List entities with optional filtering
+    pub async fn list_entities(
+        &self,
+        project: Option<&str>,
+        entity_type: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Entity>> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            project: Option<&'a str>,
+            entity_type: Option<&'a str>,
+            limit: Option<usize>,
+        }
+
+        let result = self
+            .client
+            .request(
+                "list_entities",
+                Params {
+                    project,
+                    entity_type,
+                    limit,
+                },
+            )
+            .await
+            .context("Failed to list entities")?;
+
+        serde_json::from_value(result).context("Failed to parse entities")
+    }
+
+    /// Get facts related to an entity
+    pub async fn get_entity_facts(
+        &self,
+        name: &str,
+        project: Option<&str>,
+    ) -> Result<EntityFactsResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            name: &'a str,
+            project: Option<&'a str>,
+        }
+
+        let result = self
+            .client
+            .request("get_entity_facts", Params { name, project })
+            .await
+            .context("Failed to get entity facts")?;
+
+        serde_json::from_value(result).context("Failed to parse entity facts")
+    }
+}
+
+/// Result of getting facts for an entity
+#[derive(Debug, Clone, Deserialize)]
+pub struct EntityFactsResult {
+    pub entity: String,
+    pub facts: Vec<Fact>,
+    pub count: usize,
 }
 
 /// Knowledge system status

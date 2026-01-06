@@ -352,6 +352,63 @@ impl Store {
         Ok(())
     }
 
+    /// Get facts related to an entity
+    pub async fn get_facts_for_entity(&self, entity_id: &str) -> Result<Vec<Fact>> {
+        // Query fact_entity links and fetch the related facts
+        let sql = r#"
+            SELECT fact.* FROM fact_entity
+            WHERE entity = type::thing("entity", $entity_id)
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("entity_id", entity_id.to_string()))
+            .await
+            .context("Failed to get facts for entity")?;
+
+        let facts: Vec<Fact> = response.take(0).context("Failed to parse facts")?;
+        Ok(facts)
+    }
+
+    /// Get facts related to an entity by name
+    pub async fn get_facts_for_entity_name(
+        &self,
+        name: &str,
+        project: Option<&str>,
+    ) -> Result<Vec<Fact>> {
+        // First find the entity
+        let entity = self.find_entity_by_name(name, project).await?;
+
+        match entity {
+            Some(e) => {
+                let entity_id = e.id_str().unwrap_or_default();
+                self.get_facts_for_entity(&entity_id).await
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Get entities mentioned by a fact
+    pub async fn get_entities_for_fact(&self, fact_id: &str) -> Result<Vec<Entity>> {
+        let sql = r#"
+            SELECT entity.* FROM fact_entity
+            WHERE fact = type::thing("fact", $fact_id)
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("fact_id", fact_id.to_string()))
+            .await
+            .context("Failed to get entities for fact")?;
+
+        let entities: Vec<Entity> = response.take(0).context("Failed to parse entities")?;
+        Ok(entities)
+    }
+
     /// Hybrid search combining BM25 text search and vector similarity
     ///
     /// Uses reciprocal rank fusion (RRF) to combine results from both searches.

@@ -778,6 +778,94 @@ impl McpServer for MemexMcpServer {
             }
         }
     }
+
+    /// List all known entities
+    ///
+    /// Shows entities (projects, people, technologies, concepts) that have been
+    /// extracted from memos. Use this to discover what the system knows about.
+    #[tool]
+    async fn list_entities(
+        &self,
+        /// Filter by project
+        project: Option<String>,
+        /// Filter by entity type (project, person, technology, concept, task, document)
+        entity_type: Option<String>,
+        /// Maximum number of entities to return
+        limit: Option<i32>,
+    ) -> mcp_attr::Result<String> {
+        let limit = limit.map(|l| l as usize);
+        match self
+            .knowledge_client
+            .list_entities(project.as_deref(), entity_type.as_deref(), limit)
+            .await
+        {
+            Ok(entities) => {
+                if entities.is_empty() {
+                    Ok("No entities found.\n\nNote: Entities are extracted from memos. Try recording some memos first.".to_string())
+                } else {
+                    let mut output = format!("Found {} entities:\n\n", entities.len());
+                    for entity in entities {
+                        let id = entity.id_str().unwrap_or_default();
+                        output.push_str(&format!(
+                            "[{}] {} ({})\n",
+                            entity.entity_type, entity.name, id
+                        ));
+                        if !entity.description.is_empty() {
+                            output.push_str(&format!("  {}\n", entity.description));
+                        }
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to list entities: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Get facts about a specific entity
+    ///
+    /// Returns all known facts that mention or relate to the named entity.
+    /// This enables entity-centric queries like "what do we know about X?"
+    #[tool]
+    async fn get_entity_facts(
+        &self,
+        /// Entity name to look up
+        name: String,
+        /// Filter by project
+        project: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        match self
+            .knowledge_client
+            .get_entity_facts(&name, project.as_deref())
+            .await
+        {
+            Ok(result) => {
+                if result.facts.is_empty() {
+                    Ok(format!(
+                        "No facts found for entity: \"{}\"\n\nThe entity may not exist or have no linked facts.",
+                        name
+                    ))
+                } else {
+                    let mut output = format!(
+                        "Found {} fact(s) about \"{}\":\n\n",
+                        result.count, result.entity
+                    );
+                    for fact in result.facts {
+                        let content = &fact.content;
+                        let fact_type = &fact.fact_type;
+                        output.push_str(&format!("[{}] {}\n", fact_type, content));
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to get entity facts: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
 }
 
 /// Start the MCP server on stdio

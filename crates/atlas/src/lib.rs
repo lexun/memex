@@ -14,8 +14,8 @@ pub mod store;
 
 pub use cli::{EventCommand, KnowledgeCommand, MemoCommand};
 pub use client::{
-    EventClient, FactStats, KnowledgeClient, KnowledgeStatus, MemoClient, QueryResult,
-    RebuildResult, SearchResult,
+    EntityFactsResult, EventClient, FactStats, KnowledgeClient, KnowledgeStatus, MemoClient,
+    QueryResult, RebuildResult, SearchResult,
 };
 pub use event::{Event, EventAuthority, EventSource};
 pub use extraction::{ExtractedFact, ExtractionResult, Extractor};
