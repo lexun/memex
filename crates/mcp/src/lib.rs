@@ -866,6 +866,51 @@ impl McpServer for MemexMcpServer {
             }
         }
     }
+
+    /// Get facts related to a given fact via shared entities
+    ///
+    /// Traverses the knowledge graph to find facts that share entities with
+    /// the specified fact. This enables discovery of related knowledge.
+    #[tool]
+    async fn get_related_facts(
+        &self,
+        /// The fact ID to find related facts for
+        fact_id: String,
+        /// Maximum number of related facts to return
+        limit: Option<i32>,
+    ) -> mcp_attr::Result<String> {
+        let limit = limit.map(|l| l as usize);
+        match self
+            .knowledge_client
+            .get_related_facts(&fact_id, limit)
+            .await
+        {
+            Ok(result) => {
+                if result.related_facts.is_empty() {
+                    Ok(format!(
+                        "No related facts found for fact: {}\n\nThe fact may not exist or have no entity links.",
+                        fact_id
+                    ))
+                } else {
+                    let mut output = format!(
+                        "Found {} related fact(s) for {}:\n\n",
+                        result.count, result.fact_id
+                    );
+                    for fact in result.related_facts {
+                        let id = fact.id_str().unwrap_or_default();
+                        let content = &fact.content;
+                        let fact_type = &fact.fact_type;
+                        output.push_str(&format!("[{}] {} ({})\n", fact_type, content, id));
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to get related facts: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
 }
 
 /// Start the MCP server on stdio

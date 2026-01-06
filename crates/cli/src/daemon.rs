@@ -355,6 +355,7 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         // Entity operations
         "list_entities" => handle_list_entities(request, &stores.atlas).await,
         "get_entity_facts" => handle_get_entity_facts(request, &stores.atlas).await,
+        "get_related_facts" => handle_get_related_facts(request, &stores.atlas).await,
 
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
@@ -1176,6 +1177,29 @@ async fn handle_get_entity_facts(request: &Request, store: &AtlasStore) -> Resul
     Ok(json!({
         "entity": params.name,
         "facts": facts,
+        "count": facts.len(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct GetRelatedFactsParams {
+    fact_id: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn handle_get_related_facts(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: GetRelatedFactsParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let facts = store
+        .get_related_facts(&params.fact_id, params.limit)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(json!({
+        "fact_id": params.fact_id,
+        "related_facts": facts,
         "count": facts.len(),
     }))
 }

@@ -408,6 +408,30 @@ impl KnowledgeClient {
 
         serde_json::from_value(result).context("Failed to parse entity facts")
     }
+
+    /// Get facts related to a given fact via shared entities
+    ///
+    /// Returns facts that share entities with the given fact, enabling
+    /// graph traversal through the knowledge graph.
+    pub async fn get_related_facts(
+        &self,
+        fact_id: &str,
+        limit: Option<usize>,
+    ) -> Result<RelatedFactsResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            fact_id: &'a str,
+            limit: Option<usize>,
+        }
+
+        let result = self
+            .client
+            .request("get_related_facts", Params { fact_id, limit })
+            .await
+            .context("Failed to get related facts")?;
+
+        serde_json::from_value(result).context("Failed to parse related facts")
+    }
 }
 
 /// Result of getting facts for an entity
@@ -415,6 +439,14 @@ impl KnowledgeClient {
 pub struct EntityFactsResult {
     pub entity: String,
     pub facts: Vec<Fact>,
+    pub count: usize,
+}
+
+/// Result of getting related facts via graph traversal
+#[derive(Debug, Clone, Deserialize)]
+pub struct RelatedFactsResult {
+    pub fact_id: String,
+    pub related_facts: Vec<Fact>,
     pub count: usize,
 }
 
