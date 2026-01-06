@@ -221,6 +221,32 @@ pub async fn handle_knowledge_command(cmd: KnowledgeCommand, socket_path: &Path)
             println!("  Entities created: {}", result.entities_created);
             Ok(())
         }
+
+        KnowledgeCommand::Status => {
+            let status = client.status().await?;
+
+            println!("Knowledge Status:");
+            println!("  LLM configured: {}", status.llm_configured);
+            println!();
+            println!("Facts:");
+            println!("  Total: {}", status.facts.total);
+            println!("  With embeddings: {}", status.facts.with_embeddings);
+            println!("  Without embeddings: {}", status.facts.without_embeddings);
+
+            if status.facts.without_embeddings > 0 && status.llm_configured {
+                println!();
+                println!("Note: {} facts are missing embeddings.", status.facts.without_embeddings);
+                println!("      Run 'memex rebuild' to regenerate facts with embeddings.");
+            }
+
+            if !status.llm_configured {
+                println!();
+                println!("Warning: LLM not configured. Fact extraction and semantic search disabled.");
+                println!("         Set OPENAI_API_KEY or configure llm.api_key in config.");
+            }
+
+            Ok(())
+        }
     }
 }
 

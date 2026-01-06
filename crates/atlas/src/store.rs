@@ -367,11 +367,22 @@ impl Store {
 
         // BM25 search
         let bm25_results = self.search_facts(text_query, project, Some(limit * 2)).await?;
+        tracing::info!(
+            "BM25 search for '{}': {} results",
+            text_query,
+            bm25_results.len()
+        );
 
         // If no embedding, return BM25 results only
         let query_embedding = match query_embedding {
-            Some(e) if !e.is_empty() => e,
-            _ => return Ok(bm25_results.into_iter().take(limit).collect()),
+            Some(e) if !e.is_empty() => {
+                tracing::info!("Query embedding provided: {} dimensions", e.len());
+                e
+            }
+            _ => {
+                tracing::info!("No query embedding, returning BM25-only results");
+                return Ok(bm25_results.into_iter().take(limit).collect());
+            }
         };
 
         // Vector similarity search (gracefully handle failures)
@@ -379,7 +390,10 @@ impl Store {
             .vector_search_facts(query_embedding, project, Some(limit * 2))
             .await
         {
-            Ok(results) => results,
+            Ok(results) => {
+                tracing::info!("Vector search: {} results", results.len());
+                results
+            }
             Err(e) => {
                 tracing::warn!("Vector search failed, using BM25 only: {}", e);
                 return Ok(bm25_results.into_iter().take(limit).collect());
@@ -388,6 +402,7 @@ impl Store {
 
         // Combine using reciprocal rank fusion
         let combined = self.fuse_results(bm25_results, vector_results, limit);
+        tracing::info!("Combined results after RRF: {}", combined.len());
         Ok(combined)
     }
 
@@ -413,7 +428,12 @@ impl Store {
 
         sql.push_str(" ORDER BY score DESC");
 
-        tracing::info!("Vector searching facts with query embedding");
+        tracing::info!(
+            "Vector search: k={}, embedding_dims={}, query: {}",
+            k,
+            query_embedding.len(),
+            sql
+        );
 
         let mut response = self
             .db
@@ -428,7 +448,39 @@ impl Store {
             .take(0)
             .context("Failed to parse vector search results")?;
 
+        tracing::info!("Vector search returned {} results", results.len());
         Ok(results)
+    }
+
+    /// Count facts with and without embeddings (diagnostic)
+    pub async fn count_fact_embeddings(&self) -> Result<(usize, usize)> {
+        // Count facts with non-empty embeddings
+        let sql_with = "SELECT count() FROM fact WHERE array::len(embedding) > 0 GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(sql_with)
+            .await
+            .context("Failed to count facts with embeddings")?;
+        let with_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let with_embeddings = with_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Count facts with empty embeddings
+        let sql_without = "SELECT count() FROM fact WHERE array::len(embedding) = 0 GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(sql_without)
+            .await
+            .context("Failed to count facts without embeddings")?;
+        let without_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let without_embeddings = without_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        Ok((with_embeddings, without_embeddings))
     }
 
     /// Combine results using Reciprocal Rank Fusion (RRF)

@@ -91,6 +91,11 @@ pub fn command_registry() -> Vec<CommandInfo> {
             description: "Rebuild knowledge index",
             category: Category::Explore,
         },
+        CommandInfo {
+            name: "status",
+            description: "Knowledge system status",
+            category: Category::Explore,
+        },
 
         // Services - background processes
         CommandInfo {

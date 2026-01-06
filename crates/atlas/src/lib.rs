@@ -13,7 +13,10 @@ pub mod memo;
 pub mod store;
 
 pub use cli::{EventCommand, KnowledgeCommand, MemoCommand};
-pub use client::{EventClient, KnowledgeClient, MemoClient, QueryResult, RebuildResult, SearchResult};
+pub use client::{
+    EventClient, FactStats, KnowledgeClient, KnowledgeStatus, MemoClient, QueryResult,
+    RebuildResult, SearchResult,
+};
 pub use event::{Event, EventAuthority, EventSource};
 pub use extraction::{ExtractionResult, Extractor};
 pub use fact::{Entity, EntityType, EpisodeRef, Fact, FactType};

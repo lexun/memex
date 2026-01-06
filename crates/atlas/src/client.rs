@@ -341,4 +341,30 @@ impl KnowledgeClient {
 
         serde_json::from_value(result).context("Failed to parse rebuild response")
     }
+
+    /// Get knowledge system status (diagnostic)
+    pub async fn status(&self) -> Result<KnowledgeStatus> {
+        let result = self
+            .client
+            .request("knowledge_status", serde_json::json!({}))
+            .await
+            .context("Failed to get knowledge status")?;
+
+        serde_json::from_value(result).context("Failed to parse status response")
+    }
+}
+
+/// Knowledge system status
+#[derive(Debug, Clone, Deserialize)]
+pub struct KnowledgeStatus {
+    pub facts: FactStats,
+    pub llm_configured: bool,
+}
+
+/// Fact statistics
+#[derive(Debug, Clone, Deserialize)]
+pub struct FactStats {
+    pub total: usize,
+    pub with_embeddings: usize,
+    pub without_embeddings: usize,
 }

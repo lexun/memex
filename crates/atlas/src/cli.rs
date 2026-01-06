@@ -114,4 +114,10 @@ pub enum KnowledgeCommand {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+
+    /// Show knowledge system status
+    ///
+    /// Displays statistics about facts and embeddings, useful for
+    /// diagnosing search issues.
+    Status,
 }

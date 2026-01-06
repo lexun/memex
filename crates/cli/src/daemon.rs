@@ -350,6 +350,7 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "search_knowledge" => handle_search_knowledge(request, stores).await,
         "extract_facts" => handle_extract_facts(request, stores).await,
         "rebuild_knowledge" => handle_rebuild_knowledge(request, stores).await,
+        "knowledge_status" => handle_knowledge_status(stores).await,
 
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
@@ -927,14 +928,22 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
     let params: KnowledgeParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
+    tracing::info!("Query knowledge: query='{}', project={:?}", params.query, params.project);
+
     // Generate query embedding if LLM is available
     let query_embedding = if let Some(ref extractor) = stores.extractor {
-        extractor
-            .client()
-            .embed_one(&params.query)
-            .await
-            .ok()
+        match extractor.client().embed_one(&params.query).await {
+            Ok(emb) => {
+                tracing::info!("Generated query embedding: {} dimensions", emb.len());
+                Some(emb)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to generate query embedding: {}", e);
+                None
+            }
+        }
     } else {
+        tracing::info!("No LLM configured, skipping query embedding");
         None
     };
 
@@ -1054,6 +1063,31 @@ async fn handle_search_knowledge(request: &Request, stores: &Stores) -> Result<s
         "query": params.query,
         "results": facts,
         "count": count,
+    }))
+}
+
+/// Get knowledge system status (diagnostic)
+async fn handle_knowledge_status(stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    // Count facts with/without embeddings
+    let (with_embeddings, without_embeddings) = stores
+        .atlas
+        .count_fact_embeddings()
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Count total facts
+    let total_facts = with_embeddings + without_embeddings;
+
+    // Check if LLM is configured
+    let llm_configured = stores.extractor.is_some();
+
+    Ok(json!({
+        "facts": {
+            "total": total_facts,
+            "with_embeddings": with_embeddings,
+            "without_embeddings": without_embeddings,
+        },
+        "llm_configured": llm_configured,
     }))
 }
 
