@@ -1,6 +1,7 @@
 mod completions;
 mod config;
 mod daemon;
+mod help;
 mod pid;
 
 use anyhow::Result;
@@ -27,22 +28,31 @@ pub enum CompletionShell {
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Task management
-    Task {
-        #[command(subcommand)]
-        action: forge::TaskCommand,
-    },
+    #[command(flatten)]
+    Knowledge(KnowledgeCommands),
+
+    #[command(flatten)]
+    Tasks(TaskCommands),
+
+    #[command(flatten)]
+    System(SystemCommands),
+}
+
+#[derive(Subcommand)]
+enum KnowledgeCommands {
     /// Record a memo to the knowledge base
+    #[command(display_order = 1)]
     Record {
         /// The content to record
         content: String,
     },
     /// Query the knowledge base (LLM-summarized answer)
+    #[command(display_order = 2)]
     Query {
         /// The query to answer
         query: String,
@@ -51,30 +61,76 @@ enum Commands {
         #[arg(short, long)]
         project: Option<String>,
     },
-    /// Atlas knowledge base management
-    Atlas {
-        #[command(subcommand)]
-        action: AtlasAction,
+    /// Search for facts in the knowledge base
+    #[command(display_order = 3)]
+    Search {
+        /// The search query
+        query: String,
+
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Maximum results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
     },
+    /// Manage memos
+    #[command(display_order = 4)]
+    Memo {
+        #[command(subcommand)]
+        action: atlas::MemoCommand,
+    },
+    /// View events
+    #[command(display_order = 5)]
+    Event {
+        #[command(subcommand)]
+        action: atlas::EventCommand,
+    },
+    /// Rebuild knowledge from memos
+    #[command(display_order = 6)]
+    Rebuild {
+        /// Filter by project
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TaskCommands {
+    /// Task management
+    #[command(display_order = 10)]
+    Task {
+        #[command(subcommand)]
+        action: forge::TaskCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SystemCommands {
     /// Daemon management
+    #[command(display_order = 20)]
     Daemon {
         #[command(subcommand)]
         action: DaemonAction,
     },
-    /// MCP server
-    Mcp {
-        #[command(subcommand)]
-        action: McpAction,
-    },
     /// Configuration management
+    #[command(display_order = 21)]
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
     /// Initialize memex configuration
+    #[command(display_order = 22)]
     Init,
+    /// MCP server
+    #[command(display_order = 23)]
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
     /// Generate shell completions
-    #[command(hide = true)]
+    #[command(display_order = 24)]
     Completions {
         /// Shell to generate completions for
         shell: CompletionShell,
@@ -109,25 +165,6 @@ enum ConfigAction {
 }
 
 #[derive(Subcommand)]
-enum AtlasAction {
-    /// Memo management
-    Memo {
-        #[command(subcommand)]
-        action: atlas::MemoCommand,
-    },
-    /// Event management
-    Event {
-        #[command(subcommand)]
-        action: atlas::EventCommand,
-    },
-    /// Knowledge discovery (query, search, extract)
-    Knowledge {
-        #[command(subcommand)]
-        action: atlas::KnowledgeCommand,
-    },
-}
-
-#[derive(Subcommand)]
 enum McpAction {
     /// Start MCP server on stdio
     Serve,
@@ -137,22 +174,36 @@ fn main() -> Result<()> {
     // Handle dynamic shell completions (if triggered by shell completion request)
     CompleteEnv::with_factory(Cli::command).complete();
 
+    // Check for top-level help before parsing
+    // This lets us show our custom help while letting subcommands use clap's help
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 1 || (args.len() == 2 && (args[1] == "-h" || args[1] == "--help")) {
+        print!("{}", help::generate_help());
+        return Ok(());
+    }
+
     let cli = Cli::parse();
 
+    // If somehow we got here with no command, show help
+    let Some(command) = cli.command else {
+        print!("{}", help::generate_help());
+        return Ok(());
+    };
+
     // Handle completions command synchronously
-    if let Commands::Completions { shell } = &cli.command {
+    if let Commands::System(SystemCommands::Completions { shell }) = &command {
         completions::generate_completions(shell.clone());
         return Ok(());
     }
 
     // Handle daemon start/restart/run synchronously (before any tokio runtime)
     // This allows proper fork() without runtime conflicts
-    match &cli.command {
-        Commands::Daemon { action: DaemonAction::Start } => {
+    match &command {
+        Commands::System(SystemCommands::Daemon { action: DaemonAction::Start }) => {
             let daemon = daemon::Daemon::new()?;
             return daemon.start();
         }
-        Commands::Daemon { action: DaemonAction::Restart } => {
+        Commands::System(SystemCommands::Daemon { action: DaemonAction::Restart }) => {
             // Need async for stop, so create a temporary runtime
             let cfg = config::load_config()?;
             let pid_path = config::get_pid_file(&cfg)?;
@@ -168,7 +219,7 @@ fn main() -> Result<()> {
             let daemon = daemon::Daemon::new()?;
             return daemon.start();
         }
-        Commands::Daemon { action: DaemonAction::Run } => {
+        Commands::System(SystemCommands::Daemon { action: DaemonAction::Run }) => {
             // Called after fork+exec, run daemon directly
             return daemon::Daemon::run_foreground();
         }
@@ -177,10 +228,10 @@ fn main() -> Result<()> {
 
     // For all other commands, use tokio runtime
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async_main(cli))
+    rt.block_on(async_main(command))
 }
 
-async fn async_main(cli: Cli) -> Result<()> {
+async fn async_main(command: Commands) -> Result<()> {
     // Default to WARN level for quiet CLI output
     // Use RUST_LOG=info or RUST_LOG=debug for verbose output
     tracing_subscriber::fmt()
@@ -190,54 +241,76 @@ async fn async_main(cli: Cli) -> Result<()> {
         )
         .init();
 
-    match cli.command {
-        Commands::Task { action } => {
-            let cfg = config::load_config()?;
-            let socket_path = config::get_socket_path(&cfg)?;
-            forge::handle_task_command(action, &socket_path).await
-        }
-        Commands::Record { content } => {
-            let cfg = config::load_config()?;
-            let socket_path = config::get_socket_path(&cfg)?;
-            let client = atlas::MemoClient::new(&socket_path);
-            let memo = client.record_memo(&content, true, Some("user:default")).await?;
-            println!("Recorded: {}", memo.id_str().unwrap_or_default());
-            Ok(())
-        }
-        Commands::Query { query, project } => {
-            let cfg = config::load_config()?;
-            let socket_path = config::get_socket_path(&cfg)?;
-            let client = atlas::KnowledgeClient::new(&socket_path);
-            let result = client.query(&query, project.as_deref(), Some(10)).await?;
-            if result.answer.is_empty() {
-                println!("No relevant knowledge found for: {}", query);
-                println!();
-                println!("Note: Facts are extracted from memos. Try recording some memos first.");
-            } else {
-                println!("{}", result.answer);
+    let cfg = config::load_config()?;
+    let socket_path = config::get_socket_path(&cfg)?;
+
+    match command {
+        // Knowledge commands
+        Commands::Knowledge(cmd) => match cmd {
+            KnowledgeCommands::Record { content } => {
+                let client = atlas::MemoClient::new(&socket_path);
+                let memo = client.record_memo(&content, true, Some("user:default")).await?;
+                println!("Recorded: {}", memo.id_str().unwrap_or_default());
+                Ok(())
             }
-            Ok(())
-        }
-        Commands::Atlas { action } => {
-            let cfg = config::load_config()?;
-            let socket_path = config::get_socket_path(&cfg)?;
-            match action {
-                AtlasAction::Memo { action } => {
-                    atlas::handle_memo_command(action, &socket_path).await
+            KnowledgeCommands::Query { query, project } => {
+                let client = atlas::KnowledgeClient::new(&socket_path);
+                let result = client.query(&query, project.as_deref(), Some(10)).await?;
+                if result.answer.is_empty() {
+                    println!("No relevant knowledge found for: {}", query);
+                    println!();
+                    println!("Note: Facts are extracted from memos. Try recording some memos first.");
+                } else {
+                    println!("{}", result.answer);
                 }
-                AtlasAction::Event { action } => {
-                    atlas::handle_event_command(action, &socket_path).await
-                }
-                AtlasAction::Knowledge { action } => {
-                    atlas::handle_knowledge_command(action, &socket_path).await
-                }
+                Ok(())
             }
-        }
-        Commands::Daemon { action } => handle_daemon(action).await,
-        Commands::Mcp { action } => handle_mcp(action).await,
-        Commands::Config { action } => handle_config(action),
-        Commands::Init => handle_init(),
-        Commands::Completions { .. } => unreachable!("Handled in main()"),
+            KnowledgeCommands::Search { query, project, limit } => {
+                let client = atlas::KnowledgeClient::new(&socket_path);
+                let result = client.search(&query, project.as_deref(), Some(limit)).await?;
+                if result.results.is_empty() {
+                    println!("No facts found for: {}", query);
+                } else {
+                    for fact in &result.results {
+                        let score = fact["score"].as_f64().unwrap_or(0.0);
+                        let content = fact["content"].as_str().unwrap_or("");
+                        println!("[{:.2}] {}", score, content);
+                    }
+                }
+                Ok(())
+            }
+            KnowledgeCommands::Memo { action } => {
+                atlas::handle_memo_command(action, &socket_path).await
+            }
+            KnowledgeCommands::Event { action } => {
+                atlas::handle_event_command(action, &socket_path).await
+            }
+            KnowledgeCommands::Rebuild { project } => {
+                let client = atlas::KnowledgeClient::new(&socket_path);
+                let result = client.rebuild(project.as_deref()).await?;
+                println!("Rebuilt knowledge:");
+                println!("  Deleted: {} facts, {} entities", result.facts_deleted, result.entities_deleted);
+                println!("  Created: {} facts, {} entities from {} memos",
+                    result.facts_created, result.entities_created, result.memos_processed);
+                Ok(())
+            }
+        },
+
+        // Task commands
+        Commands::Tasks(cmd) => match cmd {
+            TaskCommands::Task { action } => {
+                forge::handle_task_command(action, &socket_path).await
+            }
+        },
+
+        // System commands
+        Commands::System(cmd) => match cmd {
+            SystemCommands::Daemon { action } => handle_daemon(action).await,
+            SystemCommands::Config { action } => handle_config(action),
+            SystemCommands::Init => handle_init(),
+            SystemCommands::Mcp { action } => handle_mcp(action).await,
+            SystemCommands::Completions { .. } => unreachable!("Handled in main()"),
+        },
     }
 }
 
