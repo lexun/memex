@@ -290,6 +290,37 @@ impl Store {
         Ok(entity)
     }
 
+    /// Add source episodes to an existing entity
+    ///
+    /// This is used to merge provenance when the same entity is mentioned
+    /// in multiple memos/episodes.
+    pub async fn add_entity_source_episodes(
+        &self,
+        entity_id: &Thing,
+        new_episodes: &[crate::fact::EpisodeRef],
+    ) -> Result<()> {
+        if new_episodes.is_empty() {
+            return Ok(());
+        }
+
+        // Use SURQL UPDATE to append to array, avoiding duplicates
+        let sql = r#"
+            UPDATE $entity_id SET
+                source_episodes += $new_episodes,
+                updated_at = time::now()
+        "#;
+
+        self.db
+            .client()
+            .query(sql)
+            .bind(("entity_id", entity_id.clone()))
+            .bind(("new_episodes", new_episodes.to_vec()))
+            .await
+            .context("Failed to add source episodes to entity")?;
+
+        Ok(())
+    }
+
     /// List entities with optional project and type filter
     pub async fn list_entities(
         &self,

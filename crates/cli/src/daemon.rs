@@ -808,9 +808,16 @@ async fn handle_record_memo(request: &Request, stores: &Stores) -> Result<serde_
                     // Try to find existing entity or create new
                     match stores.atlas.find_entity_by_name(&entity_name, project.as_deref()).await {
                         Ok(Some(existing)) => {
-                            // Entity already exists, use it
+                            // Entity already exists - merge source episodes from new entity
+                            if let Some(ref entity_id) = existing.id {
+                                if let Err(e) = stores.atlas.add_entity_source_episodes(
+                                    entity_id,
+                                    &entity.source_episodes,
+                                ).await {
+                                    tracing::warn!("Failed to merge entity source episodes: {}", e);
+                                }
+                            }
                             entity_map.insert(entity_name, existing);
-                            // TODO: merge source_episodes
                         }
                         Ok(None) => {
                             match stores.atlas.create_entity(entity).await {
@@ -1254,6 +1261,13 @@ async fn handle_extract_facts(request: &Request, stores: &Stores) -> Result<serd
 
                     match stores.atlas.find_entity_by_name(&entity_name, project.as_deref()).await {
                         Ok(Some(existing)) => {
+                            // Merge source episodes from new entity
+                            if let Some(ref entity_id) = existing.id {
+                                let _ = stores.atlas.add_entity_source_episodes(
+                                    entity_id,
+                                    &entity.source_episodes,
+                                ).await;
+                            }
                             entity_map.insert(entity_name, existing);
                         }
                         Ok(None) => {
@@ -1349,6 +1363,13 @@ async fn handle_rebuild_knowledge(request: &Request, stores: &Stores) -> Result<
 
                     match stores.atlas.find_entity_by_name(&entity_name, project.as_deref()).await {
                         Ok(Some(existing)) => {
+                            // Merge source episodes from new entity
+                            if let Some(ref entity_id) = existing.id {
+                                let _ = stores.atlas.add_entity_source_episodes(
+                                    entity_id,
+                                    &entity.source_episodes,
+                                ).await;
+                            }
                             entity_map.insert(entity_name, existing);
                         }
                         Ok(None) => {
