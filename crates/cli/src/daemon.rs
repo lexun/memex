@@ -16,7 +16,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use atlas::{Event, EventSource, Extractor, MemoSource, Store as AtlasStore};
+use atlas::{Event, EventSource, Extractor, MemoSource, QueryDecomposer, Store as AtlasStore};
 use db::Database;
 use forge::{Store as ForgeStore, Task, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
@@ -972,9 +972,32 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
 
     tracing::info!("Query knowledge: query='{}', project={:?}", params.query, params.project);
 
-    // Generate query embedding if LLM is available
-    let query_embedding = if let Some(ref extractor) = stores.extractor {
-        match extractor.client().embed_one(&params.query).await {
+    // Decompose query and generate embedding if LLM is available
+    let (search_text, query_embedding) = if let Some(ref extractor) = stores.extractor {
+        // Decompose natural language query into keywords for BM25
+        let decomposer = QueryDecomposer::new(extractor.client());
+        let decomposed = match decomposer.decompose(&params.query).await {
+            Ok(d) => {
+                tracing::info!(
+                    "Decomposed query '{}' into keywords: {:?}",
+                    params.query,
+                    d.keywords
+                );
+                d
+            }
+            Err(e) => {
+                tracing::warn!("Query decomposition failed, using original: {}", e);
+                atlas::DecomposedQuery {
+                    original: params.query.clone(),
+                    keywords: vec![params.query.clone()],
+                    search_text: params.query.clone(),
+                    intent: atlas::QueryIntent::Factual,
+                }
+            }
+        };
+
+        // Generate embedding for semantic search (use original query for semantic intent)
+        let embedding = match extractor.client().embed_one(&params.query).await {
             Ok(emb) => {
                 tracing::info!("Generated query embedding: {} dimensions", emb.len());
                 Some(emb)
@@ -983,17 +1006,19 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
                 tracing::warn!("Failed to generate query embedding: {}", e);
                 None
             }
-        }
+        };
+
+        (decomposed.search_text, embedding)
     } else {
-        tracing::info!("No LLM configured, skipping query embedding");
-        None
+        tracing::info!("No LLM configured, using raw query");
+        (params.query.clone(), None)
     };
 
-    // Hybrid search (BM25 + vector if embedding available)
+    // Hybrid search (BM25 with decomposed keywords + vector if embedding available)
     let results = stores
         .atlas
         .hybrid_search_facts(
-            &params.query,
+            &search_text,
             query_embedding.as_deref(),
             params.project.as_deref(),
             Some(params.limit),
