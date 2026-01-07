@@ -158,7 +158,8 @@ Your task:
 2. Remove stop words (what, is, the, how, do, we, know, about, etc.)
 3. Keep proper nouns, project names, technical terms, and key concepts
 4. IMPORTANT: Include common abbreviations alongside full terms (dev/DEV, prod/PROD, config, etc.)
-5. Identify the query intent type
+5. IMPORTANT: Include synonyms for ambiguous terms (apps/projects, setup/configuration, etc.)
+6. Identify the query intent type
 
 Respond with JSON only (no markdown, no explanation):
 {
@@ -181,9 +182,11 @@ Examples:
 - "list all the MCP tools" -> {"keywords": ["MCP", "tools"], "intent": "enumerative"}
 - "development environment setup" -> {"keywords": ["DEV", "environment"], "intent": "procedural"}
 - "what is the difference between dev and prod" -> {"keywords": ["DEV", "PROD"], "intent": "factual"}
+- "what apps am I working on" -> {"keywords": ["apps", "projects", "working"], "intent": "enumerative"}
 
 Keep 1-5 keywords. Prefer fewer, more specific terms over many generic ones.
-For technical domains, use common abbreviations (DEV, PROD, DB, API, CLI, etc.)."#;
+For technical domains, use common abbreviations (DEV, PROD, DB, API, CLI, etc.).
+Include synonyms when the term could have alternatives (apps→projects, setup→configuration)."#;
 
 #[cfg(test)]
 mod tests {
