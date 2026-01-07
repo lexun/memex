@@ -67,10 +67,10 @@ impl MemexMcpServer {
 impl McpServer for MemexMcpServer {
     /// Create a new task
     ///
-    /// Priority is a simple integer where higher numbers mean more important.
-    /// Suggested scale: 0=normal, 1=elevated, 2=high, 3=urgent.
-    /// Most tasks should be priority 0. Reserve higher priorities for truly
-    /// time-sensitive or blocking work.
+    /// Priority is a simple integer where lower numbers mean higher priority.
+    /// Scale: 0=critical, 1=high, 2=medium (default), 3=low.
+    /// Most tasks should be priority 2. Reserve 0 and 1 for truly urgent or
+    /// blocking work.
     #[tool]
     async fn create_task(
         &self,
@@ -228,7 +228,7 @@ impl McpServer for MemexMcpServer {
     /// Update a task's status or priority
     ///
     /// Valid status values: pending, in_progress, blocked, completed, cancelled
-    /// Priority: higher numbers = more urgent (0=normal, 1=elevated, 2=high, 3=urgent)
+    /// Priority: lower numbers = higher priority (0=critical, 1=high, 2=medium, 3=low)
     #[tool]
     async fn update_task(
         &self,
@@ -236,7 +236,7 @@ impl McpServer for MemexMcpServer {
         id: String,
         /// New status (pending, in_progress, blocked, completed, cancelled)
         status: Option<String>,
-        /// New priority level (0=normal, higher=more urgent)
+        /// New priority level (0=critical, 1=high, 2=medium, 3=low)
         priority: Option<i32>,
     ) -> mcp_attr::Result<String> {
         if status.is_none() && priority.is_none() {
