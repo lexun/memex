@@ -216,6 +216,14 @@ pub struct ExtractFactsResult {
     pub links_created: usize,
 }
 
+/// Result of backfilling embeddings
+#[derive(Debug, Clone, Deserialize)]
+pub struct BackfillResult {
+    pub facts_processed: usize,
+    pub facts_updated: usize,
+    pub facts_remaining: usize,
+}
+
 /// Result of a knowledge rebuild
 #[derive(Debug, Clone, Deserialize)]
 pub struct RebuildResult {
@@ -327,6 +335,24 @@ impl KnowledgeClient {
             .context("Failed to extract facts")?;
 
         serde_json::from_value(result).context("Failed to parse extraction response")
+    }
+
+    /// Backfill embeddings for facts that are missing them
+    ///
+    /// Unlike rebuild, this preserves existing facts and only adds embeddings.
+    pub async fn backfill_embeddings(&self, batch_size: Option<usize>) -> Result<BackfillResult> {
+        #[derive(Serialize)]
+        struct Params {
+            batch_size: Option<usize>,
+        }
+
+        let result = self
+            .client
+            .request("backfill_embeddings", Params { batch_size })
+            .await
+            .context("Failed to backfill embeddings")?;
+
+        serde_json::from_value(result).context("Failed to parse backfill response")
     }
 
     /// Rebuild the knowledge graph from scratch

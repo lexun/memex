@@ -686,6 +686,42 @@ impl Store {
             .collect()
     }
 
+    // ========== Backfill Operations ==========
+
+    /// Get facts that are missing embeddings
+    pub async fn get_facts_without_embeddings(&self, limit: Option<usize>) -> Result<Vec<Fact>> {
+        let mut sql = "SELECT * FROM fact WHERE embedding IS NONE OR array::len(embedding) = 0".to_string();
+
+        if let Some(n) = limit {
+            sql.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .await
+            .context("Failed to query facts without embeddings")?;
+
+        let facts: Vec<Fact> = response.take(0).context("Failed to parse facts")?;
+        Ok(facts)
+    }
+
+    /// Update a fact's embedding
+    pub async fn update_fact_embedding(&self, fact_id: &str, embedding: Vec<f32>) -> Result<()> {
+        let sql = "UPDATE type::thing('fact', $id) SET embedding = $embedding, updated_at = time::now()";
+
+        self.db
+            .client()
+            .query(sql)
+            .bind(("id", fact_id.to_string()))
+            .bind(("embedding", embedding))
+            .await
+            .context("Failed to update fact embedding")?;
+
+        Ok(())
+    }
+
     // ========== Rebuild Operations ==========
 
     /// Delete all derived data (facts, entities, fact_entity relationships)

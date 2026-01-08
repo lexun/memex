@@ -94,11 +94,22 @@ enum KnowledgeCommands {
         #[arg(short, long)]
         project: Option<String>,
     },
-    /// Show knowledge system status
+    /// Backfill missing embeddings without rebuilding
     #[command(display_order = 7)]
+    Backfill {
+        /// Number of facts to process per batch
+        #[arg(short, long, default_value = "50")]
+        batch_size: usize,
+
+        /// Process all facts (run until none remain)
+        #[arg(short, long)]
+        all: bool,
+    },
+    /// Show knowledge system status
+    #[command(display_order = 8)]
     Status,
     /// List known entities
-    #[command(display_order = 8)]
+    #[command(display_order = 9)]
     Entities {
         /// Filter by project
         #[arg(short, long)]
@@ -113,7 +124,7 @@ enum KnowledgeCommands {
         limit: Option<usize>,
     },
     /// Get facts about a specific entity
-    #[command(display_order = 9)]
+    #[command(display_order = 10)]
     Entity {
         /// Entity name to look up
         name: String,
@@ -322,6 +333,38 @@ async fn async_main(command: Commands) -> Result<()> {
                     result.facts_created, result.entities_created, result.links_created, result.memos_processed);
                 Ok(())
             }
+            KnowledgeCommands::Backfill { batch_size, all } => {
+                let client = atlas::KnowledgeClient::new(&socket_path);
+
+                if all {
+                    // Process all facts until none remain
+                    let mut total_updated = 0;
+                    loop {
+                        let result = client.backfill_embeddings(Some(batch_size)).await?;
+                        total_updated += result.facts_updated;
+
+                        if result.facts_remaining == 0 {
+                            println!("Backfill complete: {} facts updated", total_updated);
+                            break;
+                        }
+
+                        println!("Progress: {} updated, {} remaining...", total_updated, result.facts_remaining);
+                    }
+                } else {
+                    // Process single batch
+                    let result = client.backfill_embeddings(Some(batch_size)).await?;
+                    println!("Backfill:");
+                    println!("  Processed: {}", result.facts_processed);
+                    println!("  Updated: {}", result.facts_updated);
+                    println!("  Remaining: {}", result.facts_remaining);
+
+                    if result.facts_remaining > 0 {
+                        println!();
+                        println!("Run 'memex backfill --all' to process all remaining facts.");
+                    }
+                }
+                Ok(())
+            }
             KnowledgeCommands::Status => {
                 let client = atlas::KnowledgeClient::new(&socket_path);
                 let status = client.status().await?;
@@ -337,7 +380,7 @@ async fn async_main(command: Commands) -> Result<()> {
                 if status.facts.without_embeddings > 0 && status.llm_configured {
                     println!();
                     println!("Note: {} facts are missing embeddings.", status.facts.without_embeddings);
-                    println!("      Run 'memex rebuild' to regenerate facts with embeddings.");
+                    println!("      Run 'memex backfill --all' to add embeddings without rebuilding.");
                 }
 
                 if !status.llm_configured {

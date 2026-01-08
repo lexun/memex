@@ -345,11 +345,12 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "list_events" => handle_list_events(request, &stores.atlas).await,
         "get_event" => handle_get_event(request, &stores.atlas).await,
 
-        // Knowledge operations (query, search, extract, rebuild)
+        // Knowledge operations (query, search, extract, rebuild, backfill)
         "query_knowledge" => handle_query_knowledge(request, stores).await,
         "search_knowledge" => handle_search_knowledge(request, stores).await,
         "extract_facts" => handle_extract_facts(request, stores).await,
         "rebuild_knowledge" => handle_rebuild_knowledge(request, stores).await,
+        "backfill_embeddings" => handle_backfill_embeddings(request, stores).await,
         "knowledge_status" => handle_knowledge_status(stores).await,
 
         // Entity operations
@@ -1174,6 +1175,74 @@ async fn handle_knowledge_status(stores: &Stores) -> Result<serde_json::Value, I
             "without_embeddings": without_embeddings,
         },
         "llm_configured": llm_configured,
+    }))
+}
+
+// ========== Backfill Handlers ==========
+
+#[derive(Deserialize)]
+struct BackfillEmbeddingsParams {
+    #[serde(default = "default_backfill_batch_size")]
+    batch_size: usize,
+}
+
+fn default_backfill_batch_size() -> usize {
+    50
+}
+
+async fn handle_backfill_embeddings(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    let params: BackfillEmbeddingsParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(BackfillEmbeddingsParams { batch_size: 50 });
+
+    let extractor = match &stores.extractor {
+        Some(e) => e,
+        None => {
+            return Err(IpcError::internal("LLM not configured - cannot generate embeddings".to_string()));
+        }
+    };
+
+    // Get facts without embeddings
+    let facts = stores
+        .atlas
+        .get_facts_without_embeddings(Some(params.batch_size))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    let facts_processed = facts.len();
+    let mut facts_updated = 0;
+
+    // Generate embeddings in batches
+    if !facts.is_empty() {
+        let texts: Vec<String> = facts.iter().map(|f| f.content.clone()).collect();
+
+        match extractor.client().embed(texts).await {
+            Ok(embeddings) => {
+                for (fact, embedding) in facts.iter().zip(embeddings.into_iter()) {
+                    if let Some(ref id) = fact.id {
+                        let fact_id = id.id.to_raw();
+                        if stores.atlas.update_fact_embedding(&fact_id, embedding).await.is_ok() {
+                            facts_updated += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to generate embeddings: {}", e);
+            }
+        }
+    }
+
+    // Count remaining facts without embeddings
+    let (_, facts_remaining) = stores
+        .atlas
+        .count_fact_embeddings()
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(json!({
+        "facts_processed": facts_processed,
+        "facts_updated": facts_updated,
+        "facts_remaining": facts_remaining,
     }))
 }
 

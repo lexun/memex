@@ -236,7 +236,7 @@ pub async fn handle_knowledge_command(cmd: KnowledgeCommand, socket_path: &Path)
             if status.facts.without_embeddings > 0 && status.llm_configured {
                 println!();
                 println!("Note: {} facts are missing embeddings.", status.facts.without_embeddings);
-                println!("      Run 'memex rebuild' to regenerate facts with embeddings.");
+                println!("      Run 'memex backfill --all' to add embeddings without rebuilding.");
             }
 
             if !status.llm_configured {
