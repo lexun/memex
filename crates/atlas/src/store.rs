@@ -664,7 +664,7 @@ impl Store {
     }
 
     /// Search facts using vector similarity
-    async fn vector_search_facts(
+    pub async fn vector_search_facts(
         &self,
         query_embedding: &[f32],
         project: Option<&str>,
@@ -674,7 +674,7 @@ impl Store {
     }
 
     /// Search facts using vector similarity with temporal filtering
-    async fn vector_search_facts_temporal(
+    pub async fn vector_search_facts_temporal(
         &self,
         query_embedding: &[f32],
         project: Option<&str>,

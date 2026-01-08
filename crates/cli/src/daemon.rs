@@ -1060,8 +1060,8 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
 
     tracing::info!("Query knowledge: query='{}', project={:?}", params.query, params.project);
 
-    // Decompose query and generate embedding if LLM is available
-    let (keywords, query_embedding, temporal_filter) = if let Some(ref extractor) = stores.extractor {
+    // Decompose query, generate embeddings, and hypothetical answer if LLM is available
+    let (keywords, query_embedding, hypothetical_embedding, temporal_filter) = if let Some(ref extractor) = stores.extractor {
         // Decompose natural language query into keywords for BM25
         let decomposer = QueryDecomposer::new(extractor.client());
         let decomposed = match decomposer.decompose(&params.query).await {
@@ -1098,12 +1098,37 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
             }
         };
 
-        (decomposed.keywords, embedding, decomposed.temporal_filter)
+        // Phase 2.1: HyDE - Generate hypothetical answer and embed it
+        // This bridges semantic gap between short queries and longer facts
+        let hypo_embedding = {
+            let generator = atlas::HypotheticalGenerator::new(extractor.client());
+            match generator.generate(&params.query).await {
+                Ok(hypothetical) => {
+                    tracing::info!("Generated hypothetical: {}", hypothetical);
+                    match extractor.client().embed_one(&hypothetical).await {
+                        Ok(emb) => {
+                            tracing::info!("Generated hypothetical embedding: {} dimensions", emb.len());
+                            Some(emb)
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to embed hypothetical: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Hypothetical generation failed: {}", e);
+                    None
+                }
+            }
+        };
+
+        (decomposed.keywords, embedding, hypo_embedding, decomposed.temporal_filter)
     } else {
         tracing::info!("No LLM configured, using raw query");
         // Still try to parse temporal expressions even without LLM
         let temporal = atlas::TemporalParser::parse(&params.query);
-        (vec![params.query.clone()], None, temporal)
+        (vec![params.query.clone()], None, None, temporal)
     };
 
     // Extract date range from temporal filter
@@ -1157,6 +1182,36 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
         for result in entity_results {
             let id = result.id.clone();
             if seen_ids.insert(id) {
+                all_results.push(result);
+            }
+        }
+    }
+
+    // Phase 2.1: HyDE - Search using hypothetical answer embedding
+    // This helps find facts semantically similar to what the answer might look like
+    if let Some(ref hypo_emb) = hypothetical_embedding {
+        const HYDE_SCORE: f64 = 0.35; // Lower than direct matches
+
+        let hyde_results = stores
+            .atlas
+            .vector_search_facts_temporal(
+                hypo_emb,
+                params.project.as_deref(),
+                Some(5), // Limit HyDE results
+                date_start,
+                date_end,
+            )
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?;
+
+        tracing::info!("HyDE search found {} results", hyde_results.len());
+
+        // Add HyDE results with discounted score
+        for mut result in hyde_results {
+            let id = result.id.clone();
+            if seen_ids.insert(id) {
+                // Discount the score for HyDE results
+                result.score *= HYDE_SCORE;
                 all_results.push(result);
             }
         }

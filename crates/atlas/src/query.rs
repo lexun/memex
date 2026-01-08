@@ -390,6 +390,56 @@ fn parse_intent(s: &str) -> QueryIntent {
     }
 }
 
+/// Generates hypothetical answers for HyDE (Hypothetical Document Embeddings)
+///
+/// This technique bridges the semantic gap between short queries and longer facts
+/// by generating a plausible answer first, then using its embedding for retrieval.
+pub struct HypotheticalGenerator<'a> {
+    llm: &'a LlmClient,
+}
+
+impl<'a> HypotheticalGenerator<'a> {
+    /// Create a new generator with the given LLM client
+    pub fn new(llm: &'a LlmClient) -> Self {
+        Self { llm }
+    }
+
+    /// Generate a hypothetical answer to the query
+    ///
+    /// The hypothetical answer is used for semantic search, not shown to users.
+    /// It's okay if it hallucinates - we just need it to be semantically similar
+    /// to what the real answer might look like.
+    pub async fn generate(&self, query: &str) -> Result<String> {
+        let response = self
+            .llm
+            .complete(HYPOTHETICAL_PROMPT, query)
+            .await
+            .context("HyDE generation failed")?;
+
+        debug!("Generated hypothetical for '{}': {}", query, response);
+        Ok(response.trim().to_string())
+    }
+}
+
+const HYPOTHETICAL_PROMPT: &str = r#"You are generating a hypothetical answer to help with semantic search.
+
+Given the user's question, write a SHORT plausible answer (2-3 sentences) that someone might have recorded in their knowledge base.
+
+Important:
+- Write as if you're stating facts from memory, not answering a question
+- Be specific and include relevant technical terms
+- It's fine to make up plausible details - this is for retrieval, not accuracy
+- Keep it short (50-100 words max)
+
+Example:
+Question: "What are Luke's coding preferences?"
+Hypothetical: "Luke prefers minimal, clean code without unnecessary abstractions. He values simplicity and avoids over-engineering. He likes to focus on the task at hand rather than building for hypothetical future requirements."
+
+Question: "What database does memex use?"
+Hypothetical: "Memex uses SurrealDB as its primary database. SurrealDB provides both document storage and graph capabilities, which are used for the knowledge graph features. The connection is configured via the daemon."
+
+Write ONLY the hypothetical answer, no preamble or explanation."#;
+
 const DECOMPOSITION_PROMPT: &str = r#"You are a search query optimizer. Extract the key search terms from the user's natural language query.
 
 Your task:
