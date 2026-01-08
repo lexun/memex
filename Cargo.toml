@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cli", "crates/atlas", "crates/db", "crates/forge", "crates/ipc", "crates/llm", "crates/mcp"]
+members = ["crates/cli", "crates/atlas", "crates/db", "crates/evals", "crates/forge", "crates/ipc", "crates/llm", "crates/mcp"]
 resolver = "2"
 
 [workspace.package]
@@ -21,3 +21,4 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 surrealdb = { version = "2", features = ["kv-rocksdb", "protocol-ws"] }
+dirs = "5"

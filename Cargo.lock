@@ -1403,6 +1403,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "evals"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atlas",
+ "chrono",
+ "clap",
+ "dirs 5.0.1",
+ "forge",
+ "ipc",
+ "llm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

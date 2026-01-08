@@ -105,6 +105,33 @@ impl LlmClient {
         Self { config }
     }
 
+    /// Create a client from environment variables
+    ///
+    /// Looks for OPENAI_API_KEY and optionally OPENAI_BASE_URL.
+    pub fn from_env() -> Result<Self> {
+        let api_key = std::env::var("OPENAI_API_KEY").ok();
+        let base_url = std::env::var("OPENAI_BASE_URL").ok();
+
+        if api_key.is_none() && base_url.is_none() {
+            anyhow::bail!("OPENAI_API_KEY not set");
+        }
+
+        Ok(Self::new(LlmConfig {
+            api_key,
+            base_url,
+            ..Default::default()
+        }))
+    }
+
+    /// Create a mock client for testing (panics if methods are called)
+    #[cfg(test)]
+    pub fn new_mock() -> Self {
+        Self::new(LlmConfig {
+            provider: "mock".to_string(),
+            ..Default::default()
+        })
+    }
+
     /// Generate a chat completion
     pub async fn chat(&self, messages: Vec<Message>) -> Result<String> {
         match self.config.provider.as_str() {
