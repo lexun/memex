@@ -1037,15 +1037,16 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
     tracing::info!("Query knowledge: query='{}', project={:?}", params.query, params.project);
 
     // Decompose query and generate embedding if LLM is available
-    let (keywords, query_embedding) = if let Some(ref extractor) = stores.extractor {
+    let (keywords, query_embedding, temporal_filter) = if let Some(ref extractor) = stores.extractor {
         // Decompose natural language query into keywords for BM25
         let decomposer = QueryDecomposer::new(extractor.client());
         let decomposed = match decomposer.decompose(&params.query).await {
             Ok(d) => {
                 tracing::info!(
-                    "Decomposed query '{}' into keywords: {:?}",
+                    "Decomposed query '{}' into keywords: {:?}, temporal: {:?}",
                     params.query,
-                    d.keywords
+                    d.keywords,
+                    d.temporal_filter
                 );
                 d
             }
@@ -1056,6 +1057,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
                     keywords: vec![params.query.clone()],
                     search_text: params.query.clone(),
                     intent: atlas::QueryIntent::Factual,
+                    temporal_filter: atlas::TemporalParser::parse(&params.query),
                 }
             }
         };
@@ -1072,11 +1074,18 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
             }
         };
 
-        (decomposed.keywords, embedding)
+        (decomposed.keywords, embedding, decomposed.temporal_filter)
     } else {
         tracing::info!("No LLM configured, using raw query");
-        (vec![params.query.clone()], None)
+        // Still try to parse temporal expressions even without LLM
+        let temporal = atlas::TemporalParser::parse(&params.query);
+        (vec![params.query.clone()], None, temporal)
     };
+
+    // Extract date range from temporal filter
+    let (date_start, date_end) = temporal_filter
+        .map(|tf| (tf.start, tf.end))
+        .unwrap_or((None, None));
 
     // Search each keyword separately and merge results (OR semantics for synonyms)
     let mut all_results = Vec::new();
@@ -1085,11 +1094,13 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
     for keyword in &keywords {
         let keyword_results = stores
             .atlas
-            .hybrid_search_facts(
+            .hybrid_search_facts_temporal(
                 keyword,
                 query_embedding.as_deref(),
                 params.project.as_deref(),
                 Some(params.limit),
+                date_start,
+                date_end,
             )
             .await
             .map_err(|e| IpcError::internal(e.to_string()))?;
@@ -1171,6 +1182,12 @@ async fn handle_search_knowledge(request: &Request, stores: &Stores) -> Result<s
     let params: KnowledgeParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
+    // Parse temporal expressions from query
+    let temporal_filter = atlas::TemporalParser::parse(&params.query);
+    let (date_start, date_end) = temporal_filter
+        .map(|tf| (tf.start, tf.end))
+        .unwrap_or((None, None));
+
     // Generate query embedding if LLM is available
     let query_embedding = if let Some(ref extractor) = stores.extractor {
         extractor
@@ -1182,14 +1199,16 @@ async fn handle_search_knowledge(request: &Request, stores: &Stores) -> Result<s
         None
     };
 
-    // Hybrid search (BM25 + vector if embedding available)
+    // Hybrid search (BM25 + vector if embedding available) with temporal filtering
     let results = stores
         .atlas
-        .hybrid_search_facts(
+        .hybrid_search_facts_temporal(
             &params.query,
             query_embedding.as_deref(),
             params.project.as_deref(),
             Some(params.limit),
+            date_start,
+            date_end,
         )
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;

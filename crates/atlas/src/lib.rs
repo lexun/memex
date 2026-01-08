@@ -21,7 +21,7 @@ pub use client::{
 pub use event::{Event, EventAuthority, EventSource};
 pub use extraction::{ExtractedFact, ExtractionResult, Extractor};
 pub use fact::{Entity, EntityType, EpisodeRef, Fact, FactType};
-pub use query::{DecomposedQuery, QueryDecomposer, QueryIntent};
+pub use query::{DecomposedQuery, QueryDecomposer, QueryIntent, TemporalFilter, TemporalParser};
 pub use handler::{handle_event_command, handle_knowledge_command, handle_memo_command};
 pub use memo::{Memo, MemoAuthority, MemoSource};
 pub use store::Store;

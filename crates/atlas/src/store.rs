@@ -168,12 +168,32 @@ impl Store {
         project: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<FactSearchResult>> {
+        self.search_facts_temporal(query, project, limit, None, None).await
+    }
+
+    /// Search facts using full-text search with optional temporal filtering
+    pub async fn search_facts_temporal(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        limit: Option<usize>,
+        date_start: Option<chrono::DateTime<chrono::Utc>>,
+        date_end: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<FactSearchResult>> {
         let mut sql = String::from(
             "SELECT *, search::score(1) AS score FROM fact WHERE content @1@ $query",
         );
 
         if project.is_some() {
             sql.push_str(" AND project = $project");
+        }
+
+        if date_start.is_some() {
+            sql.push_str(" AND created_at >= $date_start");
+        }
+
+        if date_end.is_some() {
+            sql.push_str(" AND created_at < $date_end");
         }
 
         sql.push_str(" ORDER BY score DESC");
@@ -184,12 +204,18 @@ impl Store {
 
         tracing::info!("Searching facts with query: {}", sql);
 
+        // Convert to SurrealDB datetime format
+        let date_start_surreal = date_start.map(|d| surrealdb::sql::Datetime::from(d));
+        let date_end_surreal = date_end.map(|d| surrealdb::sql::Datetime::from(d));
+
         let mut response = self
             .db
             .client()
             .query(&sql)
             .bind(("query", query.to_string()))
             .bind(("project", project.map(|s| s.to_string())))
+            .bind(("date_start", date_start_surreal))
+            .bind(("date_end", date_end_surreal))
             .await
             .context("Failed to search facts")?;
 
@@ -486,14 +512,29 @@ impl Store {
         project: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<FactSearchResult>> {
+        self.hybrid_search_facts_temporal(text_query, query_embedding, project, limit, None, None).await
+    }
+
+    /// Hybrid search with optional temporal filtering
+    pub async fn hybrid_search_facts_temporal(
+        &self,
+        text_query: &str,
+        query_embedding: Option<&[f32]>,
+        project: Option<&str>,
+        limit: Option<usize>,
+        date_start: Option<chrono::DateTime<chrono::Utc>>,
+        date_end: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<FactSearchResult>> {
         let limit = limit.unwrap_or(10);
 
         // BM25 search
-        let bm25_results = self.search_facts(text_query, project, Some(limit * 2)).await?;
+        let bm25_results = self.search_facts_temporal(text_query, project, Some(limit * 2), date_start, date_end).await?;
         tracing::info!(
-            "BM25 search for '{}': {} results",
+            "BM25 search for '{}': {} results (temporal: {:?} - {:?})",
             text_query,
-            bm25_results.len()
+            bm25_results.len(),
+            date_start,
+            date_end
         );
 
         // If no embedding, return BM25 results only
@@ -510,7 +551,7 @@ impl Store {
 
         // Vector similarity search (gracefully handle failures)
         let vector_results = match self
-            .vector_search_facts(query_embedding, project, Some(limit * 2))
+            .vector_search_facts_temporal(query_embedding, project, Some(limit * 2), date_start, date_end)
             .await
         {
             Ok(results) => {
@@ -536,6 +577,18 @@ impl Store {
         project: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<FactSearchResult>> {
+        self.vector_search_facts_temporal(query_embedding, project, limit, None, None).await
+    }
+
+    /// Search facts using vector similarity with temporal filtering
+    async fn vector_search_facts_temporal(
+        &self,
+        query_embedding: &[f32],
+        project: Option<&str>,
+        limit: Option<usize>,
+        date_start: Option<chrono::DateTime<chrono::Utc>>,
+        date_end: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<FactSearchResult>> {
         // SurrealDB vector search uses the KNN operator <|K,D|>
         // K = number of results, D = distance (optional, defaults to index distance)
         let k = limit.unwrap_or(10);
@@ -549,6 +602,14 @@ impl Store {
             sql.push_str(" AND project = $project");
         }
 
+        if date_start.is_some() {
+            sql.push_str(" AND created_at >= $date_start");
+        }
+
+        if date_end.is_some() {
+            sql.push_str(" AND created_at < $date_end");
+        }
+
         sql.push_str(" ORDER BY score DESC");
 
         tracing::info!(
@@ -558,12 +619,18 @@ impl Store {
             sql
         );
 
+        // Convert to SurrealDB datetime format
+        let date_start_surreal = date_start.map(|d| surrealdb::sql::Datetime::from(d));
+        let date_end_surreal = date_end.map(|d| surrealdb::sql::Datetime::from(d));
+
         let mut response = self
             .db
             .client()
             .query(&sql)
             .bind(("embedding", query_embedding.to_vec()))
             .bind(("project", project.map(|s| s.to_string())))
+            .bind(("date_start", date_start_surreal))
+            .bind(("date_end", date_end_surreal))
             .await
             .context("Failed to vector search facts")?;
 

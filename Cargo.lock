@@ -415,10 +415,12 @@ name = "atlas"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "db",
  "ipc",
  "llm",
+ "regex",
  "serde",
  "serde_json",
  "surrealdb",
