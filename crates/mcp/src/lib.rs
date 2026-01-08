@@ -27,6 +27,7 @@ use mcp_attr::server::{mcp_server, serve_stdio, McpServer};
 use mcp_attr::ErrorCode;
 
 use atlas::{EventClient, KnowledgeClient, MemoClient};
+use cortex::CortexClient;
 use forge::task::{Task, TaskStatus};
 use forge::TaskClient;
 
@@ -36,6 +37,7 @@ pub struct MemexMcpServer {
     memo_client: MemoClient,
     event_client: EventClient,
     knowledge_client: KnowledgeClient,
+    cortex_client: CortexClient,
 }
 
 impl MemexMcpServer {
@@ -45,11 +47,13 @@ impl MemexMcpServer {
         let memo_client = MemoClient::new(socket_path);
         let event_client = EventClient::new(socket_path);
         let knowledge_client = KnowledgeClient::new(socket_path);
+        let cortex_client = CortexClient::new(socket_path);
         Self {
             task_client,
             memo_client,
             event_client,
             knowledge_client,
+            cortex_client,
         }
     }
 
@@ -930,6 +934,138 @@ impl McpServer for MemexMcpServer {
             }
             Err(e) => {
                 let msg = format!("Failed to get related facts: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Cortex tools (worker management)
+    // -------------------------------------------------------------------------
+
+    /// Create a new worker for multi-agent orchestration
+    ///
+    /// Workers are Claude processes that can operate in isolated directories.
+    /// Use this to spawn parallel workers for different tasks.
+    #[tool]
+    async fn cortex_create_worker(
+        &self,
+        /// Working directory for the worker
+        cwd: String,
+        /// Model to use (e.g., "haiku", "sonnet", "opus")
+        model: Option<String>,
+        /// Additional system prompt context for the worker
+        system_prompt: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        match self
+            .cortex_client
+            .create_worker(&cwd, model.as_deref(), system_prompt.as_deref())
+            .await
+        {
+            Ok(worker_id) => Ok(format!(
+                "Created worker: {}\n  Directory: {}",
+                worker_id, cwd
+            )),
+            Err(e) => {
+                let msg = format!("Failed to create worker: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Send a message to a worker and get the response
+    ///
+    /// The message is sent to the Claude worker, which processes it
+    /// and returns a response. Workers maintain session context between calls.
+    #[tool]
+    async fn cortex_send_message(
+        &self,
+        /// Worker ID to send the message to
+        worker_id: String,
+        /// Message/prompt to send to the worker
+        message: String,
+    ) -> mcp_attr::Result<String> {
+        let wid = cortex::WorkerId::from_string(&worker_id);
+        match self.cortex_client.send_message(&wid, &message).await {
+            Ok(response) => {
+                let mut output = String::new();
+                if response.is_error {
+                    output.push_str(&format!("Worker {} returned an error:\n", worker_id));
+                }
+                output.push_str(&response.result);
+                output.push_str(&format!("\n\n[Duration: {}ms]", response.duration_ms));
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to send message: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Get detailed status of a worker
+    #[tool]
+    async fn cortex_worker_status(&self, worker_id: String) -> mcp_attr::Result<String> {
+        let wid = cortex::WorkerId::from_string(&worker_id);
+        match self.cortex_client.get_worker_status(&wid).await {
+            Ok(status) => {
+                let mut output = format!("Worker: {}\n", worker_id);
+                output.push_str(&format!("  State: {:?}\n", status.state));
+                if let Some(ref wt) = status.worktree {
+                    output.push_str(&format!("  Directory: {}\n", wt));
+                }
+                output.push_str(&format!("  Started: {}\n", status.started_at));
+                output.push_str(&format!("  Last Activity: {}\n", status.last_activity));
+                output.push_str(&format!(
+                    "  Messages: {} sent, {} received",
+                    status.messages_sent, status.messages_received
+                ));
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to get worker status: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// List all workers
+    #[tool]
+    async fn cortex_list_workers(&self) -> mcp_attr::Result<String> {
+        match self.cortex_client.list_workers().await {
+            Ok(workers) => {
+                if workers.is_empty() {
+                    Ok("No workers running".to_string())
+                } else {
+                    let mut output = format!("Workers ({}):\n", workers.len());
+                    for status in workers {
+                        output.push_str(&format!(
+                            "  {} [{:?}] {}\n",
+                            status.id,
+                            status.state,
+                            status.worktree.as_deref().unwrap_or("-")
+                        ));
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to list workers: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Remove a worker
+    ///
+    /// Stops and removes the worker. Any in-progress work will be lost.
+    #[tool]
+    async fn cortex_remove_worker(&self, worker_id: String) -> mcp_attr::Result<String> {
+        let wid = cortex::WorkerId::from_string(&worker_id);
+        match self.cortex_client.remove_worker(&wid).await {
+            Ok(()) => Ok(format!("Removed worker: {}", worker_id)),
+            Err(e) => {
+                let msg = format!("Failed to remove worker: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
             }
         }

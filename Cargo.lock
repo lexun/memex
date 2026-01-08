@@ -913,6 +913,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "cortex",
  "db",
  "dirs 6.0.0",
  "exec",
@@ -2577,6 +2578,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atlas",
+ "cortex",
  "forge",
  "ipc",
  "mcp-attr",

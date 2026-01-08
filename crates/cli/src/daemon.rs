@@ -17,6 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use atlas::{Event, EventSource, Extractor, MemoSource, QueryDecomposer, Store as AtlasStore};
+use cortex::{WorkerConfig, WorkerId, WorkerManager};
 use db::Database;
 use forge::{Store as ForgeStore, Task, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
@@ -31,6 +32,7 @@ struct Stores {
     forge: ForgeStore,
     atlas: AtlasStore,
     extractor: Option<Extractor>,
+    workers: WorkerManager,
 }
 
 /// The daemon process
@@ -191,6 +193,7 @@ impl Daemon {
             forge: ForgeStore::new(forge_db),
             atlas: AtlasStore::new(atlas_db),
             extractor,
+            workers: WorkerManager::new(),
         });
 
         // Bind the socket
@@ -357,6 +360,13 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "list_entities" => handle_list_entities(request, &stores.atlas).await,
         "get_entity_facts" => handle_get_entity_facts(request, &stores.atlas).await,
         "get_related_facts" => handle_get_related_facts(request, &stores.atlas).await,
+
+        // Cortex operations (worker management)
+        "cortex_create_worker" => handle_cortex_create_worker(request, &stores.workers).await,
+        "cortex_send_message" => handle_cortex_send_message(request, &stores.workers).await,
+        "cortex_worker_status" => handle_cortex_worker_status(request, &stores.workers).await,
+        "cortex_list_workers" => handle_cortex_list_workers(&stores.workers).await,
+        "cortex_remove_worker" => handle_cortex_remove_worker(request, &stores.workers).await,
 
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
@@ -1714,6 +1724,112 @@ async fn handle_rebuild_knowledge(request: &Request, stores: &Stores) -> Result<
         "entities_created": entities_created,
         "links_created": links_created,
     }))
+}
+
+// ========== Cortex Handlers ==========
+
+#[derive(Deserialize)]
+struct CreateWorkerParams {
+    cwd: String,
+    model: Option<String>,
+    system_prompt: Option<String>,
+}
+
+async fn handle_cortex_create_worker(
+    request: &Request,
+    workers: &WorkerManager,
+) -> Result<serde_json::Value, IpcError> {
+    let params: CreateWorkerParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let mut config = WorkerConfig::new(&params.cwd);
+    if let Some(model) = params.model {
+        config = config.with_model(model);
+    }
+    if let Some(prompt) = params.system_prompt {
+        config = config.with_system_prompt(prompt);
+    }
+
+    let worker_id = workers
+        .create(config)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(json!(worker_id.0))
+}
+
+#[derive(Deserialize)]
+struct SendMessageParams {
+    worker_id: String,
+    message: String,
+}
+
+async fn handle_cortex_send_message(
+    request: &Request,
+    workers: &WorkerManager,
+) -> Result<serde_json::Value, IpcError> {
+    let params: SendMessageParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let worker_id = WorkerId::from_string(&params.worker_id);
+
+    let response = workers
+        .send_message(&worker_id, &params.message)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(json!({
+        "result": response.result,
+        "is_error": response.is_error,
+        "session_id": response.session_id,
+        "duration_ms": response.duration_ms,
+    }))
+}
+
+#[derive(Deserialize)]
+struct WorkerIdParams {
+    worker_id: String,
+}
+
+async fn handle_cortex_worker_status(
+    request: &Request,
+    workers: &WorkerManager,
+) -> Result<serde_json::Value, IpcError> {
+    let params: WorkerIdParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let worker_id = WorkerId::from_string(&params.worker_id);
+
+    let status = workers
+        .status(&worker_id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(status).unwrap())
+}
+
+async fn handle_cortex_list_workers(
+    workers: &WorkerManager,
+) -> Result<serde_json::Value, IpcError> {
+    let list = workers.list().await;
+    Ok(serde_json::to_value(list).unwrap())
+}
+
+async fn handle_cortex_remove_worker(
+    request: &Request,
+    workers: &WorkerManager,
+) -> Result<serde_json::Value, IpcError> {
+    let params: WorkerIdParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let worker_id = WorkerId::from_string(&params.worker_id);
+
+    workers
+        .remove(&worker_id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(json!(true))
 }
 
 // ========== Public Functions ==========
