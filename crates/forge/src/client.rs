@@ -184,15 +184,20 @@ impl TaskClient {
     }
 
     /// Delete a task
-    pub async fn delete_task(&self, id: &str) -> Result<Option<Task>> {
+    ///
+    /// Optionally provide a reason (e.g., "duplicate", "test data") which is
+    /// preserved in the event log for knowledge extraction context.
+    pub async fn delete_task(&self, id: &str, reason: Option<&str>) -> Result<Option<Task>> {
         #[derive(Serialize)]
         struct Params<'a> {
             id: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            reason: Option<&'a str>,
         }
 
         let result = self
             .client
-            .request("delete_task", Params { id })
+            .request("delete_task", Params { id, reason })
             .await
             .context("Failed to delete task")?;
 

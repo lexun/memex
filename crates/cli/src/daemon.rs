@@ -574,6 +574,8 @@ async fn handle_close_task(request: &Request, stores: &Stores) -> Result<serde_j
 #[derive(Deserialize)]
 struct DeleteTaskParams {
     id: String,
+    /// Reason for deletion (e.g., "duplicate", "test data") - preserved in event log
+    reason: Option<String>,
 }
 
 async fn handle_delete_task(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
@@ -586,7 +588,7 @@ async fn handle_delete_task(request: &Request, stores: &Stores) -> Result<serde_
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.deleted event to Atlas
+    // Emit task.deleted event to Atlas (includes reason for context)
     if let Some(ref task) = deleted {
         let task_json = serde_json::to_value(task).unwrap();
         let event = Event::new(
@@ -594,6 +596,7 @@ async fn handle_delete_task(request: &Request, stores: &Stores) -> Result<serde_
             EventSource::system("forge").with_via("daemon"),
             json!({
                 "task_id": params.id,
+                "reason": params.reason,
                 "snapshot": task_json
             }),
         );

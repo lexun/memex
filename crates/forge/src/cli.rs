@@ -76,10 +76,13 @@ pub enum TaskCommand {
         reason: Option<String>,
     },
 
-    /// Delete a task
+    /// Delete a task permanently
     Delete {
         /// Task ID
         id: String,
+        /// Reason for deletion (e.g., "duplicate", "test data")
+        #[arg(short, long)]
+        reason: Option<String>,
     },
 
     /// Manage task updates/notes

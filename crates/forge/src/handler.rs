@@ -151,8 +151,8 @@ pub async fn handle_task_command(cmd: TaskCommand, socket_path: &Path) -> Result
             Ok(())
         }
 
-        TaskCommand::Delete { id } => {
-            match client.delete_task(&id).await? {
+        TaskCommand::Delete { id, reason } => {
+            match client.delete_task(&id, reason.as_deref()).await? {
                 Some(task) => {
                     println!("Deleted task: {}", task.id_str().unwrap_or_default());
                 }
