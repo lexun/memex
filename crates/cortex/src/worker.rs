@@ -1,34 +1,55 @@
 //! Worker process management
 //!
 //! Handles spawning, communicating with, and monitoring Claude worker processes.
+//!
+//! ## Approach
+//!
+//! For MVP, we use Claude's `-p` (print) mode with JSON output. Each message
+//! spawns a new Claude process. This is simpler than stream-json mode and
+//! works reliably.
+//!
+//! Future improvements could use:
+//! - `--resume` flag for session continuity
+//! - `--input-format stream-json` for true bidirectional communication
 
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, Mutex, RwLock};
-use tracing::{debug, error, info, warn};
+use chrono::Utc;
+use tokio::process::Command;
+use tokio::sync::RwLock;
+use tracing::{debug, info};
 
 use crate::error::{CortexError, Result};
-use crate::types::{WorkerConfig, WorkerId, WorkerMessage, WorkerResponse, WorkerState, WorkerStatus};
+use crate::types::{WorkerConfig, WorkerId, WorkerState, WorkerStatus};
+
+/// Result of sending a message to a worker
+#[derive(Debug, Clone)]
+pub struct WorkerResponse {
+    /// The text response from the worker
+    pub result: String,
+    /// Whether the request succeeded
+    pub is_error: bool,
+    /// Session ID (for potential resume)
+    pub session_id: Option<String>,
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+}
 
 /// Internal state for a single worker
 struct Worker {
+    #[allow(dead_code)] // Used for debugging/logging
     id: WorkerId,
     config: WorkerConfig,
-    process: Child,
     status: WorkerStatus,
-    /// Channel to send messages to the worker's stdin handler
-    tx: mpsc::Sender<String>,
-    /// Channel to receive responses from the worker
-    rx: mpsc::Receiver<WorkerResponse>,
+    /// Session ID from last interaction (for --resume)
+    last_session_id: Option<String>,
 }
 
 /// Manages multiple Claude worker processes
 pub struct WorkerManager {
-    workers: Arc<RwLock<HashMap<WorkerId, Arc<Mutex<Worker>>>>>,
+    workers: Arc<RwLock<HashMap<WorkerId, Worker>>>,
 }
 
 impl WorkerManager {
@@ -38,80 +59,10 @@ impl WorkerManager {
         }
     }
 
-    /// Spawn a new Claude worker process
-    pub async fn spawn(&self, config: WorkerConfig) -> Result<WorkerId> {
+    /// Create a new worker (doesn't spawn a process yet)
+    pub async fn create(&self, config: WorkerConfig) -> Result<WorkerId> {
         let id = WorkerId::new();
-        info!("Spawning worker {} in {}", id, config.cwd);
-
-        // Build the claude command
-        let mut cmd = Command::new("claude");
-        cmd.arg("--input-format").arg("stream-json");
-        cmd.arg("--output-format").arg("stream-json");
-        cmd.current_dir(&config.cwd);
-
-        if let Some(ref model) = config.model {
-            cmd.arg("--model").arg(model);
-        }
-
-        // Set up stdio for communication
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let mut process = cmd.spawn().map_err(|e| {
-            CortexError::WorkerStartFailed(format!("Failed to spawn claude: {}", e))
-        })?;
-
-        // Take ownership of stdio
-        let stdin = process.stdin.take().ok_or_else(|| {
-            CortexError::WorkerStartFailed("Failed to get stdin".to_string())
-        })?;
-        let stdout = process.stdout.take().ok_or_else(|| {
-            CortexError::WorkerStartFailed("Failed to get stdout".to_string())
-        })?;
-
-        // Create channels for communication
-        let (tx, mut rx_internal) = mpsc::channel::<String>(32);
-        let (tx_response, rx_response) = mpsc::channel::<WorkerResponse>(32);
-
-        // Spawn stdin writer task
-        let worker_id_clone = id.clone();
-        tokio::spawn(async move {
-            let mut stdin = stdin;
-            while let Some(msg) = rx_internal.recv().await {
-                debug!("Worker {} <- {}", worker_id_clone, msg);
-                if let Err(e) = stdin.write_all(msg.as_bytes()).await {
-                    error!("Failed to write to worker {}: {}", worker_id_clone, e);
-                    break;
-                }
-                if let Err(e) = stdin.write_all(b"\n").await {
-                    error!("Failed to write newline to worker {}: {}", worker_id_clone, e);
-                    break;
-                }
-                if let Err(e) = stdin.flush().await {
-                    error!("Failed to flush worker {}: {}", worker_id_clone, e);
-                    break;
-                }
-            }
-        });
-
-        // Spawn stdout reader task
-        let worker_id_clone = id.clone();
-        tokio::spawn(async move {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                debug!("Worker {} -> {}", worker_id_clone, line);
-                if let Ok(response) = serde_json::from_str::<WorkerResponse>(&line) {
-                    if tx_response.send(response).await.is_err() {
-                        warn!("Response channel closed for worker {}", worker_id_clone);
-                        break;
-                    }
-                } else {
-                    debug!("Non-JSON output from worker {}: {}", worker_id_clone, line);
-                }
-            }
-        });
+        info!("Creating worker {} for directory {}", id, config.cwd);
 
         let mut status = WorkerStatus::new(id.clone());
         status.worktree = Some(config.cwd.clone());
@@ -120,77 +71,105 @@ impl WorkerManager {
         let worker = Worker {
             id: id.clone(),
             config,
-            process,
             status,
-            tx,
-            rx: rx_response,
+            last_session_id: None,
         };
 
-        // Store the worker
-        {
-            let mut workers = self.workers.write().await;
-            workers.insert(id.clone(), Arc::new(Mutex::new(worker)));
-        }
+        let mut workers = self.workers.write().await;
+        workers.insert(id.clone(), worker);
 
-        info!("Worker {} spawned successfully", id);
+        info!("Worker {} created successfully", id);
         Ok(id)
     }
 
-    /// Send a message to a worker
-    pub async fn send_message(&self, id: &WorkerId, message: WorkerMessage) -> Result<()> {
-        let workers = self.workers.read().await;
-        let worker = workers.get(id).ok_or_else(|| {
+    /// Send a message to a worker and get the response
+    ///
+    /// This spawns a Claude process with `-p` mode, sends the message,
+    /// and returns the response.
+    pub async fn send_message(&self, id: &WorkerId, message: &str) -> Result<WorkerResponse> {
+        let mut workers = self.workers.write().await;
+        let worker = workers.get_mut(id).ok_or_else(|| {
             CortexError::WorkerNotFound(id.to_string())
         })?;
 
-        let mut worker = worker.lock().await;
-        let json = serde_json::to_string(&message)?;
+        worker.status.state = WorkerState::Working;
+        worker.status.last_activity = Utc::now();
 
-        worker.tx.send(json).await.map_err(|e| {
-            CortexError::WorkerCommunicationFailed(format!("Send failed: {}", e))
+        // Build command
+        let mut cmd = Command::new("claude");
+        cmd.arg("-p").arg(message);
+        cmd.arg("--output-format").arg("json");
+        cmd.current_dir(&worker.config.cwd);
+
+        // Add model if specified
+        if let Some(ref model) = worker.config.model {
+            cmd.arg("--model").arg(model);
+        }
+
+        // Skip permission prompts for automated use
+        cmd.arg("--dangerously-skip-permissions");
+
+        // Add resume if we have a session
+        if let Some(ref session_id) = worker.last_session_id {
+            cmd.arg("--resume").arg(session_id);
+        }
+
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        debug!("Running claude for worker {}", id);
+
+        let output = cmd.output().await.map_err(|e| {
+            CortexError::WorkerStartFailed(format!("Failed to spawn claude: {}", e))
         })?;
 
         worker.status.messages_sent += 1;
-        worker.status.last_activity = chrono::Utc::now();
-        worker.status.state = WorkerState::Working;
 
-        Ok(())
-    }
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            worker.status.state = WorkerState::Error(stderr.to_string());
+            return Err(CortexError::WorkerCommunicationFailed(stderr.to_string()));
+        }
 
-    /// Get the next response from a worker (with timeout)
-    pub async fn get_response(
-        &self,
-        id: &WorkerId,
-        timeout_ms: Option<u64>,
-    ) -> Result<Option<WorkerResponse>> {
-        let workers = self.workers.read().await;
-        let worker = workers.get(id).ok_or_else(|| {
-            CortexError::WorkerNotFound(id.to_string())
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // Parse JSON response
+        let json: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| {
+            CortexError::WorkerCommunicationFailed(format!("Invalid JSON response: {}", e))
         })?;
 
-        let mut worker = worker.lock().await;
-        let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(30000));
+        let result = json.get("result")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
-        match tokio::time::timeout(timeout, worker.rx.recv()).await {
-            Ok(Some(response)) => {
-                worker.status.messages_received += 1;
-                worker.status.last_activity = chrono::Utc::now();
+        let is_error = json.get("is_error")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-                // Update state based on response type
-                if response.msg_type == "assistant" && response.content.is_none() {
-                    // End of response
-                    worker.status.state = WorkerState::Idle;
-                }
+        let session_id = json.get("session_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
-                Ok(Some(response))
-            }
-            Ok(None) => {
-                // Channel closed
-                worker.status.state = WorkerState::Stopped;
-                Ok(None)
-            }
-            Err(_) => Err(CortexError::WorkerTimeout),
+        let duration_ms = json.get("duration_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        // Store session ID for potential resume
+        if let Some(ref sid) = session_id {
+            worker.last_session_id = Some(sid.clone());
         }
+
+        worker.status.messages_received += 1;
+        worker.status.last_activity = Utc::now();
+        worker.status.state = WorkerState::Idle;
+
+        Ok(WorkerResponse {
+            result,
+            is_error,
+            session_id,
+            duration_ms,
+        })
     }
 
     /// Get status of a worker
@@ -199,49 +178,31 @@ impl WorkerManager {
         let worker = workers.get(id).ok_or_else(|| {
             CortexError::WorkerNotFound(id.to_string())
         })?;
-
-        let worker = worker.lock().await;
         Ok(worker.status.clone())
     }
 
     /// List all workers and their statuses
     pub async fn list(&self) -> Vec<WorkerStatus> {
         let workers = self.workers.read().await;
-        let mut statuses = Vec::new();
-
-        for worker in workers.values() {
-            let worker = worker.lock().await;
-            statuses.push(worker.status.clone());
-        }
-
-        statuses
+        workers.values().map(|w| w.status.clone()).collect()
     }
 
-    /// Kill a worker process
-    pub async fn kill(&self, id: &WorkerId) -> Result<()> {
+    /// Remove a worker
+    pub async fn remove(&self, id: &WorkerId) -> Result<()> {
         let mut workers = self.workers.write().await;
-        let worker = workers.remove(id).ok_or_else(|| {
-            CortexError::WorkerNotFound(id.to_string())
-        })?;
-
-        let mut worker = worker.lock().await;
-        info!("Killing worker {}", id);
-
-        if let Err(e) = worker.process.kill().await {
-            warn!("Failed to kill worker {}: {}", id, e);
+        if workers.remove(id).is_none() {
+            return Err(CortexError::WorkerNotFound(id.to_string()));
         }
-
+        info!("Worker {} removed", id);
         Ok(())
     }
 
-    /// Kill all workers
-    pub async fn kill_all(&self) {
+    /// Remove all workers
+    pub async fn remove_all(&self) {
         let mut workers = self.workers.write().await;
-        for (id, worker) in workers.drain() {
-            let mut worker = worker.lock().await;
-            info!("Killing worker {}", id);
-            let _ = worker.process.kill().await;
-        }
+        let count = workers.len();
+        workers.clear();
+        info!("Removed {} workers", count);
     }
 }
 
@@ -251,30 +212,31 @@ impl Default for WorkerManager {
     }
 }
 
-impl Drop for WorkerManager {
-    fn drop(&mut self) {
-        // Note: async cleanup not possible in Drop
-        // Workers will be orphaned - caller should use kill_all() before dropping
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_worker_id_generation() {
-        let id1 = WorkerId::new();
-        let id2 = WorkerId::new();
-        assert_ne!(id1, id2);
+    async fn test_worker_creation() {
+        let manager = WorkerManager::new();
+        let config = WorkerConfig::new("/tmp");
+        let id = manager.create(config).await.unwrap();
+
+        let status = manager.status(&id).await.unwrap();
+        assert_eq!(status.state, WorkerState::Ready);
     }
 
     #[tokio::test]
-    async fn test_worker_status_new() {
-        let id = WorkerId::new();
-        let status = WorkerStatus::new(id.clone());
-        assert_eq!(status.id, id);
-        assert_eq!(status.state, WorkerState::Starting);
-        assert_eq!(status.messages_sent, 0);
+    async fn test_worker_list() {
+        let manager = WorkerManager::new();
+
+        let config1 = WorkerConfig::new("/tmp/a");
+        let config2 = WorkerConfig::new("/tmp/b");
+
+        manager.create(config1).await.unwrap();
+        manager.create(config2).await.unwrap();
+
+        let list = manager.list().await;
+        assert_eq!(list.len(), 2);
     }
 }

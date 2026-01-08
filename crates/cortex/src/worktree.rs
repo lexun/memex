@@ -183,7 +183,6 @@ impl WorktreeManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
 
     #[test]
     fn test_worktree_manager_creation() {

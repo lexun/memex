@@ -123,29 +123,3 @@ impl WorkerConfig {
     }
 }
 
-/// Message sent to a worker
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkerMessage {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub content: String,
-}
-
-impl WorkerMessage {
-    pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            msg_type: "user".to_string(),
-            content: content.into(),
-        }
-    }
-}
-
-/// Response from a worker (streaming)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkerResponse {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub content: Option<String>,
-    pub name: Option<String>,
-    pub error: Option<String>,
-}

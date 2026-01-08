@@ -25,3 +25,7 @@ bytes = "1"
 
 # Internal crates
 ipc = { path = "../ipc" }
+
+[[example]]
+name = "spawn_test"
+path = "examples/spawn_test.rs"

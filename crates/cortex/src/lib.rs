@@ -25,6 +25,6 @@ pub mod worker;
 pub mod worktree;
 
 pub use error::{CortexError, Result};
-pub use types::{WorkerId, WorkerStatus, WorkerConfig};
-pub use worker::WorkerManager;
+pub use types::{WorkerId, WorkerStatus, WorkerState, WorkerConfig};
+pub use worker::{WorkerManager, WorkerResponse};
 pub use worktree::WorktreeManager;
