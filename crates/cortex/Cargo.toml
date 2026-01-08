@@ -1,0 +1,27 @@
+[package]
+name = "cortex"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Multi-agent orchestration for Claude processes"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+# Process management
+nix = { version = "0.29", features = ["signal", "process"] }
+
+# For subprocess communication
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+
+# Internal crates
+ipc = { path = "../ipc" }
