@@ -1138,6 +1138,30 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
         }
     }
 
+    // Phase 2.2: Entity-focused expansion
+    // For each keyword, find matching entities and include their linked facts
+    const ENTITY_SCORE: f64 = 0.4; // Lower than direct matches to rank after them
+    for keyword in &keywords {
+        let entity_results = stores
+            .atlas
+            .expand_via_entities(
+                keyword,
+                params.project.as_deref(),
+                ENTITY_SCORE,
+                Some(5), // Limit entity-linked facts per keyword
+            )
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?;
+
+        // Add entity-linked facts (deduplicated)
+        for result in entity_results {
+            let id = result.id.clone();
+            if seen_ids.insert(id) {
+                all_results.push(result);
+            }
+        }
+    }
+
     // Sort by score descending and limit
     all_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     all_results.truncate(params.limit);

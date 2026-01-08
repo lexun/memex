@@ -304,6 +304,44 @@ impl Store {
         Ok(entities.into_iter().next())
     }
 
+    /// Search entities by name (case-insensitive partial match)
+    ///
+    /// Returns entities whose name contains the search term (case-insensitive).
+    /// Used for entity-focused query expansion.
+    pub async fn search_entities_by_name(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Entity>> {
+        let limit = limit.unwrap_or(5);
+
+        // Case-insensitive contains match using string::lowercase
+        let sql = if project.is_some() {
+            r#"SELECT * FROM entity
+               WHERE string::lowercase(name) CONTAINS string::lowercase($query)
+               AND project = $project
+               LIMIT $limit"#
+        } else {
+            r#"SELECT * FROM entity
+               WHERE string::lowercase(name) CONTAINS string::lowercase($query)
+               LIMIT $limit"#
+        };
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("query", query.to_string()))
+            .bind(("project", project.map(|s| s.to_string())))
+            .bind(("limit", limit as i64))
+            .await
+            .context("Failed to search entities")?;
+
+        let entities: Vec<Entity> = response.take(0).unwrap_or_default();
+        Ok(entities)
+    }
+
     /// Get an entity by ID
     pub async fn get_entity(&self, id: &str) -> Result<Option<Entity>> {
         let entity: Option<Entity> = self
@@ -447,6 +485,61 @@ impl Store {
             }
             None => Ok(Vec::new()),
         }
+    }
+
+    /// Expand query by finding entity-linked facts
+    ///
+    /// Searches for entities matching query terms, then returns facts linked
+    /// to those entities with a discounted score (for ranking below direct matches).
+    pub async fn expand_via_entities(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        entity_score: f64,
+        limit: Option<usize>,
+    ) -> Result<Vec<FactSearchResult>> {
+        // Search for entities matching the query term
+        let entities = self.search_entities_by_name(query, project, Some(3)).await?;
+
+        if entities.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let limit = limit.unwrap_or(5);
+        let mut results = Vec::new();
+
+        for entity in entities {
+            let entity_id = entity.id_str().unwrap_or_default();
+            let facts = self.get_facts_for_entity(&entity_id).await?;
+
+            for fact in facts {
+                // Convert Fact to FactSearchResult with entity-based score
+                results.push(FactSearchResult {
+                    id: fact.id,
+                    content: fact.content,
+                    fact_type: fact.fact_type.to_string(),
+                    confidence: fact.confidence,
+                    project: fact.project,
+                    source_episodes: fact.source_episodes,
+                    created_at: fact.created_at,
+                    updated_at: fact.updated_at,
+                    access_count: fact.access_count,
+                    last_accessed: fact.last_accessed,
+                    embedding: fact.embedding,
+                    score: entity_score, // Fixed score for entity-linked facts
+                });
+
+                if results.len() >= limit {
+                    break;
+                }
+            }
+
+            if results.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(results)
     }
 
     /// Get entities mentioned by a fact
