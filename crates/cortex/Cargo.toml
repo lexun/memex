@@ -23,6 +23,9 @@ nix = { version = "0.29", features = ["signal", "process"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
 
+# Worktree management
+vibetree = "0.2"
+
 # Internal crates
 ipc = { path = "../ipc" }
 

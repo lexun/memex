@@ -16,12 +16,6 @@ pub enum CortexError {
     #[error("Worker timed out")]
     WorkerTimeout,
 
-    #[error("Worktree error: {0}")]
-    WorktreeError(String),
-
-    #[error("Vibetree command failed: {0}")]
-    VibetreeFailed(String),
-
     #[error("Process error: {0}")]
     ProcessError(String),
 
@@ -30,6 +24,9 @@ pub enum CortexError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Vibetree error: {0}")]
+    Vibetree(#[from] anyhow::Error),
 }
 
 pub type Result<T> = std::result::Result<T, CortexError>;
