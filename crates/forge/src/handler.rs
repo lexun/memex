@@ -109,13 +109,24 @@ pub async fn handle_task_command(cmd: TaskCommand, socket_path: &Path) -> Result
             id,
             status,
             priority,
+            title,
+            description,
+            project,
         } => {
             let status_update = status
                 .as_ref()
                 .map(|s| s.parse())
                 .transpose()?;
 
-            match client.update_task(&id, status_update, priority).await? {
+            // Convert empty strings to None for clearing
+            let desc_update = description.as_ref().map(|d| {
+                if d.is_empty() { None } else { Some(d.as_str()) }
+            });
+            let proj_update = project.as_ref().map(|p| {
+                if p.is_empty() { None } else { Some(p.as_str()) }
+            });
+
+            match client.update_task(&id, status_update, priority, title.as_deref(), desc_update, proj_update).await? {
                 Some(task) => {
                     println!("Updated task: {}", task.id_str().unwrap_or_default());
                     print_task_summary(&task);

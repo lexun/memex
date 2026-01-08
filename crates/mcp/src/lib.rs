@@ -238,10 +238,16 @@ impl McpServer for MemexMcpServer {
         status: Option<String>,
         /// New priority level (0=critical, 1=high, 2=medium, 3=low)
         priority: Option<i32>,
+        /// New title for the task
+        title: Option<String>,
+        /// New description (use empty string to clear)
+        description: Option<String>,
+        /// New project (use empty string to clear)
+        project: Option<String>,
     ) -> mcp_attr::Result<String> {
-        if status.is_none() && priority.is_none() {
+        if status.is_none() && priority.is_none() && title.is_none() && description.is_none() && project.is_none() {
             return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
-                .with_message("Must specify status or priority".to_string(), true));
+                .with_message("Must specify at least one field to update".to_string(), true));
         }
 
         let status_update = match &status {
@@ -257,17 +263,29 @@ impl McpServer for MemexMcpServer {
             None => None,
         };
 
+        // Convert empty strings to None for clearing fields
+        let desc_update = description.as_ref().map(|d| {
+            if d.is_empty() { None } else { Some(d.as_str()) }
+        });
+        let proj_update = project.as_ref().map(|p| {
+            if p.is_empty() { None } else { Some(p.as_str()) }
+        });
+
         match self
             .task_client
-            .update_task(&id, status_update, priority)
+            .update_task(&id, status_update, priority, title.as_deref(), desc_update, proj_update)
             .await
         {
             Ok(Some(task)) => {
                 let id_str = task.id_str().unwrap_or_default();
-                Ok(format!(
-                    "Updated task: {}\n  Status: {}\n  Priority: {}",
-                    id_str, task.status, task.priority
-                ))
+                let mut result = format!("Updated task: {}", id_str);
+                result.push_str(&format!("\n  Title: {}", task.title));
+                result.push_str(&format!("\n  Status: {}", task.status));
+                result.push_str(&format!("\n  Priority: {}", task.priority));
+                if let Some(ref p) = task.project {
+                    result.push_str(&format!("\n  Project: {}", p));
+                }
+                Ok(result)
             }
             Ok(None) => {
                 let msg = format!("Task not found: {}", id);

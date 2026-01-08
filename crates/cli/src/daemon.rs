@@ -470,6 +470,11 @@ struct UpdateTaskParams {
     id: String,
     status: Option<String>,
     priority: Option<i32>,
+    title: Option<String>,
+    /// Use Some("value") to set, or explicitly null to clear
+    description: Option<Option<String>>,
+    /// Use Some("value") to set, or explicitly null to clear
+    project: Option<Option<String>>,
 }
 
 async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
@@ -483,7 +488,14 @@ async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_
 
     let updated = stores
         .forge
-        .update_task(&params.id, status, params.priority)
+        .update_task(
+            &params.id,
+            status,
+            params.priority,
+            params.title.as_deref(),
+            params.description.as_ref().map(|d| d.as_deref()),
+            params.project.as_ref().map(|p| p.as_deref()),
+        )
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
@@ -496,6 +508,15 @@ async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_
         }
         if let Some(p) = params.priority {
             changes.insert("priority".to_string(), json!(p));
+        }
+        if let Some(t) = &params.title {
+            changes.insert("title".to_string(), json!(t));
+        }
+        if params.description.is_some() {
+            changes.insert("description".to_string(), json!(task.description));
+        }
+        if params.project.is_some() {
+            changes.insert("project".to_string(), json!(task.project));
         }
         let event = Event::new(
             "task.updated",

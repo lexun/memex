@@ -111,23 +111,40 @@ impl TaskClient {
     }
 
     /// Update a task
+    ///
+    /// For description and project, use `Some(Some("value"))` to set,
+    /// `Some(None)` to clear, and `None` to leave unchanged.
     pub async fn update_task(
         &self,
         id: &str,
         status: Option<TaskStatus>,
         priority: Option<i32>,
+        title: Option<&str>,
+        description: Option<Option<&str>>,
+        project: Option<Option<&str>>,
     ) -> Result<Option<Task>> {
         #[derive(Serialize)]
         struct Params<'a> {
             id: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
             status: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
             priority: Option<i32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            title: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<Option<&'a str>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            project: Option<Option<&'a str>>,
         }
 
         let params = Params {
             id,
             status: status.map(|s| s.to_string()),
             priority,
+            title,
+            description,
+            project,
         };
 
         let result = self

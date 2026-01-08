@@ -56,6 +56,15 @@ pub enum TaskCommand {
         /// New priority
         #[arg(short, long)]
         priority: Option<i32>,
+        /// New title
+        #[arg(short, long)]
+        title: Option<String>,
+        /// New description (use "" to clear)
+        #[arg(short, long)]
+        description: Option<String>,
+        /// New project (use "" to clear)
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// Close/complete a task

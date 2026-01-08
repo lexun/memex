@@ -92,6 +92,11 @@ pub fn command_registry() -> Vec<CommandInfo> {
             category: Category::Explore,
         },
         CommandInfo {
+            name: "backfill",
+            description: "Backfill missing knowledge",
+            category: Category::Explore,
+        },
+        CommandInfo {
             name: "status",
             description: "Knowledge system status",
             category: Category::Explore,

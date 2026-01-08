@@ -131,11 +131,17 @@ impl Store {
     }
 
     /// Update a task
+    ///
+    /// For description and project, use `Some(Some("value"))` to set,
+    /// `Some(None)` to clear, and `None` to leave unchanged.
     pub async fn update_task(
         &self,
         id: &TaskId,
         status: Option<TaskStatus>,
         priority: Option<i32>,
+        title: Option<&str>,
+        description: Option<Option<&str>>,
+        project: Option<Option<&str>>,
     ) -> Result<Option<Task>> {
         let existing = self.get_task(id).await?;
         let Some(mut task) = existing else {
@@ -150,6 +156,16 @@ impl Store {
         }
         if let Some(p) = priority {
             task.priority = p;
+        }
+        if let Some(t) = title {
+            task.title = t.to_string();
+        }
+        // Option<Option<&str>>: Some(Some("value")) sets, Some(None) clears, None leaves unchanged
+        if let Some(d) = description {
+            task.description = d.map(|s| s.to_string());
+        }
+        if let Some(p) = project {
+            task.project = p.map(|s| s.to_string());
         }
         task.updated_at = Datetime::default();
 
@@ -172,7 +188,7 @@ impl Store {
             TaskStatus::Completed
         };
 
-        self.update_task(id, Some(status), None).await
+        self.update_task(id, Some(status), None, None, None, None).await
     }
 
     /// Delete a task
