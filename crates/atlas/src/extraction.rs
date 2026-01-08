@@ -114,6 +114,25 @@ impl Extractor {
         self.extract(&content, episode_ref, project).await
     }
 
+    /// Extract facts and entities from task content (title + description or notes)
+    ///
+    /// Used for extracting knowledge from task operations without including
+    /// metadata noise from event payloads.
+    pub async fn extract_from_task_content(
+        &self,
+        content: &str,
+        task_id: &str,
+        episode_type: &str, // "task" or "task_note"
+        project: Option<&str>,
+    ) -> Result<ExtractionResult> {
+        let episode_ref = EpisodeRef {
+            episode_type: episode_type.to_string(),
+            episode_id: task_id.to_string(),
+        };
+
+        self.extract(content, episode_ref, project).await
+    }
+
     /// Extract facts and entities from arbitrary text
     async fn extract(
         &self,
