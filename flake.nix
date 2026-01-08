@@ -62,6 +62,8 @@
               pkg-config
               # Required for surrealdb-librocksdb-sys bindgen
               llvmPackages.libclang
+              # Required for git2's vendored-openssl (via vibetree)
+              perl
             ];
 
             # Set LIBCLANG_PATH for bindgen
