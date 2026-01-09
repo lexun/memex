@@ -256,6 +256,19 @@ impl Store {
         Ok(notes)
     }
 
+    /// List all notes across all tasks (for knowledge rebuild)
+    pub async fn list_all_notes(&self) -> Result<Vec<TaskNote>> {
+        let mut response = self
+            .db
+            .client()
+            .query("SELECT * FROM task_note ORDER BY created_at ASC")
+            .await
+            .context("Failed to query all notes")?;
+
+        let notes: Vec<TaskNote> = response.take(0).context("Failed to parse notes")?;
+        Ok(notes)
+    }
+
     /// Edit a note
     pub async fn edit_note(&self, note_id: &str, content: &str) -> Result<Option<TaskNote>> {
         let mut response = self

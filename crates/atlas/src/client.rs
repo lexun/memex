@@ -230,6 +230,10 @@ pub struct RebuildResult {
     pub facts_deleted: usize,
     pub entities_deleted: usize,
     pub memos_processed: usize,
+    #[serde(default)]
+    pub tasks_processed: usize,
+    #[serde(default)]
+    pub notes_processed: usize,
     pub facts_created: usize,
     pub entities_created: usize,
     #[serde(default)]

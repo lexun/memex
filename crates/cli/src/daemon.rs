@@ -933,6 +933,80 @@ async fn store_extraction_results(
     }
 }
 
+/// Store extraction results and return counts (facts_created, entities_created, links_created)
+async fn store_extraction_results_counted(
+    stores: &Stores,
+    result: atlas::ExtractionResult,
+) -> (usize, usize, usize) {
+    let mut facts_created = 0;
+    let mut entities_created = 0;
+    let mut links_created = 0;
+
+    // First, store all entities and build a name -> entity map
+    let mut entity_map: std::collections::HashMap<String, atlas::Entity> = std::collections::HashMap::new();
+
+    for entity in result.entities {
+        let entity_name = entity.name.clone();
+        let project = entity.project.clone();
+
+        // Try to find existing entity or create new
+        match stores.atlas.find_entity_by_name(&entity_name, project.as_deref()).await {
+            Ok(Some(existing)) => {
+                // Entity already exists - merge source episodes from new entity
+                if let Some(ref entity_id) = existing.id {
+                    if let Err(e) = stores.atlas.add_entity_source_episodes(
+                        entity_id,
+                        &entity.source_episodes,
+                    ).await {
+                        tracing::warn!("Failed to merge entity source episodes: {}", e);
+                    }
+                }
+                entity_map.insert(entity_name, existing);
+            }
+            Ok(None) => {
+                match stores.atlas.create_entity(entity).await {
+                    Ok(created) => {
+                        entities_created += 1;
+                        entity_map.insert(entity_name, created);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to store extracted entity: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to check for existing entity: {}", e);
+            }
+        }
+    }
+
+    // Store facts and create entity links
+    for extracted_fact in result.facts {
+        match stores.atlas.create_fact(extracted_fact.fact).await {
+            Ok(created_fact) => {
+                facts_created += 1;
+                // Link fact to its referenced entities
+                if let (Some(ref fact_id), entity_refs) = (&created_fact.id, &extracted_fact.entity_refs) {
+                    for entity_name in entity_refs {
+                        if let Some(entity) = entity_map.get(entity_name) {
+                            if let Some(ref entity_id) = entity.id {
+                                if stores.atlas.link_fact_entity(fact_id, entity_id, "mentions").await.is_ok() {
+                                    links_created += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to store extracted fact: {}", e);
+            }
+        }
+    }
+
+    (facts_created, entities_created, links_created)
+}
+
 async fn handle_record_memo(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: RecordMemoParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
@@ -1716,10 +1790,90 @@ async fn handle_rebuild_knowledge(request: &Request, stores: &Stores) -> Result<
         }
     }
 
+    // Step 3: Re-extract from all tasks (title + description)
+    let tasks = stores
+        .forge
+        .list_tasks(None, None) // Get all tasks
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    let mut tasks_processed = 0;
+
+    for task in tasks {
+        // Build content from title and description
+        let content = if let Some(ref desc) = task.description {
+            format!("{}\n\n{}", task.title, desc)
+        } else {
+            task.title.clone()
+        };
+
+        // Only extract if there's meaningful content
+        if content.len() > 20 {
+            tasks_processed += 1;
+            let task_id = task.id_str().unwrap_or_default();
+            let project = task.project.as_deref();
+
+            match extractor.extract_from_task_content(&content, &task_id, "task", project).await {
+                Ok(result) => {
+                    let (f, e, l) = store_extraction_results_counted(stores, result).await;
+                    facts_created += f;
+                    entities_created += e;
+                    links_created += l;
+                }
+                Err(e) => {
+                    tracing::warn!("Extraction failed for task {}: {}", task_id, e);
+                }
+            }
+        }
+    }
+
+    // Step 4: Re-extract from all task notes
+    let notes = stores
+        .forge
+        .list_all_notes()
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    let mut notes_processed = 0;
+
+    for note in notes {
+        // Only extract if there's meaningful content
+        if note.content.len() > 20 {
+            notes_processed += 1;
+            let note_id = note.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+
+            // Get the task to determine project context
+            let task_id_str = note.task_id.id.to_raw();
+            let project = stores.forge.get_task(&task_id_str).await
+                .ok()
+                .flatten()
+                .and_then(|t| t.project);
+
+            match extractor.extract_from_task_content(
+                &note.content,
+                &note_id,
+                "task_note",
+                project.as_deref(),
+            ).await {
+                Ok(result) => {
+                    let (f, e, l) = store_extraction_results_counted(stores, result).await;
+                    facts_created += f;
+                    entities_created += e;
+                    links_created += l;
+                }
+                Err(e) => {
+                    tracing::warn!("Extraction failed for note {}: {}", note_id, e);
+                }
+            }
+        }
+    }
+
     Ok(json!({
         "facts_deleted": facts_deleted,
         "entities_deleted": entities_deleted,
         "memos_processed": memos_processed,
+        "tasks_processed": tasks_processed,
+        "notes_processed": notes_processed,
         "facts_created": facts_created,
         "entities_created": entities_created,
         "links_created": links_created,

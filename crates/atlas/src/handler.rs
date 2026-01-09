@@ -213,12 +213,16 @@ pub async fn handle_knowledge_command(cmd: KnowledgeCommand, socket_path: &Path)
             println!("Rebuilding knowledge graph...");
             let result = client.rebuild(project.as_deref()).await?;
 
-            println!("Rebuild complete:");
-            println!("  Facts deleted: {}", result.facts_deleted);
-            println!("  Entities deleted: {}", result.entities_deleted);
-            println!("  Memos processed: {}", result.memos_processed);
-            println!("  Facts created: {}", result.facts_created);
-            println!("  Entities created: {}", result.entities_created);
+            println!("Rebuilt knowledge:");
+            println!("  Deleted: {} facts, {} entities", result.facts_deleted, result.entities_deleted);
+            println!("  Created: {} facts, {} entities, {} links from {} memos, {} tasks, {} notes",
+                result.facts_created,
+                result.entities_created,
+                result.links_created,
+                result.memos_processed,
+                result.tasks_processed,
+                result.notes_processed,
+            );
             Ok(())
         }
 
