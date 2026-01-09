@@ -25,7 +25,7 @@ pub struct Memo {
 /// Source attribution for a memo
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoSource {
-    /// Who created this memo (e.g., "user:luke", "agent:claude")
+    /// Who created this memo (e.g., "user:alice", "agent:claude")
     pub actor: String,
 
     /// On whose authority (user or agent)

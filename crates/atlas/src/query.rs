@@ -432,11 +432,11 @@ Important:
 - Keep it short (50-100 words max)
 
 Example:
-Question: "What are Luke's coding preferences?"
-Hypothetical: "Luke prefers minimal, clean code without unnecessary abstractions. He values simplicity and avoids over-engineering. He likes to focus on the task at hand rather than building for hypothetical future requirements."
+Question: "What authentication method do we use?"
+Hypothetical: "The application uses JWT tokens for authentication. Tokens are issued on login and verified on each API request. The tokens expire after 24 hours and can be refreshed using a refresh token."
 
-Question: "What database does memex use?"
-Hypothetical: "Memex uses SurrealDB as its primary database. SurrealDB provides both document storage and graph capabilities, which are used for the knowledge graph features. The connection is configured via the daemon."
+Question: "What database does the project use?"
+Hypothetical: "The project uses PostgreSQL as its primary database. Data is stored in normalized tables with indexes on frequently queried columns. Connection pooling is handled through pgbouncer."
 
 Write ONLY the hypothetical answer, no preamble or explanation."#;
 

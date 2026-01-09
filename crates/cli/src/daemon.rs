@@ -1182,7 +1182,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
             }
         };
 
-        // Phase 2.1: HyDE - Generate hypothetical answer and embed it
+        // HyDE (Hypothetical Document Embeddings) - Generate hypothetical answer and embed it
         // This bridges semantic gap between short queries and longer facts
         let hypo_embedding = {
             let generator = atlas::HypotheticalGenerator::new(extractor.client());
@@ -1247,7 +1247,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
         }
     }
 
-    // Phase 2.2: Entity-focused expansion
+    // Entity-focused expansion
     // For each keyword, find matching entities and include their linked facts
     const ENTITY_SCORE: f64 = 0.4; // Lower than direct matches to rank after them
     for keyword in &keywords {
@@ -1271,7 +1271,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
         }
     }
 
-    // Phase 2.1: HyDE - Search using hypothetical answer embedding
+    // HyDE search - Search using hypothetical answer embedding
     // This helps find facts semantically similar to what the answer might look like
     if let Some(ref hypo_emb) = hypothetical_embedding {
         const HYDE_SCORE: f64 = 0.35; // Lower than direct matches

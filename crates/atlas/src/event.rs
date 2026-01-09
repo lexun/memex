@@ -31,7 +31,7 @@ pub struct Event {
 /// Source attribution for an event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventSource {
-    /// Who triggered this event (e.g., "user:luke", "agent:claude", "system:forge")
+    /// Who triggered this event (e.g., "user:alice", "agent:claude", "system:forge")
     pub actor: String,
 
     /// On whose authority (user, agent, or system)
