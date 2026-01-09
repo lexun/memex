@@ -30,6 +30,7 @@ use atlas::{EventClient, KnowledgeClient, MemoClient};
 use cortex::CortexClient;
 use forge::task::{Task, TaskStatus};
 use forge::TaskClient;
+use ipc::Client as IpcClient;
 
 /// MCP server for Memex task management
 pub struct MemexMcpServer {
@@ -38,6 +39,7 @@ pub struct MemexMcpServer {
     event_client: EventClient,
     knowledge_client: KnowledgeClient,
     cortex_client: CortexClient,
+    ipc_client: IpcClient,
 }
 
 impl MemexMcpServer {
@@ -48,12 +50,14 @@ impl MemexMcpServer {
         let event_client = EventClient::new(socket_path);
         let knowledge_client = KnowledgeClient::new(socket_path);
         let cortex_client = CortexClient::new(socket_path);
+        let ipc_client = IpcClient::new(socket_path);
         Self {
             task_client,
             memo_client,
             event_client,
             knowledge_client,
             cortex_client,
+            ipc_client,
         }
     }
 
@@ -1066,6 +1070,134 @@ impl McpServer for MemexMcpServer {
             Ok(()) => Ok(format!("Removed worker: {}", worker_id)),
             Err(e) => {
                 let msg = format!("Failed to remove worker: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Vibetree tools (git worktree management)
+    // -------------------------------------------------------------------------
+
+    /// List all git worktrees in a repository
+    ///
+    /// Returns worktrees managed by vibetree, including their branch names,
+    /// paths, and allocated port/environment values.
+    #[tool]
+    async fn vibetree_list(
+        &self,
+        /// Path to the git repository root
+        cwd: String,
+    ) -> mcp_attr::Result<String> {
+        let params = serde_json::json!({ "cwd": cwd });
+
+        match self.ipc_client.request("vibetree_list", params).await {
+            Ok(result) => {
+                let worktrees: Vec<serde_json::Value> = serde_json::from_value(result)
+                    .map_err(|e| mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR)
+                        .with_message(format!("Failed to parse response: {}", e), true))?;
+
+                if worktrees.is_empty() {
+                    Ok("No worktrees found".to_string())
+                } else {
+                    let mut output = format!("Worktrees ({}):\n", worktrees.len());
+                    for wt in worktrees {
+                        let name = wt.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let status = wt.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        output.push_str(&format!("  {} [{}]\n", name, status));
+
+                        // Show port/env values if present
+                        if let Some(values) = wt.get("values").and_then(|v| v.as_object()) {
+                            for (key, val) in values {
+                                output.push_str(&format!("    {}={}\n", key, val));
+                            }
+                        }
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to list worktrees: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Create a new git worktree with isolated environment
+    ///
+    /// Creates a new git worktree and automatically allocates ports/environment
+    /// variables for isolated development. The worktree will be created in the
+    /// configured branches directory (default: .worktrees/).
+    #[tool]
+    async fn vibetree_create(
+        &self,
+        /// Path to the git repository root
+        cwd: String,
+        /// Name for the new branch/worktree
+        branch_name: String,
+        /// Optional branch to create from (defaults to current HEAD)
+        from_branch: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        let params = serde_json::json!({
+            "cwd": cwd,
+            "branch_name": branch_name,
+            "from_branch": from_branch,
+        });
+
+        match self.ipc_client.request("vibetree_create", params).await {
+            Ok(result) => {
+                let name = result.get("name").and_then(|v| v.as_str()).unwrap_or(&branch_name);
+                let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("created");
+
+                let mut output = format!("Created worktree: {} [{}]\n", name, status);
+
+                // Show allocated values
+                if let Some(values) = result.get("values").and_then(|v| v.as_object()) {
+                    output.push_str("  Allocated values:\n");
+                    for (key, val) in values {
+                        output.push_str(&format!("    {}={}\n", key, val));
+                    }
+                }
+
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to create worktree: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Remove a git worktree
+    ///
+    /// Removes a worktree and its associated branch. The allocated ports/values
+    /// will be released for reuse.
+    #[tool]
+    async fn vibetree_remove(
+        &self,
+        /// Path to the git repository root
+        cwd: String,
+        /// Name of the branch/worktree to remove
+        branch_name: String,
+        /// Skip confirmation and force removal (default: true for programmatic use)
+        force: Option<bool>,
+        /// Keep the git branch after removing the worktree directory
+        keep_branch: Option<bool>,
+    ) -> mcp_attr::Result<String> {
+        let params = serde_json::json!({
+            "cwd": cwd,
+            "branch_name": branch_name,
+            "force": force.unwrap_or(true),
+            "keep_branch": keep_branch.unwrap_or(false),
+        });
+
+        match self.ipc_client.request("vibetree_remove", params).await {
+            Ok(result) => {
+                let removed = result.get("removed").and_then(|v| v.as_str()).unwrap_or(&branch_name);
+                Ok(format!("Removed worktree: {}", removed))
+            }
+            Err(e) => {
+                let msg = format!("Failed to remove worktree: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
             }
         }

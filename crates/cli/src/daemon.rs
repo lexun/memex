@@ -368,6 +368,11 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         "cortex_list_workers" => handle_cortex_list_workers(&stores.workers).await,
         "cortex_remove_worker" => handle_cortex_remove_worker(request, &stores.workers).await,
 
+        // Vibetree operations (worktree management)
+        "vibetree_list" => handle_vibetree_list(request).await,
+        "vibetree_create" => handle_vibetree_create(request).await,
+        "vibetree_remove" => handle_vibetree_remove(request).await,
+
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
     }
@@ -1984,6 +1989,120 @@ async fn handle_cortex_remove_worker(
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
     Ok(json!(true))
+}
+
+// ========== Vibetree Handlers ==========
+
+#[derive(Deserialize)]
+struct VibetreeListParams {
+    cwd: String,
+}
+
+async fn handle_vibetree_list(request: &Request) -> Result<serde_json::Value, IpcError> {
+    let params: VibetreeListParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let path = std::path::PathBuf::from(&params.cwd);
+
+    // Use load_existing to avoid creating config files
+    let app = vibetree::VibeTreeApp::load_existing_with_parent(path)
+        .map_err(|e| IpcError::internal(format!("Failed to load vibetree config: {}", e)))?;
+
+    let worktrees = app
+        .collect_worktree_data()
+        .map_err(|e| IpcError::internal(format!("Failed to list worktrees: {}", e)))?;
+
+    // Convert to serializable format
+    let result: Vec<serde_json::Value> = worktrees
+        .into_iter()
+        .map(|wt| {
+            json!({
+                "name": wt.name,
+                "status": wt.status,
+                "values": wt.values,
+            })
+        })
+        .collect();
+
+    Ok(json!(result))
+}
+
+#[derive(Deserialize)]
+struct VibetreeCreateParams {
+    cwd: String,
+    branch_name: String,
+    from_branch: Option<String>,
+}
+
+async fn handle_vibetree_create(request: &Request) -> Result<serde_json::Value, IpcError> {
+    let params: VibetreeCreateParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let path = std::path::PathBuf::from(&params.cwd);
+
+    let mut app = vibetree::VibeTreeApp::with_parent(path)
+        .map_err(|e| IpcError::internal(format!("Failed to load vibetree config: {}", e)))?;
+
+    // Create the worktree (dry_run=false, switch=false)
+    app.add_worktree(
+        params.branch_name.clone(),
+        params.from_branch,
+        None, // custom_values
+        false, // dry_run
+        false, // switch (don't spawn shell)
+    )
+    .map_err(|e| IpcError::internal(format!("Failed to create worktree: {}", e)))?;
+
+    // Get the created worktree info
+    let worktrees = app
+        .collect_worktree_data()
+        .map_err(|e| IpcError::internal(format!("Failed to get worktree data: {}", e)))?;
+
+    let created = worktrees
+        .into_iter()
+        .find(|wt| wt.name == params.branch_name);
+
+    match created {
+        Some(wt) => Ok(json!({
+            "name": wt.name,
+            "status": wt.status,
+            "values": wt.values,
+        })),
+        None => Ok(json!({
+            "name": params.branch_name,
+            "status": "created",
+        })),
+    }
+}
+
+#[derive(Deserialize)]
+struct VibetreeRemoveParams {
+    cwd: String,
+    branch_name: String,
+    force: Option<bool>,
+    keep_branch: Option<bool>,
+}
+
+async fn handle_vibetree_remove(request: &Request) -> Result<serde_json::Value, IpcError> {
+    let params: VibetreeRemoveParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let path = std::path::PathBuf::from(&params.cwd);
+
+    let mut app = vibetree::VibeTreeApp::with_parent(path)
+        .map_err(|e| IpcError::internal(format!("Failed to load vibetree config: {}", e)))?;
+
+    // Use the test method to bypass confirmation prompts
+    app.remove_worktree_for_test(
+        params.branch_name.clone(),
+        params.force.unwrap_or(true), // Default to force for programmatic use
+        params.keep_branch.unwrap_or(false),
+    )
+    .map_err(|e| IpcError::internal(format!("Failed to remove worktree: {}", e)))?;
+
+    Ok(json!({
+        "removed": params.branch_name,
+    }))
 }
 
 // ========== Public Functions ==========

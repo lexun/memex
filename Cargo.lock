@@ -931,6 +931,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "vibetree",
 ]
 
 [[package]]

@@ -18,6 +18,7 @@ forge = { path = "../forge" }
 ipc = { path = "../ipc" }
 llm = { path = "../llm" }
 mcp = { path = "../mcp" }
+vibetree = "0.2"
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
