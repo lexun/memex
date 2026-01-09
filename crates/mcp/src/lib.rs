@@ -82,10 +82,10 @@ impl McpServer for MemexMcpServer {
         title: String,
         /// Detailed description of what needs to be done
         description: Option<String>,
+        /// Priority level (0=critical, 1=high, 2=medium, 3=low). Default: 0
+        priority: Option<i32>,
         /// Project name for grouping related tasks
         project: Option<String>,
-        /// Priority level (0=normal, higher=more urgent). Default: 0
-        priority: Option<i32>,
         _task_type: Option<String>,
     ) -> mcp_attr::Result<String> {
         let mut task = Task::new(&title).with_priority(priority.unwrap_or(0));
