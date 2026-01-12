@@ -868,13 +868,17 @@ impl Store {
     }
 
     /// Update a fact's embedding
-    pub async fn update_fact_embedding(&self, fact_id: &str, embedding: Vec<f32>) -> Result<()> {
-        let sql = "UPDATE type::thing('fact', $id) SET embedding = $embedding, updated_at = time::now()";
+    pub async fn update_fact_embedding(
+        &self,
+        fact_id: &surrealdb::sql::Thing,
+        embedding: Vec<f32>,
+    ) -> Result<()> {
+        let sql = "UPDATE $fact_id SET embedding = $embedding, updated_at = time::now()";
 
         self.db
             .client()
             .query(sql)
-            .bind(("id", fact_id.to_string()))
+            .bind(("fact_id", fact_id.clone()))
             .bind(("embedding", embedding))
             .await
             .context("Failed to update fact embedding")?;

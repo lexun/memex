@@ -1493,8 +1493,7 @@ async fn handle_backfill_embeddings(request: &Request, stores: &Stores) -> Resul
             Ok(embeddings) => {
                 for (fact, embedding) in facts.iter().zip(embeddings.into_iter()) {
                     if let Some(ref id) = fact.id {
-                        let fact_id = id.id.to_raw();
-                        if stores.atlas.update_fact_embedding(&fact_id, embedding).await.is_ok() {
+                        if stores.atlas.update_fact_embedding(id, embedding).await.is_ok() {
                             facts_updated += 1;
                         }
                     }
