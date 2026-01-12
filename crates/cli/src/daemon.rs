@@ -1134,18 +1134,16 @@ struct KnowledgeParams {
     query: String,
     #[serde(default)]
     project: Option<String>,
-    #[serde(default = "default_limit")]
-    limit: usize,
-}
-
-fn default_limit() -> usize {
-    10
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 /// Query knowledge and return an LLM-summarized answer
 async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: KnowledgeParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let limit = params.limit.unwrap_or(10);
 
     tracing::info!("Query knowledge: query='{}', project={:?}", params.query, params.project);
 
@@ -1236,7 +1234,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
                 keyword,
                 query_embedding.as_deref(),
                 params.project.as_deref(),
-                Some(params.limit),
+                Some(limit),
                 date_start,
                 date_end,
             )
@@ -1308,7 +1306,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
 
     // Sort by score descending and limit
     all_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-    all_results.truncate(params.limit);
+    all_results.truncate(limit);
 
     let results = all_results;
 
@@ -1398,7 +1396,7 @@ async fn handle_search_knowledge(request: &Request, stores: &Stores) -> Result<s
             &params.query,
             query_embedding.as_deref(),
             params.project.as_deref(),
-            Some(params.limit),
+            params.limit,
             date_start,
             date_end,
         )
