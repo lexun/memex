@@ -181,14 +181,25 @@ impl Store {
     }
 
     /// Close a task (mark as completed or cancelled)
-    pub async fn close_task(&self, id: &TaskId, reason: Option<&str>) -> Result<Option<Task>> {
-        let status = if reason.is_some() {
-            TaskStatus::Cancelled
-        } else {
-            TaskStatus::Completed
+    ///
+    /// If `status` is provided, it will be used directly. Otherwise defaults to `Completed`.
+    /// The `reason` is stored independently of the status.
+    pub async fn close_task(
+        &self,
+        id: &TaskId,
+        status: Option<TaskStatus>,
+        _reason: Option<&str>,
+    ) -> Result<Option<Task>> {
+        let final_status = status.unwrap_or(TaskStatus::Completed);
+
+        // Only allow completed or cancelled as valid close statuses
+        let final_status = match final_status {
+            TaskStatus::Completed | TaskStatus::Cancelled => final_status,
+            _ => TaskStatus::Completed,
         };
 
-        self.update_task(id, Some(status), None, None, None, None).await
+        self.update_task(id, Some(final_status), None, None, None, None)
+            .await
     }
 
     /// Delete a task

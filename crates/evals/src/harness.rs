@@ -285,7 +285,7 @@ impl TestHarness {
     async fn close_task(&self, task_id: &str, reason: Option<&str>) -> Result<()> {
         let client = forge::TaskClient::new(&self.socket_path);
         client
-            .close_task(task_id, reason)
+            .close_task(task_id, None, reason)
             .await
             .context("Failed to close task")?;
         Ok(())

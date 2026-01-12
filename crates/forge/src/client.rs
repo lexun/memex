@@ -162,16 +162,25 @@ impl TaskClient {
     }
 
     /// Close a task (mark as completed or cancelled)
-    pub async fn close_task(&self, id: &str, reason: Option<&str>) -> Result<Option<Task>> {
+    ///
+    /// If `status` is provided, it will be used directly ("completed" or "cancelled").
+    /// Otherwise defaults to "completed". The `reason` is stored independently.
+    pub async fn close_task(
+        &self,
+        id: &str,
+        status: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<Option<Task>> {
         #[derive(Serialize)]
         struct Params<'a> {
             id: &'a str,
+            status: Option<&'a str>,
             reason: Option<&'a str>,
         }
 
         let result = self
             .client
-            .request("close_task", Params { id, reason })
+            .request("close_task", Params { id, status, reason })
             .await
             .context("Failed to close task")?;
 

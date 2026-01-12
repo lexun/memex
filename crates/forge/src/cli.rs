@@ -71,6 +71,9 @@ pub enum TaskCommand {
     Close {
         /// Task ID
         id: String,
+        /// Status: "completed" (default) or "cancelled"
+        #[arg(short, long)]
+        status: Option<String>,
         /// Reason for closing
         #[arg(short, long)]
         reason: Option<String>,

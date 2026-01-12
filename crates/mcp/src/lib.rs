@@ -306,14 +306,14 @@ impl McpServer for MemexMcpServer {
         }
     }
 
-    /// Close a task, marking it as completed
+    /// Close a task, marking it as completed or cancelled
     ///
     /// Use this when work on a task is finished. The task is preserved in history.
     ///
     /// When to use close_task:
-    /// - Task was completed successfully (no reason needed)
-    /// - Task was cancelled/abandoned (provide a reason explaining why)
-    /// - Task is no longer relevant (provide a reason)
+    /// - Task was completed successfully
+    /// - Task was cancelled/abandoned
+    /// - Task is no longer relevant
     ///
     /// Prefer close_task over delete_task - closing preserves history and knowledge.
     #[tool]
@@ -321,13 +321,23 @@ impl McpServer for MemexMcpServer {
         &self,
         /// Task ID to close
         id: String,
+        /// Status to set: "completed" (default) or "cancelled"
+        status: Option<String>,
         /// Optional explanation of how/why the task was closed
         reason: Option<String>,
     ) -> mcp_attr::Result<String> {
-        match self.task_client.close_task(&id, reason.as_deref()).await {
+        match self
+            .task_client
+            .close_task(&id, status.as_deref(), reason.as_deref())
+            .await
+        {
             Ok(Some(task)) => {
                 let id_str = task.id_str().unwrap_or_default();
-                Ok(format!("Closed task: {}\n  Status: {}", id_str, task.status))
+                let mut result = format!("Closed task: {}\n  Status: {}", id_str, task.status);
+                if let Some(ref r) = reason {
+                    result.push_str(&format!("\n  Reason: {}", r));
+                }
+                Ok(result)
             }
             Ok(None) => {
                 let msg = format!("Task not found: {}", id);

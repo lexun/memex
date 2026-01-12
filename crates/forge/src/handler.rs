@@ -138,11 +138,13 @@ pub async fn handle_task_command(cmd: TaskCommand, socket_path: &Path) -> Result
             Ok(())
         }
 
-        TaskCommand::Close { id, reason } => {
-            match client.close_task(&id, reason.as_deref()).await? {
+        TaskCommand::Close { id, status, reason } => {
+            match client
+                .close_task(&id, status.as_deref(), reason.as_deref())
+                .await?
+            {
                 Some(task) => {
-                    let action = if reason.is_some() { "Cancelled" } else { "Completed" };
-                    println!("{} task: {}", action, task.id_str().unwrap_or_default());
+                    println!("Closed task: {} ({})", task.id_str().unwrap_or_default(), task.status);
                 }
                 None => {
                     println!("Task not found: {}", id);

@@ -563,6 +563,8 @@ async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_
 #[derive(Deserialize)]
 struct CloseTaskParams {
     id: String,
+    /// Optional explicit status: "completed" or "cancelled". Defaults to "completed".
+    status: Option<String>,
     reason: Option<String>,
 }
 
@@ -570,9 +572,14 @@ async fn handle_close_task(request: &Request, stores: &Stores) -> Result<serde_j
     let params: CloseTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
+    // Parse status if provided
+    let status = params.status.as_ref().map(|s| {
+        s.parse::<TaskStatus>().unwrap_or(TaskStatus::Completed)
+    });
+
     let closed = stores
         .forge
-        .close_task(&params.id, params.reason.as_deref())
+        .close_task(&params.id, status, params.reason.as_deref())
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
@@ -584,6 +591,7 @@ async fn handle_close_task(request: &Request, stores: &Stores) -> Result<serde_j
             EventSource::system("forge").with_via("daemon"),
             json!({
                 "task_id": params.id,
+                "status": task.status.to_string(),
                 "reason": params.reason,
                 "snapshot": task_json
             }),
