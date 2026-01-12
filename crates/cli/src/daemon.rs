@@ -3,12 +3,15 @@
 //! The daemon holds database connections for forge and atlas, handling requests
 //! from clients via a Unix socket using JSON-RPC style messages.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
+
+use tokio::sync::RwLock;
 
 use anyhow::{Context, Result};
 use nix::unistd::{fork, setsid, ForkResult};
@@ -33,6 +36,9 @@ struct Stores {
     atlas: AtlasStore,
     extractor: Option<Extractor>,
     workers: WorkerManager,
+    /// Storage for async message responses (message_id -> Option<response>)
+    /// None means still processing, Some means complete
+    async_responses: RwLock<HashMap<String, Option<serde_json::Value>>>,
 }
 
 /// The daemon process
@@ -194,6 +200,7 @@ impl Daemon {
             atlas: AtlasStore::new(atlas_db),
             extractor,
             workers: WorkerManager::new(),
+            async_responses: RwLock::new(HashMap::new()),
         });
 
         // Bind the socket
@@ -294,7 +301,7 @@ async fn handle_connection(stream: UnixStream, stores: Arc<Stores>) -> Result<()
 }
 
 /// Handle a single request
-async fn handle_request(request: &Request, stores: &Stores) -> Response {
+async fn handle_request(request: &Request, stores: &Arc<Stores>) -> Response {
     let result = dispatch_request(request, stores).await;
 
     match result {
@@ -306,7 +313,7 @@ async fn handle_request(request: &Request, stores: &Stores) -> Response {
 }
 
 /// Dispatch request to the appropriate handler
-async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<serde_json::Value, IpcError> {
     match request.method.as_str() {
         // Health check
         "health_check" => Ok(serde_json::json!(true)),
@@ -364,6 +371,8 @@ async fn dispatch_request(request: &Request, stores: &Stores) -> Result<serde_js
         // Cortex operations (worker management)
         "cortex_create_worker" => handle_cortex_create_worker(request, &stores.workers).await,
         "cortex_send_message" => handle_cortex_send_message(request, &stores.workers).await,
+        "cortex_send_message_async" => handle_cortex_send_message_async(request, stores).await,
+        "cortex_get_response" => handle_cortex_get_response(request, stores).await,
         "cortex_worker_status" => handle_cortex_worker_status(request, &stores.workers).await,
         "cortex_list_workers" => handle_cortex_list_workers(&stores.workers).await,
         "cortex_remove_worker" => handle_cortex_remove_worker(request, &stores.workers).await,
@@ -1986,6 +1995,93 @@ async fn handle_cortex_remove_worker(
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
     Ok(json!(true))
+}
+
+/// Send a message asynchronously - returns immediately with a message ID
+async fn handle_cortex_send_message_async(
+    request: &Request,
+    stores: &Arc<Stores>,
+) -> Result<serde_json::Value, IpcError> {
+    let params: SendMessageParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let worker_id = WorkerId::from_string(&params.worker_id);
+
+    // Generate a unique message ID
+    let message_id = format!("msg_{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
+
+    // Store None to indicate "processing"
+    {
+        let mut responses = stores.async_responses.write().await;
+        responses.insert(message_id.clone(), None);
+    }
+
+    // Clone what we need for the spawned task
+    let stores_clone = Arc::clone(stores);
+    let message_id_clone = message_id.clone();
+    let message = params.message.clone();
+
+    // Spawn the actual work in a background task
+    tokio::spawn(async move {
+        let result = stores_clone.workers.send_message(&worker_id, &message).await;
+
+        let response_value = match result {
+            Ok(response) => json!({
+                "result": response.result,
+                "is_error": response.is_error,
+                "session_id": response.session_id,
+                "duration_ms": response.duration_ms,
+            }),
+            Err(e) => json!({
+                "result": e.to_string(),
+                "is_error": true,
+                "session_id": null,
+                "duration_ms": 0,
+            }),
+        };
+
+        // Store the result
+        let mut responses = stores_clone.async_responses.write().await;
+        responses.insert(message_id_clone, Some(response_value));
+    });
+
+    // Return immediately with the message ID
+    Ok(json!(message_id))
+}
+
+#[derive(Deserialize)]
+struct GetResponseParams {
+    message_id: String,
+}
+
+/// Get the response for an async message (returns null if still processing)
+async fn handle_cortex_get_response(
+    request: &Request,
+    stores: &Arc<Stores>,
+) -> Result<serde_json::Value, IpcError> {
+    let params: GetResponseParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let responses = stores.async_responses.read().await;
+
+    match responses.get(&params.message_id) {
+        Some(Some(response)) => {
+            // Response is ready - return it
+            // Note: we don't remove it here so it can be retrieved multiple times
+            Ok(response.clone())
+        }
+        Some(None) => {
+            // Still processing
+            Ok(serde_json::Value::Null)
+        }
+        None => {
+            // Unknown message ID
+            Err(IpcError::invalid_params(format!(
+                "Unknown message ID: {}",
+                params.message_id
+            )))
+        }
+    }
 }
 
 // ========== Vibetree Handlers ==========

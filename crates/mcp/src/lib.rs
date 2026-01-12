@@ -981,27 +981,73 @@ impl McpServer for MemexMcpServer {
     ///
     /// The message is sent to the Claude worker, which processes it
     /// and returns a response. Workers maintain session context between calls.
+    ///
+    /// If run_in_background is true, returns immediately with a message_id.
+    /// Use cortex_get_response to retrieve the result later.
     #[tool]
     async fn cortex_send_message(
         &self,
-        /// Worker ID to send the message to
         worker_id: String,
-        /// Message/prompt to send to the worker
         message: String,
+        run_in_background: Option<bool>,
     ) -> mcp_attr::Result<String> {
         let wid = cortex::WorkerId::from_string(&worker_id);
-        match self.cortex_client.send_message(&wid, &message).await {
-            Ok(response) => {
+
+        if run_in_background.unwrap_or(false) {
+            // Async mode: dispatch and return immediately
+            match self.cortex_client.send_message_async(&wid, &message).await {
+                Ok(message_id) => {
+                    Ok(format!("Message dispatched to worker {}.\nMessage ID: {}\nUse cortex_get_response to retrieve the result.", worker_id, message_id))
+                }
+                Err(e) => {
+                    let msg = format!("Failed to dispatch message: {}", e);
+                    Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+                }
+            }
+        } else {
+            // Sync mode: wait for response
+            match self.cortex_client.send_message(&wid, &message).await {
+                Ok(response) => {
+                    let mut output = String::new();
+                    if response.is_error {
+                        output.push_str(&format!("Worker {} returned an error:\n", worker_id));
+                    }
+                    output.push_str(&response.result);
+                    output.push_str(&format!("\n\n[Duration: {}ms]", response.duration_ms));
+                    Ok(output)
+                }
+                Err(e) => {
+                    let msg = format!("Failed to send message: {}", e);
+                    Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+                }
+            }
+        }
+    }
+
+    /// Get the response from an async message
+    ///
+    /// Returns the response if ready, or status if still processing.
+    #[tool]
+    async fn cortex_get_response(
+        &self,
+        /// Message ID from cortex_send_message with run_in_background=true
+        message_id: String,
+    ) -> mcp_attr::Result<String> {
+        match self.cortex_client.get_response(&message_id).await {
+            Ok(Some(response)) => {
                 let mut output = String::new();
                 if response.is_error {
-                    output.push_str(&format!("Worker {} returned an error:\n", worker_id));
+                    output.push_str("Worker returned an error:\n");
                 }
                 output.push_str(&response.result);
                 output.push_str(&format!("\n\n[Duration: {}ms]", response.duration_ms));
                 Ok(output)
             }
+            Ok(None) => {
+                Ok(format!("Message {} is still processing. Check back later.", message_id))
+            }
             Err(e) => {
-                let msg = format!("Failed to send message: {}", e);
+                let msg = format!("Failed to get response: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
             }
         }

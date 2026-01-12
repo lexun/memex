@@ -49,7 +49,7 @@ impl CortexClient {
         Ok(WorkerId::from_string(id))
     }
 
-    /// Send a message to a worker and get the response
+    /// Send a message to a worker and get the response (synchronous)
     pub async fn send_message(&self, worker_id: &WorkerId, message: &str) -> Result<WorkerResponse> {
         let params = json!({
             "worker_id": worker_id.0,
@@ -64,6 +64,40 @@ impl CortexClient {
             session_id: response.session_id,
             duration_ms: response.duration_ms,
         })
+    }
+
+    /// Send a message to a worker asynchronously, returning a message ID
+    pub async fn send_message_async(&self, worker_id: &WorkerId, message: &str) -> Result<String> {
+        let params = json!({
+            "worker_id": worker_id.0,
+            "message": message,
+        });
+
+        let result = self.client.request("cortex_send_message_async", params).await?;
+        let message_id: String = serde_json::from_value(result)?;
+        Ok(message_id)
+    }
+
+    /// Get the response for an async message (None if still processing)
+    pub async fn get_response(&self, message_id: &str) -> Result<Option<WorkerResponse>> {
+        let params = json!({
+            "message_id": message_id,
+        });
+
+        let result = self.client.request("cortex_get_response", params).await?;
+
+        // Check if still pending (null means not ready)
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let response: WorkerResponseDto = serde_json::from_value(result)?;
+        Ok(Some(WorkerResponse {
+            result: response.result,
+            is_error: response.is_error,
+            session_id: response.session_id,
+            duration_ms: response.duration_ms,
+        }))
     }
 
     /// Get status of a worker
