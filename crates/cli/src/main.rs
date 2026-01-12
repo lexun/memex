@@ -174,6 +174,9 @@ enum SystemCommands {
         /// Shell to generate completions for
         shell: CompletionShell,
     },
+    /// Upgrade memex via nix and restart daemon if needed
+    #[command(display_order = 25)]
+    Upgrade,
 }
 
 #[derive(Subcommand)]
@@ -445,6 +448,7 @@ async fn async_main(command: Commands) -> Result<()> {
             SystemCommands::Init => handle_init(),
             SystemCommands::Mcp { action } => handle_mcp(action).await,
             SystemCommands::Completions { .. } => unreachable!("Handled in main()"),
+            SystemCommands::Upgrade => handle_upgrade().await,
         },
     }
 }
@@ -525,6 +529,85 @@ fn handle_init() -> Result<()> {
     println!("  Socket: {}", config::get_socket_path(&cfg)?.display());
     println!("  PID file: {}", config::get_pid_file(&cfg)?.display());
     println!("  Database: {}", config::get_db_path(&cfg)?.display());
+
+    Ok(())
+}
+
+async fn handle_upgrade() -> Result<()> {
+    use std::process::Command;
+
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("Current version: {}", current_version);
+
+    // Check daemon status before upgrade
+    let cfg = config::load_config()?;
+    let pid_path = config::get_pid_file(&cfg)?;
+    let daemon_running_before = pid::check_daemon(&pid_path)?.is_some();
+    let daemon_version_before = pid::check_daemon(&pid_path)?
+        .map(|info| info.version.clone());
+
+    println!("Running nix profile upgrade memex...");
+
+    // Shell out to nix profile upgrade with inherited stdout/stderr
+    let status = Command::new("nix")
+        .args(["profile", "upgrade", "memex"])
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run nix profile upgrade: {}", e))?;
+
+    if !status.success() {
+        anyhow::bail!("nix profile upgrade failed with exit code: {:?}", status.code());
+    }
+
+    // Get the new version by running memex --version
+    // Note: We can't use env!() since that's compile-time; we need to check the installed binary
+    let version_output = Command::new("memex")
+        .arg("--version")
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to check new version: {}", e))?;
+
+    let new_version_line = String::from_utf8_lossy(&version_output.stdout);
+    let new_version = new_version_line
+        .trim()
+        .strip_prefix("memex ")
+        .unwrap_or(new_version_line.trim());
+
+    let version_changed = current_version != new_version;
+
+    if version_changed {
+        println!("Upgraded: {} -> {}", current_version, new_version);
+    } else {
+        println!("Already at latest version: {}", current_version);
+    }
+
+    // Check if daemon needs restart
+    let daemon_version_mismatch = daemon_version_before
+        .as_ref()
+        .map(|v| v != new_version)
+        .unwrap_or(false);
+
+    if daemon_running_before && (version_changed || daemon_version_mismatch) {
+        println!("Restarting daemon to apply update...");
+
+        // Stop the daemon
+        daemon::stop_daemon().await?;
+
+        // Brief pause to ensure clean shutdown
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Start the daemon - need to spawn new process since Daemon::start() forks
+        let status = Command::new("memex")
+            .args(["daemon", "start"])
+            .status()
+            .map_err(|e| anyhow::anyhow!("Failed to start daemon: {}", e))?;
+
+        if !status.success() {
+            anyhow::bail!("Failed to restart daemon");
+        }
+
+        println!("Daemon restarted successfully");
+    } else if daemon_running_before {
+        println!("Daemon version unchanged, no restart needed");
+    }
 
     Ok(())
 }
