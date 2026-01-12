@@ -381,6 +381,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "vibetree_list" => handle_vibetree_list(request).await,
         "vibetree_create" => handle_vibetree_create(request).await,
         "vibetree_remove" => handle_vibetree_remove(request).await,
+        "vibetree_merge" => handle_vibetree_merge(request).await,
 
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
@@ -2195,6 +2196,187 @@ async fn handle_vibetree_remove(request: &Request) -> Result<serde_json::Value, 
 
     Ok(json!({
         "removed": params.branch_name,
+    }))
+}
+
+#[derive(Deserialize)]
+struct VibetreeMergeParams {
+    cwd: String,
+    branch_name: String,
+    into: Option<String>,
+    squash: Option<bool>,
+    remove: Option<bool>,
+}
+
+async fn handle_vibetree_merge(request: &Request) -> Result<serde_json::Value, IpcError> {
+    let params: VibetreeMergeParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let path = std::path::PathBuf::from(&params.cwd);
+    let into_branch = params.into.as_deref().unwrap_or("main");
+    let squash = params.squash.unwrap_or(false);
+    let remove_after = params.remove.unwrap_or(false);
+
+    // Find the git repository root
+    let repo_root = vibetree::GitManager::find_repo_root(&path)
+        .map_err(|e| IpcError::internal(format!("Failed to find git repository: {}", e)))?;
+
+    // Check that the branch to merge exists
+    let branch_exists = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", &params.branch_name])
+        .current_dir(&repo_root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !branch_exists {
+        return Err(IpcError::invalid_params(format!(
+            "Branch '{}' does not exist",
+            params.branch_name
+        )));
+    }
+
+    // Check that the target branch exists
+    let target_exists = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", into_branch])
+        .current_dir(&repo_root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !target_exists {
+        return Err(IpcError::invalid_params(format!(
+            "Target branch '{}' does not exist",
+            into_branch
+        )));
+    }
+
+    // Get current branch to restore later if needed
+    let current_branch = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&repo_root)
+        .output()
+        .map_err(|e| IpcError::internal(format!("Failed to get current branch: {}", e)))?;
+
+    let original_branch = String::from_utf8_lossy(&current_branch.stdout).trim().to_string();
+
+    // Checkout the target branch
+    let checkout_output = std::process::Command::new("git")
+        .args(["checkout", into_branch])
+        .current_dir(&repo_root)
+        .output()
+        .map_err(|e| IpcError::internal(format!("Failed to checkout target branch: {}", e)))?;
+
+    if !checkout_output.status.success() {
+        let stderr = String::from_utf8_lossy(&checkout_output.stderr);
+        return Err(IpcError::internal(format!(
+            "Failed to checkout '{}': {}",
+            into_branch, stderr
+        )));
+    }
+
+    // Perform the merge
+    let merge_result = if squash {
+        // Squash merge
+        let squash_output = std::process::Command::new("git")
+            .args(["merge", "--squash", &params.branch_name])
+            .current_dir(&repo_root)
+            .output()
+            .map_err(|e| IpcError::internal(format!("Failed to squash merge: {}", e)))?;
+
+        if !squash_output.status.success() {
+            // Restore original branch on failure
+            let _ = std::process::Command::new("git")
+                .args(["checkout", &original_branch])
+                .current_dir(&repo_root)
+                .output();
+            let stderr = String::from_utf8_lossy(&squash_output.stderr);
+            return Err(IpcError::internal(format!(
+                "Squash merge failed: {}",
+                stderr
+            )));
+        }
+
+        // Commit the squashed changes
+        let commit_msg = format!("Merge branch '{}' (squashed)", params.branch_name);
+        let commit_output = std::process::Command::new("git")
+            .args(["commit", "-m", &commit_msg])
+            .current_dir(&repo_root)
+            .output()
+            .map_err(|e| IpcError::internal(format!("Failed to commit squash merge: {}", e)))?;
+
+        if !commit_output.status.success() {
+            // Check if there's nothing to commit (branches already identical)
+            let stderr = String::from_utf8_lossy(&commit_output.stderr);
+            if !stderr.contains("nothing to commit") {
+                // Restore original branch on failure
+                let _ = std::process::Command::new("git")
+                    .args(["checkout", &original_branch])
+                    .current_dir(&repo_root)
+                    .output();
+                return Err(IpcError::internal(format!(
+                    "Failed to commit squash merge: {}",
+                    stderr
+                )));
+            }
+        }
+
+        Ok(())
+    } else {
+        // Regular merge
+        let merge_output = std::process::Command::new("git")
+            .args(["merge", &params.branch_name, "-m", &format!("Merge branch '{}'", params.branch_name)])
+            .current_dir(&repo_root)
+            .output()
+            .map_err(|e| IpcError::internal(format!("Failed to merge: {}", e)))?;
+
+        if !merge_output.status.success() {
+            // Restore original branch on failure
+            let _ = std::process::Command::new("git")
+                .args(["merge", "--abort"])
+                .current_dir(&repo_root)
+                .output();
+            let _ = std::process::Command::new("git")
+                .args(["checkout", &original_branch])
+                .current_dir(&repo_root)
+                .output();
+            let stderr = String::from_utf8_lossy(&merge_output.stderr);
+            return Err(IpcError::internal(format!("Merge failed: {}", stderr)));
+        }
+
+        Ok(())
+    };
+
+    merge_result?;
+
+    // Restore original branch if it wasn't the target
+    if original_branch != into_branch {
+        let _ = std::process::Command::new("git")
+            .args(["checkout", &original_branch])
+            .current_dir(&repo_root)
+            .output();
+    }
+
+    // Remove worktree if requested
+    let mut removed = false;
+    if remove_after {
+        // Try to load vibetree config and remove the worktree
+        if let Ok(mut app) = vibetree::VibeTreeApp::with_parent(path.clone()) {
+            if app.remove_worktree_for_test(
+                params.branch_name.clone(),
+                true, // force
+                false, // don't keep branch since we merged it
+            ).is_ok() {
+                removed = true;
+            }
+        }
+    }
+
+    Ok(json!({
+        "merged": params.branch_name,
+        "into": into_branch,
+        "squashed": squash,
+        "removed": removed,
     }))
 }
 

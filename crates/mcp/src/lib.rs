@@ -1248,6 +1248,56 @@ impl McpServer for MemexMcpServer {
             }
         }
     }
+
+    /// Merge a worktree branch into another branch
+    ///
+    /// Merges the specified branch into the target branch (default: main).
+    /// Optionally squashes commits and removes the worktree after merge.
+    #[tool]
+    async fn vibetree_merge(
+        &self,
+        /// Path to the git repository root
+        cwd: String,
+        /// Name of the branch to merge
+        branch_name: String,
+        /// Target branch to merge into (default: "main")
+        into: Option<String>,
+        /// Squash commits into a single commit
+        squash: Option<bool>,
+        /// Remove the worktree after successful merge
+        remove: Option<bool>,
+    ) -> mcp_attr::Result<String> {
+        let params = serde_json::json!({
+            "cwd": cwd,
+            "branch_name": branch_name,
+            "into": into,
+            "squash": squash.unwrap_or(false),
+            "remove": remove.unwrap_or(false),
+        });
+
+        match self.ipc_client.request("vibetree_merge", params).await {
+            Ok(result) => {
+                let merged = result.get("merged").and_then(|v| v.as_str()).unwrap_or(&branch_name);
+                let into_branch = result.get("into").and_then(|v| v.as_str()).unwrap_or("main");
+                let squashed = result.get("squashed").and_then(|v| v.as_bool()).unwrap_or(false);
+                let removed = result.get("removed").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                let mut output = format!("Merged '{}' into '{}'", merged, into_branch);
+                if squashed {
+                    output.push_str(" (squashed)");
+                }
+                if removed {
+                    output.push_str("\nWorktree removed after merge");
+                }
+
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to merge worktree: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
 }
 
 /// Start the MCP server on stdio
