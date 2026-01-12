@@ -1266,6 +1266,8 @@ impl McpServer for MemexMcpServer {
         squash: Option<bool>,
         /// Remove the worktree after successful merge
         remove: Option<bool>,
+        /// Custom commit message for the merge
+        message: Option<String>,
     ) -> mcp_attr::Result<String> {
         let params = serde_json::json!({
             "cwd": cwd,
@@ -1273,6 +1275,7 @@ impl McpServer for MemexMcpServer {
             "into": into,
             "squash": squash.unwrap_or(false),
             "remove": remove.unwrap_or(false),
+            "message": message,
         });
 
         match self.ipc_client.request("vibetree_merge", params).await {

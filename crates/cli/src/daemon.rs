@@ -2206,6 +2206,7 @@ struct VibetreeMergeParams {
     into: Option<String>,
     squash: Option<bool>,
     remove: Option<bool>,
+    message: Option<String>,
 }
 
 async fn handle_vibetree_merge(request: &Request) -> Result<serde_json::Value, IpcError> {
@@ -2298,7 +2299,9 @@ async fn handle_vibetree_merge(request: &Request) -> Result<serde_json::Value, I
         }
 
         // Commit the squashed changes
-        let commit_msg = format!("Merge branch '{}' (squashed)", params.branch_name);
+        let commit_msg = params.message.clone().unwrap_or_else(|| {
+            format!("Merge branch '{}' (squashed)", params.branch_name)
+        });
         let commit_output = std::process::Command::new("git")
             .args(["commit", "-m", &commit_msg])
             .current_dir(&repo_root)
@@ -2324,8 +2327,11 @@ async fn handle_vibetree_merge(request: &Request) -> Result<serde_json::Value, I
         Ok(())
     } else {
         // Regular merge
+        let merge_msg = params.message.clone().unwrap_or_else(|| {
+            format!("Merge branch '{}'", params.branch_name)
+        });
         let merge_output = std::process::Command::new("git")
-            .args(["merge", &params.branch_name, "-m", &format!("Merge branch '{}'", params.branch_name)])
+            .args(["merge", &params.branch_name, "-m", &merge_msg])
             .current_dir(&repo_root)
             .output()
             .map_err(|e| IpcError::internal(format!("Failed to merge: {}", e)))?;

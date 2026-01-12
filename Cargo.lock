@@ -5510,9 +5510,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vibetree"
-version = "0.2.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af82f0d15e437fa323917e535736bf7dbef72e4478e5fc409e21fd4b959d34d3"
+checksum = "c8b385199c93a7ede037ae71b963381e238a99b8367aba0d8297cc690043836c"
 dependencies = [
  "anyhow",
  "carapace_spec_clap",
