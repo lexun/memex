@@ -984,6 +984,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "chrono",
+ "dirs 5.0.1",
  "ipc",
  "nix",
  "serde",

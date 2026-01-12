@@ -19,6 +19,9 @@ chrono.workspace = true
 # Process management
 nix = { version = "0.29", features = ["signal", "process"] }
 
+# Path discovery
+dirs = "5"
+
 # For subprocess communication
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"

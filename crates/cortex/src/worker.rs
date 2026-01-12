@@ -13,6 +13,7 @@
 //! - `--input-format stream-json` for true bidirectional communication
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -23,6 +24,52 @@ use tracing::{debug, info};
 
 use crate::error::{CortexError, Result};
 use crate::types::{WorkerConfig, WorkerId, WorkerState, WorkerStatus};
+
+/// Find the claude binary path
+///
+/// Searches in order:
+/// 1. `which claude` (uses current PATH)
+/// 2. Common installation locations
+/// 3. Falls back to "claude" and hopes PATH works
+fn find_claude_binary() -> PathBuf {
+    // Try `which claude` first - this respects the current PATH
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("claude")
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                debug!("Found claude via which: {}", path);
+                return PathBuf::from(path);
+            }
+        }
+    }
+
+    // Check common installation locations
+    let common_paths = [
+        // NixOS user profile
+        dirs::home_dir().map(|h| h.join(".nix-profile/bin/claude")),
+        // Standard local install
+        dirs::home_dir().map(|h| h.join(".claude/local/claude")),
+        // Homebrew on macOS
+        Some(PathBuf::from("/opt/homebrew/bin/claude")),
+        // Linux standard locations
+        Some(PathBuf::from("/usr/local/bin/claude")),
+        Some(PathBuf::from("/usr/bin/claude")),
+    ];
+
+    for path_opt in common_paths.iter().flatten() {
+        if path_opt.exists() {
+            debug!("Found claude at: {}", path_opt.display());
+            return path_opt.clone();
+        }
+    }
+
+    // Last resort: just use "claude" and hope PATH works
+    debug!("Claude binary not found in common locations, falling back to PATH");
+    PathBuf::from("claude")
+}
 
 /// Result of sending a message to a worker
 #[derive(Debug, Clone)]
@@ -96,7 +143,8 @@ impl WorkerManager {
         worker.status.last_activity = Utc::now();
 
         // Build command
-        let mut cmd = Command::new("claude");
+        let claude_path = find_claude_binary();
+        let mut cmd = Command::new(&claude_path);
         cmd.arg("-p").arg(message);
         cmd.arg("--output-format").arg("json");
         cmd.current_dir(&worker.config.cwd);
