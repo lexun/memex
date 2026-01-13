@@ -536,15 +536,10 @@ fn handle_init() -> Result<()> {
 async fn handle_upgrade() -> Result<()> {
     use std::process::Command;
 
-    let current_version = env!("CARGO_PKG_VERSION");
-    println!("Current version: {}", current_version);
-
     // Check daemon status before upgrade
     let cfg = config::load_config()?;
     let pid_path = config::get_pid_file(&cfg)?;
     let daemon_running_before = pid::check_daemon(&pid_path)?.is_some();
-    let daemon_version_before = pid::check_daemon(&pid_path)?
-        .map(|info| info.version.clone());
 
     println!("Running nix profile upgrade memex...");
 
@@ -558,35 +553,11 @@ async fn handle_upgrade() -> Result<()> {
         anyhow::bail!("nix profile upgrade failed with exit code: {:?}", status.code());
     }
 
-    // Get the new version by running memex --version
-    // Note: We can't use env!() since that's compile-time; we need to check the installed binary
-    let version_output = Command::new("memex")
-        .arg("--version")
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to check new version: {}", e))?;
+    println!("Upgrade complete");
 
-    let new_version_line = String::from_utf8_lossy(&version_output.stdout);
-    let new_version = new_version_line
-        .trim()
-        .strip_prefix("memex ")
-        .unwrap_or(new_version_line.trim());
-
-    let version_changed = current_version != new_version;
-
-    if version_changed {
-        println!("Upgraded: {} -> {}", current_version, new_version);
-    } else {
-        println!("Already at latest version: {}", current_version);
-    }
-
-    // Check if daemon needs restart
-    let daemon_version_mismatch = daemon_version_before
-        .as_ref()
-        .map(|v| v != new_version)
-        .unwrap_or(false);
-
-    if daemon_running_before && (version_changed || daemon_version_mismatch) {
-        println!("Restarting daemon to apply update...");
+    // Always restart daemon if it was running (version comparison unreliable during rapid dev)
+    if daemon_running_before {
+        println!("Restarting daemon...");
 
         // Stop the daemon
         daemon::stop_daemon().await?;
@@ -604,9 +575,7 @@ async fn handle_upgrade() -> Result<()> {
             anyhow::bail!("Failed to restart daemon");
         }
 
-        println!("Daemon restarted successfully");
-    } else if daemon_running_before {
-        println!("Daemon version unchanged, no restart needed");
+        println!("Daemon restarted");
     }
 
     Ok(())
