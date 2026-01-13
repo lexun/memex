@@ -17,6 +17,8 @@ pub enum Category {
     Services,
     /// Setup and configuration
     Configure,
+    /// Maintenance operations
+    Maintain,
 }
 
 impl Category {
@@ -26,6 +28,7 @@ impl Category {
             Category::Explore => "Explore",
             Category::Services => "Services",
             Category::Configure => "Configure",
+            Category::Maintain => "Maintain",
         }
     }
 
@@ -35,6 +38,7 @@ impl Category {
             Category::Explore => 1,
             Category::Services => 2,
             Category::Configure => 3,
+            Category::Maintain => 4,
         }
     }
 }
@@ -87,16 +91,6 @@ pub fn command_registry() -> Vec<CommandInfo> {
             category: Category::Explore,
         },
         CommandInfo {
-            name: "rebuild",
-            description: "Rebuild knowledge index",
-            category: Category::Explore,
-        },
-        CommandInfo {
-            name: "backfill",
-            description: "Backfill missing knowledge",
-            category: Category::Explore,
-        },
-        CommandInfo {
             name: "status",
             description: "Knowledge system status",
             category: Category::Explore,
@@ -139,6 +133,23 @@ pub fn command_registry() -> Vec<CommandInfo> {
             name: "completions",
             description: "Shell completions",
             category: Category::Configure,
+        },
+
+        // Maintain - maintenance operations
+        CommandInfo {
+            name: "rebuild",
+            description: "Rebuild knowledge index",
+            category: Category::Maintain,
+        },
+        CommandInfo {
+            name: "backfill",
+            description: "Backfill missing embeddings",
+            category: Category::Maintain,
+        },
+        CommandInfo {
+            name: "upgrade",
+            description: "Upgrade memex via nix",
+            category: Category::Maintain,
         },
     ]
 }
