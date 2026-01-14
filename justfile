@@ -16,7 +16,11 @@ test:
 memex *args='-h':
     #!/usr/bin/env bash
     # OBJC_DISABLE_INITIALIZE_FORK_SAFETY works around macOS fork-after-init crash
-    OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES MEMEX_CONFIG_PATH=./.memex cargo run --bin memex -- "$@"
+    # CLAUDE_BINARY captures path before daemon fork (daemon loses PATH from nix shell)
+    OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \
+    MEMEX_CONFIG_PATH=./.memex \
+    CLAUDE_BINARY="$(which claude)" \
+    cargo run --bin memex -- "$@"
 
 # Clean build artifacts and dev database
 clean:

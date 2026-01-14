@@ -28,11 +28,18 @@ use crate::types::{WorkerConfig, WorkerId, WorkerState, WorkerStatus};
 /// Find the claude binary path
 ///
 /// Searches in order:
-/// 1. `which claude` (uses current PATH)
-/// 2. Common installation locations
-/// 3. Falls back to "claude" and hopes PATH works
+/// 1. CLAUDE_BINARY env var (explicit override, used by dev scripts)
+/// 2. `which claude` (uses current PATH)
+/// 3. Common installation locations (homebrew, standard paths)
+/// 4. Falls back to "claude" and hopes PATH works
 fn find_claude_binary() -> PathBuf {
-    // Try `which claude` first - this respects the current PATH
+    // Check for explicit override first (set by just recipe and dev scripts)
+    if let Ok(path) = std::env::var("CLAUDE_BINARY") {
+        debug!("Using CLAUDE_BINARY from env: {}", path);
+        return PathBuf::from(path);
+    }
+
+    // Try `which claude` - this respects the current PATH
     if let Ok(output) = std::process::Command::new("which")
         .arg("claude")
         .output()
@@ -48,7 +55,7 @@ fn find_claude_binary() -> PathBuf {
 
     // Check common installation locations
     let common_paths = [
-        // NixOS user profile
+        // NixOS/home-manager user profile
         dirs::home_dir().map(|h| h.join(".nix-profile/bin/claude")),
         // Standard local install
         dirs::home_dir().map(|h| h.join(".claude/local/claude")),
