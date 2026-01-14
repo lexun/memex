@@ -134,23 +134,34 @@ impl WorkerManager {
     /// This spawns a Claude process with `-p` mode, sends the message,
     /// and returns the response.
     pub async fn send_message(&self, id: &WorkerId, message: &str) -> Result<WorkerResponse> {
-        let mut workers = self.workers.write().await;
-        let worker = workers.get_mut(id).ok_or_else(|| {
-            CortexError::WorkerNotFound(id.to_string())
-        })?;
+        // Phase 1: Acquire lock, extract config, update state, release lock
+        let (cwd, model, last_session_id) = {
+            let mut workers = self.workers.write().await;
+            let worker = workers.get_mut(id).ok_or_else(|| {
+                CortexError::WorkerNotFound(id.to_string())
+            })?;
 
-        worker.status.state = WorkerState::Working;
-        worker.status.last_activity = Utc::now();
+            worker.status.state = WorkerState::Working;
+            worker.status.last_activity = Utc::now();
+            worker.status.messages_sent += 1;
 
-        // Build command
+            (
+                worker.config.cwd.clone(),
+                worker.config.model.clone(),
+                worker.last_session_id.clone(),
+            )
+            // Lock released here
+        };
+
+        // Phase 2: Build and run command (NO LOCK HELD - allows concurrent operations)
         let claude_path = find_claude_binary();
         let mut cmd = Command::new(&claude_path);
         cmd.arg("-p").arg(message);
         cmd.arg("--output-format").arg("json");
-        cmd.current_dir(&worker.config.cwd);
+        cmd.current_dir(&cwd);
 
         // Add model if specified
-        if let Some(ref model) = worker.config.model {
+        if let Some(ref model) = model {
             cmd.arg("--model").arg(model);
         }
 
@@ -158,7 +169,7 @@ impl WorkerManager {
         cmd.arg("--dangerously-skip-permissions");
 
         // Add resume if we have a session
-        if let Some(ref session_id) = worker.last_session_id {
+        if let Some(ref session_id) = last_session_id {
             cmd.arg("--resume").arg(session_id);
         }
 
@@ -171,46 +182,57 @@ impl WorkerManager {
             CortexError::WorkerStartFailed(format!("Failed to spawn claude: {}", e))
         })?;
 
-        worker.status.messages_sent += 1;
-
-        if !output.status.success() {
+        // Phase 3: Parse response (still no lock needed)
+        let (result, is_error, session_id, duration_ms) = if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            worker.status.state = WorkerState::Error(stderr.to_string());
+            // Update worker state to error
+            let mut workers = self.workers.write().await;
+            if let Some(worker) = workers.get_mut(id) {
+                worker.status.state = WorkerState::Error(stderr.to_string());
+            }
             return Err(CortexError::WorkerCommunicationFailed(stderr.to_string()));
+        } else {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            // Parse JSON response
+            let json: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| {
+                CortexError::WorkerCommunicationFailed(format!("Invalid JSON response: {}", e))
+            })?;
+
+            let result = json.get("result")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let is_error = json.get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let session_id = json.get("session_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let duration_ms = json.get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            (result, is_error, session_id, duration_ms)
+        };
+
+        // Phase 4: Acquire lock again to update final state
+        {
+            let mut workers = self.workers.write().await;
+            if let Some(worker) = workers.get_mut(id) {
+                // Store session ID for potential resume
+                if let Some(ref sid) = session_id {
+                    worker.last_session_id = Some(sid.clone());
+                }
+
+                worker.status.messages_received += 1;
+                worker.status.last_activity = Utc::now();
+                worker.status.state = WorkerState::Idle;
+            }
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Parse JSON response
-        let json: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| {
-            CortexError::WorkerCommunicationFailed(format!("Invalid JSON response: {}", e))
-        })?;
-
-        let result = json.get("result")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let is_error = json.get("is_error")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let session_id = json.get("session_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let duration_ms = json.get("duration_ms")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        // Store session ID for potential resume
-        if let Some(ref sid) = session_id {
-            worker.last_session_id = Some(sid.clone());
-        }
-
-        worker.status.messages_received += 1;
-        worker.status.last_activity = Utc::now();
-        worker.status.state = WorkerState::Idle;
 
         Ok(WorkerResponse {
             result,
