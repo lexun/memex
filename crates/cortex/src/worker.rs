@@ -192,12 +192,33 @@ impl WorkerManager {
         // Phase 3: Parse response (still no lock needed)
         let (result, is_error, session_id, duration_ms) = if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let exit_code = output.status.code();
+
+            // Get signal info on Unix systems
+            #[cfg(unix)]
+            let signal = {
+                use std::os::unix::process::ExitStatusExt;
+                output.status.signal()
+            };
+            #[cfg(not(unix))]
+            let signal: Option<i32> = None;
+
+            // Build detailed error message
+            let error_msg = format!(
+                "exit_code={:?}, signal={:?}, stderr={}, stdout={}",
+                exit_code,
+                signal,
+                if stderr.is_empty() { "(empty)" } else { &stderr },
+                if stdout.is_empty() { "(empty)" } else { &stdout }
+            );
+
             // Update worker state to error
             let mut workers = self.workers.write().await;
             if let Some(worker) = workers.get_mut(id) {
-                worker.status.state = WorkerState::Error(stderr.to_string());
+                worker.status.state = WorkerState::Error(error_msg.clone());
             }
-            return Err(CortexError::WorkerCommunicationFailed(stderr.to_string()));
+            return Err(CortexError::WorkerCommunicationFailed(error_msg));
         } else {
             let stdout = String::from_utf8_lossy(&output.stdout);
 
