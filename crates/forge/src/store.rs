@@ -9,6 +9,7 @@ use db::Database;
 use surrealdb::sql::{Datetime, Thing};
 
 use crate::task::{Task, TaskDependency, TaskId, TaskNote, TaskStatus};
+use crate::worker::DbWorker;
 
 /// Database store for task management
 #[derive(Clone)]
@@ -395,5 +396,127 @@ impl Store {
             .context("Failed to execute import SQL")?;
 
         Ok(statement_count)
+    }
+
+    // ========== Worker Operations ==========
+
+    /// Create a new worker record
+    pub async fn create_worker(&self, worker: DbWorker) -> Result<DbWorker> {
+        let created: Option<DbWorker> = self
+            .db
+            .client()
+            .create("worker")
+            .content(worker)
+            .await
+            .context("Failed to create worker")?;
+
+        created.context("Worker creation returned no result")
+    }
+
+    /// Get a worker by worker_id
+    pub async fn get_worker(&self, worker_id: &str) -> Result<Option<DbWorker>> {
+        let mut response = self
+            .db
+            .client()
+            .query("SELECT * FROM worker WHERE worker_id = $worker_id LIMIT 1")
+            .bind(("worker_id", worker_id.to_string()))
+            .await
+            .context("Failed to query worker")?;
+
+        let workers: Vec<DbWorker> = response.take(0).context("Failed to parse worker")?;
+        Ok(workers.into_iter().next())
+    }
+
+    /// List all workers, optionally filtered by state
+    pub async fn list_workers(&self, state: Option<&str>) -> Result<Vec<DbWorker>> {
+        let query = if state.is_some() {
+            "SELECT * FROM worker WHERE state = $state ORDER BY started_at DESC"
+        } else {
+            "SELECT * FROM worker ORDER BY started_at DESC"
+        };
+
+        let mut stmt = self.db.client().query(query);
+        if let Some(s) = state {
+            stmt = stmt.bind(("state", s.to_string()));
+        }
+
+        let mut response = stmt.await.context("Failed to query workers")?;
+        let workers: Vec<DbWorker> = response.take(0).context("Failed to parse workers")?;
+
+        Ok(workers)
+    }
+
+    /// Update worker status fields
+    pub async fn update_worker_status(
+        &self,
+        worker_id: &str,
+        state: &str,
+        error_message: Option<&str>,
+        current_task: Option<&str>,
+        messages_sent: i64,
+        messages_received: i64,
+    ) -> Result<Option<DbWorker>> {
+        let mut response = self
+            .db
+            .client()
+            .query(
+                r#"UPDATE worker SET
+                    state = $state,
+                    error_message = $error_message,
+                    current_task = $current_task,
+                    messages_sent = $messages_sent,
+                    messages_received = $messages_received,
+                    last_activity = time::now(),
+                    updated_at = time::now()
+                WHERE worker_id = $worker_id"#,
+            )
+            .bind(("worker_id", worker_id.to_string()))
+            .bind(("state", state.to_string()))
+            .bind(("error_message", error_message.map(|s| s.to_string())))
+            .bind(("current_task", current_task.map(|s| s.to_string())))
+            .bind(("messages_sent", messages_sent))
+            .bind(("messages_received", messages_received))
+            .await
+            .context("Failed to update worker status")?;
+
+        let updated: Option<DbWorker> = response.take(0).context("Failed to parse updated worker")?;
+        Ok(updated)
+    }
+
+    /// Update worker session ID (called after each message)
+    pub async fn update_worker_session(
+        &self,
+        worker_id: &str,
+        session_id: Option<&str>,
+    ) -> Result<Option<DbWorker>> {
+        let mut response = self
+            .db
+            .client()
+            .query(
+                r#"UPDATE worker SET
+                    last_session_id = $session_id,
+                    last_activity = time::now(),
+                    updated_at = time::now()
+                WHERE worker_id = $worker_id"#,
+            )
+            .bind(("worker_id", worker_id.to_string()))
+            .bind(("session_id", session_id.map(|s| s.to_string())))
+            .await
+            .context("Failed to update worker session")?;
+
+        let updated: Option<DbWorker> = response.take(0).context("Failed to parse updated worker")?;
+        Ok(updated)
+    }
+
+    /// Delete a worker record
+    pub async fn delete_worker(&self, worker_id: &str) -> Result<bool> {
+        self.db
+            .client()
+            .query("DELETE FROM worker WHERE worker_id = $worker_id")
+            .bind(("worker_id", worker_id.to_string()))
+            .await
+            .context("Failed to delete worker")?;
+
+        Ok(true)
     }
 }

@@ -8,9 +8,11 @@ pub mod client;
 pub mod handler;
 pub mod store;
 pub mod task;
+pub mod worker;
 
 pub use cli::TaskCommand;
 pub use client::TaskClient;
 pub use handler::handle_task_command;
 pub use store::Store;
 pub use task::{Task, TaskDependency, TaskId, TaskNote, TaskStatus};
+pub use worker::DbWorker;

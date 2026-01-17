@@ -20,9 +20,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use atlas::{Event, EventSource, Extractor, MemoSource, QueryDecomposer, Store as AtlasStore};
-use cortex::{WorkerConfig, WorkerId, WorkerManager};
+use cortex::{WorkerConfig, WorkerId, WorkerManager, WorkerState, WorkerStatus};
 use db::Database;
-use forge::{Store as ForgeStore, Task, TaskStatus};
+use forge::{DbWorker, Store as ForgeStore, Task, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
 use llm::LlmClient;
 use serde_json::json;
@@ -39,6 +39,68 @@ struct Stores {
     /// Storage for async message responses (message_id -> Option<response>)
     /// None means still processing, Some means complete
     async_responses: RwLock<HashMap<String, Option<serde_json::Value>>>,
+}
+
+/// Load persisted workers from database on startup
+async fn load_workers_from_db(stores: &Arc<Stores>) -> Result<()> {
+    let db_workers = stores.forge.list_workers(None).await?;
+
+    if db_workers.is_empty() {
+        tracing::info!("No persisted workers to load");
+        return Ok(());
+    }
+
+    tracing::info!("Loading {} persisted workers from database", db_workers.len());
+
+    for db_worker in db_workers {
+        // Skip workers that were stopped or errored
+        if db_worker.state == "stopped" || db_worker.state == "error" {
+            tracing::debug!("Skipping {} worker {}", db_worker.state, db_worker.worker_id);
+            continue;
+        }
+
+        // Build WorkerConfig
+        let mut config = WorkerConfig::new(&db_worker.cwd);
+        if let Some(ref model) = db_worker.model {
+            if !model.is_empty() {
+                config = config.with_model(model);
+            }
+        }
+        if let Some(ref prompt) = db_worker.system_prompt {
+            if !prompt.is_empty() {
+                config = config.with_system_prompt(prompt);
+            }
+        }
+
+        // Build WorkerStatus
+        let worker_id = WorkerId::from_string(&db_worker.worker_id);
+        let mut status = WorkerStatus::new(worker_id.clone());
+        status.worktree = db_worker.worktree.clone();
+        status.current_task = db_worker.current_task.clone();
+        status.messages_sent = db_worker.messages_sent as u64;
+        status.messages_received = db_worker.messages_received as u64;
+        // Set state to Idle - orchestrator will decide what to do
+        status.state = WorkerState::Idle;
+
+        // Load into WorkerManager
+        if let Err(e) = stores.workers.load_worker(
+            worker_id.clone(),
+            config,
+            status,
+            db_worker.last_session_id.clone(),
+        ).await {
+            tracing::warn!("Failed to load worker {}: {}", db_worker.worker_id, e);
+            continue;
+        }
+
+        tracing::info!(
+            "Loaded worker {} (session: {})",
+            db_worker.worker_id,
+            db_worker.last_session_id.as_deref().unwrap_or("none")
+        );
+    }
+
+    Ok(())
 }
 
 /// The daemon process
@@ -202,6 +264,11 @@ impl Daemon {
             workers: WorkerManager::new(),
             async_responses: RwLock::new(HashMap::new()),
         });
+
+        // Load persisted workers from database
+        if let Err(e) = load_workers_from_db(&stores).await {
+            tracing::warn!("Failed to load workers from DB: {}", e);
+        }
 
         // Bind the socket
         let listener = UnixListener::bind(&self.socket_path)
@@ -369,13 +436,13 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "get_related_facts" => handle_get_related_facts(request, &stores.atlas).await,
 
         // Cortex operations (worker management)
-        "cortex_create_worker" => handle_cortex_create_worker(request, &stores.workers).await,
-        "cortex_send_message" => handle_cortex_send_message(request, &stores.workers).await,
+        "cortex_create_worker" => handle_cortex_create_worker(request, stores).await,
+        "cortex_send_message" => handle_cortex_send_message(request, stores).await,
         "cortex_send_message_async" => handle_cortex_send_message_async(request, stores).await,
         "cortex_get_response" => handle_cortex_get_response(request, stores).await,
         "cortex_worker_status" => handle_cortex_worker_status(request, &stores.workers).await,
         "cortex_list_workers" => handle_cortex_list_workers(&stores.workers).await,
-        "cortex_remove_worker" => handle_cortex_remove_worker(request, &stores.workers).await,
+        "cortex_remove_worker" => handle_cortex_remove_worker(request, stores).await,
 
         // Vibetree operations (worktree management)
         "vibetree_list" => handle_vibetree_list(request).await,
@@ -1913,23 +1980,34 @@ struct CreateWorkerParams {
 
 async fn handle_cortex_create_worker(
     request: &Request,
-    workers: &WorkerManager,
+    stores: &Arc<Stores>,
 ) -> Result<serde_json::Value, IpcError> {
     let params: CreateWorkerParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
     let mut config = WorkerConfig::new(&params.cwd);
-    if let Some(model) = params.model {
+    if let Some(ref model) = params.model {
         config = config.with_model(model);
     }
-    if let Some(prompt) = params.system_prompt {
+    if let Some(ref prompt) = params.system_prompt {
         config = config.with_system_prompt(prompt);
     }
 
-    let worker_id = workers
+    // Create in-memory worker
+    let worker_id = stores.workers
         .create(config)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Persist to database
+    let db_worker = DbWorker::new(&worker_id.0, &params.cwd)
+        .with_model(params.model.unwrap_or_default())
+        .with_system_prompt(params.system_prompt.unwrap_or_default());
+
+    if let Err(e) = stores.forge.create_worker(db_worker).await {
+        tracing::warn!("Failed to persist worker to DB: {}", e);
+        // Continue anyway - worker is created in memory
+    }
 
     Ok(json!(worker_id.0))
 }
@@ -1942,17 +2020,51 @@ struct SendMessageParams {
 
 async fn handle_cortex_send_message(
     request: &Request,
-    workers: &WorkerManager,
+    stores: &Arc<Stores>,
 ) -> Result<serde_json::Value, IpcError> {
     let params: SendMessageParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
     let worker_id = WorkerId::from_string(&params.worker_id);
 
-    let response = workers
+    let response = stores.workers
         .send_message(&worker_id, &params.message)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Update session_id in database for resume support
+    if let Some(ref session_id) = response.session_id {
+        if let Err(e) = stores.forge.update_worker_session(&params.worker_id, Some(session_id)).await {
+            tracing::warn!("Failed to persist worker session to DB: {}", e);
+        }
+    }
+
+    // Update status in database
+    let status = stores.workers.status(&worker_id).await.ok();
+    if let Some(status) = status {
+        let state_str = match &status.state {
+            WorkerState::Starting => "starting",
+            WorkerState::Ready => "ready",
+            WorkerState::Working => "working",
+            WorkerState::Idle => "idle",
+            WorkerState::Stopped => "stopped",
+            WorkerState::Error(_) => "error",
+        };
+        let error_msg = match &status.state {
+            WorkerState::Error(msg) => Some(msg.as_str()),
+            _ => None,
+        };
+        if let Err(e) = stores.forge.update_worker_status(
+            &params.worker_id,
+            state_str,
+            error_msg,
+            status.current_task.as_deref(),
+            status.messages_sent as i64,
+            status.messages_received as i64,
+        ).await {
+            tracing::warn!("Failed to persist worker status to DB: {}", e);
+        }
+    }
 
     Ok(json!({
         "result": response.result,
@@ -1993,17 +2105,23 @@ async fn handle_cortex_list_workers(
 
 async fn handle_cortex_remove_worker(
     request: &Request,
-    workers: &WorkerManager,
+    stores: &Arc<Stores>,
 ) -> Result<serde_json::Value, IpcError> {
     let params: WorkerIdParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
     let worker_id = WorkerId::from_string(&params.worker_id);
 
-    workers
+    // Remove from in-memory manager
+    stores.workers
         .remove(&worker_id)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Delete from database
+    if let Err(e) = stores.forge.delete_worker(&params.worker_id).await {
+        tracing::warn!("Failed to delete worker from DB: {}", e);
+    }
 
     Ok(json!(true))
 }

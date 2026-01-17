@@ -23,11 +23,18 @@ struct Migration {
 }
 
 /// Forge migrations
-const FORGE_MIGRATIONS: &[Migration] = &[Migration {
-    timestamp: 1735689600,
-    name: "initial_schema",
-    sql: include_str!("../migrations/forge/1735689600_initial_schema.surql"),
-}];
+const FORGE_MIGRATIONS: &[Migration] = &[
+    Migration {
+        timestamp: 1735689600,
+        name: "initial_schema",
+        sql: include_str!("../migrations/forge/1735689600_initial_schema.surql"),
+    },
+    Migration {
+        timestamp: 1768780800,
+        name: "worker_schema",
+        sql: include_str!("../migrations/forge/1768780800_worker_schema.surql"),
+    },
+];
 
 /// Atlas migrations
 const ATLAS_MIGRATIONS: &[Migration] = &[

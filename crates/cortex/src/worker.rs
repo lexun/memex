@@ -136,6 +136,51 @@ impl WorkerManager {
         Ok(id)
     }
 
+    /// Load a worker with existing state (for restoring from DB)
+    ///
+    /// This allows the daemon to restore workers from persistent storage
+    /// after a restart.
+    pub async fn load_worker(
+        &self,
+        id: WorkerId,
+        config: WorkerConfig,
+        status: WorkerStatus,
+        last_session_id: Option<String>,
+    ) -> Result<()> {
+        info!("Loading worker {} from persistent storage", id);
+
+        let worker = Worker {
+            id: id.clone(),
+            config,
+            status,
+            last_session_id,
+        };
+
+        let mut workers = self.workers.write().await;
+        workers.insert(id.clone(), worker);
+
+        info!("Worker {} loaded successfully", id);
+        Ok(())
+    }
+
+    /// Get the session ID for a worker (for persistence)
+    pub async fn get_session_id(&self, id: &WorkerId) -> Result<Option<String>> {
+        let workers = self.workers.read().await;
+        let worker = workers.get(id).ok_or_else(|| {
+            CortexError::WorkerNotFound(id.to_string())
+        })?;
+        Ok(worker.last_session_id.clone())
+    }
+
+    /// Get the config for a worker (for persistence)
+    pub async fn get_config(&self, id: &WorkerId) -> Result<WorkerConfig> {
+        let workers = self.workers.read().await;
+        let worker = workers.get(id).ok_or_else(|| {
+            CortexError::WorkerNotFound(id.to_string())
+        })?;
+        Ok(worker.config.clone())
+    }
+
     /// Send a message to a worker and get the response
     ///
     /// This spawns a Claude process with `-p` mode, sends the message,
