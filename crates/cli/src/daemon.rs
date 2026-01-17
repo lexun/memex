@@ -1161,7 +1161,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
     let params: KnowledgeParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let limit = params.limit.unwrap_or(10);
+    let limit = params.limit.unwrap_or(20);
 
     tracing::info!("Query knowledge: query='{}', project={:?}", params.query, params.project);
 
@@ -1278,7 +1278,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
                 keyword,
                 params.project.as_deref(),
                 ENTITY_SCORE,
-                Some(5), // Limit entity-linked facts per keyword
+                Some(10), // Limit entity-linked facts per keyword
             )
             .await
             .map_err(|e| IpcError::internal(e.to_string()))?;
@@ -1302,7 +1302,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
             .vector_search_facts_temporal(
                 hypo_emb,
                 params.project.as_deref(),
-                Some(5), // Limit HyDE results
+                Some(10), // Limit HyDE results
                 date_start,
                 date_end,
             )
@@ -1364,7 +1364,9 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
 
     // Use LLM to summarize
     let system = "You are a helpful assistant that answers questions based on facts from a knowledge base. \
-        Provide direct, concise answers. If the facts don't fully answer the question, say what you know and note what's missing.";
+        Provide comprehensive answers that include all relevant details from the facts. \
+        Cover all aspects of the question using the available information. \
+        If the facts don't fully answer the question, say what you know and note what's missing.";
 
     let user = format!(
         "Question: {}\n\nKnown facts:\n{}\n\nAnswer the question based on these facts.",
