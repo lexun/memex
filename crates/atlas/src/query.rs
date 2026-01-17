@@ -448,7 +448,22 @@ Your task:
 3. Keep proper nouns, project names, technical terms, and key concepts
 4. IMPORTANT: Include common abbreviations alongside full terms (dev/DEV, prod/PROD, config, etc.)
 5. IMPORTANT: Include synonyms for ambiguous terms (apps/projects, setup/configuration, etc.)
-6. Identify the query intent type
+6. CRITICAL: For broad/onboarding queries, expand to relevant TOPIC CATEGORIES (see below)
+7. Identify the query intent type
+
+BROAD QUERY EXPANSION:
+When the query is broad or onboarding-style (e.g., "what do I need to know", "tell me about X",
+"getting started with X", "overview of X", "help me understand X"), you MUST expand beyond
+literal keywords to include relevant topic categories that someone would need to know about.
+
+Topic categories to consider for project/onboarding queries:
+- architecture, design, structure
+- tech stack, framework, language
+- team, people, ownership
+- conventions, standards, patterns
+- configuration, setup, environment
+- dependencies, integrations
+- status, roadmap, priorities
 
 Respond with JSON only (no markdown, no explanation):
 {
@@ -472,8 +487,11 @@ Examples:
 - "development environment setup" -> {"keywords": ["DEV", "environment"], "intent": "procedural"}
 - "what is the difference between dev and prod" -> {"keywords": ["DEV", "PROD"], "intent": "factual"}
 - "what apps am I working on" -> {"keywords": ["apps", "projects", "working"], "intent": "enumerative"}
+- "I'm starting on the Relay project. What do I need to know?" -> {"keywords": ["Relay", "architecture", "tech stack", "team", "conventions"], "intent": "factual"}
+- "Tell me about the Memex project" -> {"keywords": ["Memex", "overview", "architecture", "components"], "intent": "factual"}
+- "Getting started with Atlas" -> {"keywords": ["Atlas", "setup", "architecture", "usage"], "intent": "procedural"}
 
-Keep 1-5 keywords. Prefer fewer, more specific terms over many generic ones.
+Keep 1-7 keywords. For specific queries, prefer fewer terms. For broad queries, expand to cover relevant topics.
 For technical domains, use common abbreviations (DEV, PROD, DB, API, CLI, etc.).
 Include synonyms when the term could have alternatives (apps→projects, setup→configuration)."#;
 
