@@ -20,6 +20,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 dirs.workspace = true
+toml = "0.8"
 
 atlas = { path = "../atlas" }
 forge = { path = "../forge" }

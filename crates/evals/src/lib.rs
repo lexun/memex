@@ -5,8 +5,10 @@
 
 pub mod harness;
 pub mod judge;
+pub mod loader;
 pub mod scenario;
 
 pub use harness::TestHarness;
 pub use judge::{EvalResult, EvalScore, Judge};
+pub use loader::{load_scenario, load_scenarios_from_dir};
 pub use scenario::{Action, ExpectedOutcome, Query, Scenario};

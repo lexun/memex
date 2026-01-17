@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use evals::{scenario::builtin_scenarios, Judge, TestHarness};
+use evals::{load_scenarios_from_dir, scenario::builtin_scenarios, Judge, Scenario, TestHarness};
 
 #[derive(Parser)]
 #[command(name = "memex-eval")]
@@ -19,11 +19,15 @@ struct Cli {
     /// Path to the memex socket
     #[arg(short, long)]
     socket: Option<PathBuf>,
+
+    /// Directory containing TOML scenario files (or set MEMEX_EVAL_SCENARIOS env var)
+    #[arg(long)]
+    scenarios_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run all built-in evaluation scenarios
+    /// Run evaluation scenarios
     Run {
         /// Only run scenarios matching this name pattern
         #[arg(short, long)]
@@ -32,10 +36,18 @@ enum Commands {
         /// Show detailed output for each query
         #[arg(short, long)]
         verbose: bool,
+
+        /// Only run built-in scenarios (ignore --scenarios-dir)
+        #[arg(long)]
+        builtin_only: bool,
     },
 
     /// List available scenarios
-    List,
+    List {
+        /// Only list built-in scenarios
+        #[arg(long)]
+        builtin_only: bool,
+    },
 }
 
 #[tokio::main]
@@ -70,18 +82,42 @@ async fn main() -> Result<()> {
         })
         .context("Socket path not found. Set MEMEX_SOCKET or use --socket")?;
 
+    // Get scenarios dir from CLI or env var
+    let scenarios_dir = cli
+        .scenarios_dir
+        .or_else(|| std::env::var("MEMEX_EVAL_SCENARIOS").ok().map(PathBuf::from));
+
     match cli.command {
-        Commands::Run { filter, verbose } => {
-            run_evals(&socket_path, filter.as_deref(), verbose).await
+        Commands::Run {
+            filter,
+            verbose,
+            builtin_only,
+        } => {
+            let scenarios_dir = if builtin_only {
+                None
+            } else {
+                scenarios_dir.as_ref()
+            };
+            run_evals(&socket_path, scenarios_dir, filter.as_deref(), verbose).await
         }
-        Commands::List => {
-            list_scenarios();
+        Commands::List { builtin_only } => {
+            let scenarios_dir = if builtin_only {
+                None
+            } else {
+                scenarios_dir.as_ref()
+            };
+            list_scenarios(scenarios_dir)?;
             Ok(())
         }
     }
 }
 
-async fn run_evals(socket_path: &PathBuf, filter: Option<&str>, verbose: bool) -> Result<()> {
+async fn run_evals(
+    socket_path: &PathBuf,
+    scenarios_dir: Option<&PathBuf>,
+    filter: Option<&str>,
+    verbose: bool,
+) -> Result<()> {
     println!("Running evaluations against: {}", socket_path.display());
 
     // Create LLM client for the judge
@@ -92,7 +128,7 @@ async fn run_evals(socket_path: &PathBuf, filter: Option<&str>, verbose: bool) -
     let mut harness = TestHarness::new(socket_path, judge);
 
     // Get scenarios
-    let scenarios = builtin_scenarios();
+    let scenarios = get_scenarios(scenarios_dir)?;
     let scenarios: Vec<_> = if let Some(f) = filter {
         scenarios
             .into_iter()
@@ -145,13 +181,32 @@ async fn run_evals(socket_path: &PathBuf, filter: Option<&str>, verbose: bool) -
     Ok(())
 }
 
-fn list_scenarios() {
-    let scenarios = builtin_scenarios();
+fn list_scenarios(scenarios_dir: Option<&PathBuf>) -> Result<()> {
+    let scenarios = get_scenarios(scenarios_dir)?;
     println!("Available scenarios:\n");
     for scenario in scenarios {
         println!("  {} - {}", scenario.name, scenario.description);
         println!("    Setup: {} actions", scenario.setup.len());
         println!("    Queries: {}", scenario.queries.len());
         println!();
+    }
+    Ok(())
+}
+
+/// Load scenarios from directory (if provided) or use built-in scenarios
+fn get_scenarios(scenarios_dir: Option<&PathBuf>) -> Result<Vec<Scenario>> {
+    match scenarios_dir {
+        Some(dir) => {
+            println!("Loading scenarios from: {}", dir.display());
+            let mut scenarios = load_scenarios_from_dir(dir)?;
+
+            if scenarios.is_empty() {
+                println!("No scenarios found in directory, using built-in scenarios");
+                scenarios = builtin_scenarios();
+            }
+
+            Ok(scenarios)
+        }
+        None => Ok(builtin_scenarios()),
     }
 }
