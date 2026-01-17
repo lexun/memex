@@ -117,6 +117,11 @@ pub fn command_registry() -> Vec<CommandInfo> {
             description: "MCP server",
             category: Category::Services,
         },
+        CommandInfo {
+            name: "cortex",
+            description: "Worker orchestration",
+            category: Category::Services,
+        },
 
         // Configure - setup and settings
         CommandInfo {

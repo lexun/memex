@@ -23,7 +23,10 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::error::{CortexError, Result};
-use crate::types::{WorkerConfig, WorkerId, WorkerState, WorkerStatus};
+use crate::types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerState, WorkerStatus};
+
+/// Maximum number of transcript entries to keep per worker
+const MAX_TRANSCRIPT_ENTRIES: usize = 50;
 
 /// Find the claude binary path
 ///
@@ -99,6 +102,8 @@ struct Worker {
     status: WorkerStatus,
     /// Session ID from last interaction (for --resume)
     last_session_id: Option<String>,
+    /// Conversation transcript history
+    transcript: Vec<TranscriptEntry>,
 }
 
 /// Manages multiple Claude worker processes
@@ -127,6 +132,7 @@ impl WorkerManager {
             config,
             status,
             last_session_id: None,
+            transcript: Vec::new(),
         };
 
         let mut workers = self.workers.write().await;
@@ -154,6 +160,7 @@ impl WorkerManager {
             config,
             status,
             last_session_id,
+            transcript: Vec::new(), // Fresh transcript on reload
         };
 
         let mut workers = self.workers.write().await;
@@ -186,21 +193,48 @@ impl WorkerManager {
     /// This spawns a Claude process with `-p` mode, sends the message,
     /// and returns the response.
     pub async fn send_message(&self, id: &WorkerId, message: &str) -> Result<WorkerResponse> {
-        // Phase 1: Acquire lock, extract config, update state, release lock
-        let (cwd, model, last_session_id) = {
+        let start_time = Utc::now();
+
+        // Create a truncated version of the message for display (first 100 chars)
+        let task_preview = if message.len() > 100 {
+            format!("{}...", &message[..100])
+        } else {
+            message.to_string()
+        };
+
+        // Phase 1: Acquire lock, extract config, update state, add transcript entry, release lock
+        let (cwd, model, last_session_id, transcript_idx) = {
             let mut workers = self.workers.write().await;
             let worker = workers.get_mut(id).ok_or_else(|| {
                 CortexError::WorkerNotFound(id.to_string())
             })?;
 
             worker.status.state = WorkerState::Working;
-            worker.status.last_activity = Utc::now();
+            worker.status.current_task = Some(task_preview.clone());
+            worker.status.last_activity = start_time;
             worker.status.messages_sent += 1;
+
+            // Add transcript entry for this message (response pending)
+            let entry = TranscriptEntry {
+                timestamp: start_time,
+                prompt: message.to_string(),
+                response: None,
+                is_error: false,
+                duration_ms: 0,
+            };
+            worker.transcript.push(entry);
+            let idx = worker.transcript.len() - 1;
+
+            // Trim transcript if too long
+            if worker.transcript.len() > MAX_TRANSCRIPT_ENTRIES {
+                worker.transcript.remove(0);
+            }
 
             (
                 worker.config.cwd.clone(),
                 worker.config.model.clone(),
                 worker.last_session_id.clone(),
+                idx.min(MAX_TRANSCRIPT_ENTRIES - 1), // Adjust index if we trimmed
             )
             // Lock released here
         };
@@ -258,10 +292,17 @@ impl WorkerManager {
                 if stdout.is_empty() { "(empty)" } else { &stdout }
             );
 
-            // Update worker state to error
+            // Update worker state to error and update transcript
             let mut workers = self.workers.write().await;
             if let Some(worker) = workers.get_mut(id) {
                 worker.status.state = WorkerState::Error(error_msg.clone());
+                worker.status.current_task = None;
+
+                // Update transcript entry with error
+                if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
+                    entry.response = Some(error_msg.clone());
+                    entry.is_error = true;
+                }
             }
             return Err(CortexError::WorkerCommunicationFailed(error_msg));
         } else {
@@ -292,7 +333,7 @@ impl WorkerManager {
             (result, is_error, session_id, duration_ms)
         };
 
-        // Phase 4: Acquire lock again to update final state
+        // Phase 4: Acquire lock again to update final state and transcript
         {
             let mut workers = self.workers.write().await;
             if let Some(worker) = workers.get_mut(id) {
@@ -304,6 +345,14 @@ impl WorkerManager {
                 worker.status.messages_received += 1;
                 worker.status.last_activity = Utc::now();
                 worker.status.state = WorkerState::Idle;
+                worker.status.current_task = None;
+
+                // Update transcript entry with response
+                if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
+                    entry.response = Some(result.clone());
+                    entry.is_error = is_error;
+                    entry.duration_ms = duration_ms;
+                }
             }
         }
 
@@ -346,6 +395,21 @@ impl WorkerManager {
         let count = workers.len();
         workers.clear();
         info!("Removed {} workers", count);
+    }
+
+    /// Get the conversation transcript for a worker
+    pub async fn transcript(&self, id: &WorkerId, limit: Option<usize>) -> Result<Vec<TranscriptEntry>> {
+        let workers = self.workers.read().await;
+        let worker = workers.get(id).ok_or_else(|| {
+            CortexError::WorkerNotFound(id.to_string())
+        })?;
+
+        let transcript = &worker.transcript;
+        let limit = limit.unwrap_or(transcript.len());
+
+        // Return the most recent entries up to the limit
+        let start = transcript.len().saturating_sub(limit);
+        Ok(transcript[start..].to_vec())
     }
 }
 

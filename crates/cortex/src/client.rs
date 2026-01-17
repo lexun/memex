@@ -10,7 +10,7 @@ use serde_json::json;
 
 use ipc::Client;
 
-use crate::types::{WorkerId, WorkerStatus};
+use crate::types::{TranscriptEntry, WorkerId, WorkerStatus};
 use crate::worker::WorkerResponse;
 
 /// Client for Cortex worker operations via daemon IPC
@@ -126,6 +126,25 @@ impl CortexClient {
 
         self.client.request("cortex_remove_worker", params).await?;
         Ok(())
+    }
+
+    /// Get the conversation transcript for a worker
+    pub async fn get_transcript(
+        &self,
+        worker_id: &WorkerId,
+        limit: Option<usize>,
+    ) -> Result<Vec<TranscriptEntry>> {
+        let params = json!({
+            "worker_id": worker_id.0,
+            "limit": limit,
+        });
+
+        let result = self
+            .client
+            .request("cortex_worker_transcript", params)
+            .await?;
+        let transcript: Vec<TranscriptEntry> = serde_json::from_value(result)?;
+        Ok(transcript)
     }
 }
 

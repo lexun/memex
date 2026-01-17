@@ -48,6 +48,21 @@ pub enum WorkerState {
     Error(String),
 }
 
+/// A single entry in the worker's conversation transcript
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptEntry {
+    /// When this exchange occurred
+    pub timestamp: DateTime<Utc>,
+    /// The message sent to the worker
+    pub prompt: String,
+    /// The response from the worker (None if still processing)
+    pub response: Option<String>,
+    /// Whether the response was an error
+    pub is_error: bool,
+    /// Duration in milliseconds (0 if still processing)
+    pub duration_ms: u64,
+}
+
 /// Status information about a worker
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerStatus {

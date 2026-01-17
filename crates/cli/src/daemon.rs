@@ -30,15 +30,24 @@ use serde_json::json;
 use crate::config::{get_config_dir, get_db_path, get_pid_file, get_socket_path, load_config, Config};
 use crate::pid::{check_daemon, remove_pid_file, write_pid_file, PidInfo};
 
+/// State for a pending async response
+struct AsyncResponseState {
+    /// The response value (None = still processing, Some = complete)
+    response: Option<serde_json::Value>,
+    /// When this entry was created
+    created_at: chrono::DateTime<chrono::Utc>,
+    /// When the response completed (for cleanup timing)
+    completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Container for stores and services
 struct Stores {
     forge: ForgeStore,
     atlas: AtlasStore,
     extractor: Option<Extractor>,
     workers: WorkerManager,
-    /// Storage for async message responses (message_id -> Option<response>)
-    /// None means still processing, Some means complete
-    async_responses: RwLock<HashMap<String, Option<serde_json::Value>>>,
+    /// Storage for async message responses
+    async_responses: RwLock<HashMap<String, AsyncResponseState>>,
 }
 
 /// Load persisted workers from database on startup
@@ -443,6 +452,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "cortex_worker_status" => handle_cortex_worker_status(request, &stores.workers).await,
         "cortex_list_workers" => handle_cortex_list_workers(&stores.workers).await,
         "cortex_remove_worker" => handle_cortex_remove_worker(request, stores).await,
+        "cortex_worker_transcript" => handle_cortex_worker_transcript(request, &stores.workers).await,
 
         // Vibetree operations (worktree management)
         "vibetree_list" => handle_vibetree_list(request).await,
@@ -2126,6 +2136,31 @@ async fn handle_cortex_remove_worker(
     Ok(json!(true))
 }
 
+#[derive(Deserialize)]
+struct TranscriptParams {
+    worker_id: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Get the conversation transcript for a worker
+async fn handle_cortex_worker_transcript(
+    request: &Request,
+    workers: &WorkerManager,
+) -> Result<serde_json::Value, IpcError> {
+    let params: TranscriptParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let worker_id = WorkerId::from_string(&params.worker_id);
+
+    let transcript = workers
+        .transcript(&worker_id, params.limit)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(transcript).unwrap())
+}
+
 /// Send a message asynchronously - returns immediately with a message ID
 async fn handle_cortex_send_message_async(
     request: &Request,
@@ -2138,11 +2173,26 @@ async fn handle_cortex_send_message_async(
 
     // Generate a unique message ID
     let message_id = format!("msg_{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
+    let now = chrono::Utc::now();
 
     // Store None to indicate "processing"
     {
         let mut responses = stores.async_responses.write().await;
-        responses.insert(message_id.clone(), None);
+
+        // Cleanup: remove entries older than 5 minutes that have completed responses
+        let cutoff = now - chrono::Duration::minutes(5);
+        responses.retain(|_, state| {
+            match state.completed_at {
+                Some(completed) => completed > cutoff,
+                None => true, // Keep pending responses
+            }
+        });
+
+        responses.insert(message_id.clone(), AsyncResponseState {
+            response: None,
+            created_at: now,
+            completed_at: None,
+        });
     }
 
     // Clone what we need for the spawned task
@@ -2171,7 +2221,10 @@ async fn handle_cortex_send_message_async(
 
         // Store the result
         let mut responses = stores_clone.async_responses.write().await;
-        responses.insert(message_id_clone, Some(response_value));
+        if let Some(state) = responses.get_mut(&message_id_clone) {
+            state.response = Some(response_value);
+            state.completed_at = Some(chrono::Utc::now());
+        }
     });
 
     // Return immediately with the message ID
@@ -2194,19 +2247,24 @@ async fn handle_cortex_get_response(
     let responses = stores.async_responses.read().await;
 
     match responses.get(&params.message_id) {
-        Some(Some(response)) => {
-            // Response is ready - return it
-            // Note: we don't remove it here so it can be retrieved multiple times
-            Ok(response.clone())
-        }
-        Some(None) => {
-            // Still processing
-            Ok(serde_json::Value::Null)
+        Some(state) => {
+            match &state.response {
+                Some(response) => {
+                    // Response is ready - return it
+                    // Note: we don't remove it here so it can be retrieved multiple times
+                    // Cleanup happens during new message insertion
+                    Ok(response.clone())
+                }
+                None => {
+                    // Still processing
+                    Ok(serde_json::Value::Null)
+                }
+            }
         }
         None => {
-            // Unknown message ID
+            // Unknown message ID (may have been cleaned up)
             Err(IpcError::invalid_params(format!(
-                "Unknown message ID: {}",
+                "Unknown message ID: {} (may have expired)",
                 params.message_id
             )))
         }

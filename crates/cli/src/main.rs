@@ -168,14 +168,20 @@ enum SystemCommands {
         #[command(subcommand)]
         action: McpAction,
     },
-    /// Generate shell completions
+    /// Cortex worker management
     #[command(display_order = 24)]
+    Cortex {
+        #[command(subcommand)]
+        action: CortexAction,
+    },
+    /// Generate shell completions
+    #[command(display_order = 25)]
     Completions {
         /// Shell to generate completions for
         shell: CompletionShell,
     },
     /// Upgrade memex via nix and restart daemon if needed
-    #[command(display_order = 25)]
+    #[command(display_order = 26)]
     Upgrade,
 }
 
@@ -210,6 +216,22 @@ enum ConfigAction {
 enum McpAction {
     /// Start MCP server on stdio
     Serve,
+}
+
+#[derive(Subcommand)]
+enum CortexAction {
+    /// Show status of all workers (dashboard view)
+    Status,
+    /// List all workers
+    List,
+    /// Show transcript for a worker
+    Transcript {
+        /// Worker ID
+        worker_id: String,
+        /// Maximum number of entries
+        #[arg(short, long)]
+        limit: Option<usize>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -447,6 +469,7 @@ async fn async_main(command: Commands) -> Result<()> {
             SystemCommands::Config { action } => handle_config(action),
             SystemCommands::Init => handle_init(),
             SystemCommands::Mcp { action } => handle_mcp(action).await,
+            SystemCommands::Cortex { action } => handle_cortex(action, &socket_path).await,
             SystemCommands::Completions { .. } => unreachable!("Handled in main()"),
             SystemCommands::Upgrade => handle_upgrade().await,
         },
@@ -579,4 +602,128 @@ async fn handle_upgrade() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn handle_cortex(action: CortexAction, socket_path: &std::path::Path) -> Result<()> {
+    use cortex::{CortexClient, WorkerState};
+
+    let client = CortexClient::new(socket_path);
+
+    match action {
+        CortexAction::Status | CortexAction::List => {
+            let workers = client.list_workers().await?;
+
+            if workers.is_empty() {
+                println!("No cortex workers running.");
+                return Ok(());
+            }
+
+            println!("Cortex Workers ({}):", workers.len());
+            println!();
+
+            for status in &workers {
+                // State indicator
+                let state_icon = match &status.state {
+                    WorkerState::Working => "●",  // Working
+                    WorkerState::Ready => "○",    // Ready
+                    WorkerState::Idle => "○",     // Idle
+                    WorkerState::Error(_) => "✗", // Error
+                    _ => "?",
+                };
+
+                // Format state with activity
+                let state_str = match &status.state {
+                    WorkerState::Working => {
+                        if let Some(ref task) = status.current_task {
+                            format!("working: {}", task)
+                        } else {
+                            "working".to_string()
+                        }
+                    }
+                    WorkerState::Error(msg) => format!("error: {}", msg),
+                    other => format!("{:?}", other).to_lowercase(),
+                };
+
+                // Calculate idle time
+                let idle_info = if !matches!(status.state, WorkerState::Working) {
+                    let idle_secs = (chrono::Utc::now() - status.last_activity).num_seconds();
+                    if idle_secs > 3600 {
+                        format!(" ({}h idle)", idle_secs / 3600)
+                    } else if idle_secs > 60 {
+                        format!(" ({}m idle)", idle_secs / 60)
+                    } else if idle_secs > 0 {
+                        format!(" ({}s idle)", idle_secs)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                // Get directory basename
+                let dir = status.worktree.as_deref().map(|p| {
+                    std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(p)
+                }).unwrap_or("-");
+
+                println!("{} {} [{}]{}", state_icon, status.id, state_str, idle_info);
+                println!("    dir: {}", dir);
+                println!("    messages: {} sent, {} received", status.messages_sent, status.messages_received);
+                println!("    started: {}", status.started_at.format("%Y-%m-%d %H:%M:%S UTC"));
+                println!();
+            }
+
+            Ok(())
+        }
+
+        CortexAction::Transcript { worker_id, limit } => {
+            let wid = cortex::WorkerId::from_string(&worker_id);
+            let entries = client.get_transcript(&wid, limit).await?;
+
+            if entries.is_empty() {
+                println!("No transcript entries for worker {}", worker_id);
+                return Ok(());
+            }
+
+            println!("Transcript for worker {} ({} entries):", worker_id, entries.len());
+            println!();
+
+            for (i, entry) in entries.iter().enumerate() {
+                println!("─── Entry {} ({}) ───", i + 1, entry.timestamp.format("%H:%M:%S"));
+
+                // Show prompt (truncated)
+                let prompt_preview = if entry.prompt.len() > 200 {
+                    format!("{}...", &entry.prompt[..200])
+                } else {
+                    entry.prompt.clone()
+                };
+                println!("Prompt: {}", prompt_preview);
+
+                // Show response or status
+                match &entry.response {
+                    Some(response) => {
+                        let response_preview = if response.len() > 500 {
+                            format!("{}...", &response[..500])
+                        } else {
+                            response.clone()
+                        };
+                        if entry.is_error {
+                            println!("Error: {}", response_preview);
+                        } else {
+                            println!("Response: {}", response_preview);
+                        }
+                        println!("Duration: {}ms", entry.duration_ms);
+                    }
+                    None => {
+                        println!("Status: Processing...");
+                    }
+                }
+                println!();
+            }
+
+            Ok(())
+        }
+    }
 }

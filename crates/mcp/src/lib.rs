@@ -1074,8 +1074,11 @@ impl McpServer for MemexMcpServer {
                 if let Some(ref wt) = status.worktree {
                     output.push_str(&format!("  Directory: {}\n", wt));
                 }
-                output.push_str(&format!("  Started: {}\n", status.started_at));
-                output.push_str(&format!("  Last Activity: {}\n", status.last_activity));
+                if let Some(ref task) = status.current_task {
+                    output.push_str(&format!("  Current Task: {}\n", task));
+                }
+                output.push_str(&format!("  Started: {}\n", status.started_at.format("%Y-%m-%d %H:%M:%S UTC")));
+                output.push_str(&format!("  Last Activity: {}\n", status.last_activity.format("%Y-%m-%d %H:%M:%S UTC")));
                 output.push_str(&format!(
                     "  Messages: {} sent, {} received",
                     status.messages_sent, status.messages_received
@@ -1099,11 +1102,48 @@ impl McpServer for MemexMcpServer {
                 } else {
                     let mut output = format!("Workers ({}):\n", workers.len());
                     for status in workers {
+                        // Format state with activity info
+                        let state_str = match &status.state {
+                            cortex::WorkerState::Working => {
+                                if let Some(ref task) = status.current_task {
+                                    format!("Working: {}", task)
+                                } else {
+                                    "Working".to_string()
+                                }
+                            }
+                            other => format!("{:?}", other),
+                        };
+
+                        // Calculate idle time for non-working workers
+                        let activity_info = if !matches!(status.state, cortex::WorkerState::Working) {
+                            let idle_secs = (chrono::Utc::now() - status.last_activity).num_seconds();
+                            if idle_secs > 60 {
+                                format!(" (idle {}m)", idle_secs / 60)
+                            } else if idle_secs > 0 {
+                                format!(" (idle {}s)", idle_secs)
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        };
+
+                        // Get directory basename for cleaner output
+                        let dir = status.worktree.as_deref().map(|p| {
+                            std::path::Path::new(p)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(p)
+                        }).unwrap_or("-");
+
                         output.push_str(&format!(
-                            "  {} [{:?}] {}\n",
+                            "  {} [{}]{} | {} | msgs: {}/{}\n",
                             status.id,
-                            status.state,
-                            status.worktree.as_deref().unwrap_or("-")
+                            state_str,
+                            activity_info,
+                            dir,
+                            status.messages_sent,
+                            status.messages_received,
                         ));
                     }
                     Ok(output)
@@ -1126,6 +1166,66 @@ impl McpServer for MemexMcpServer {
             Ok(()) => Ok(format!("Removed worker: {}", worker_id)),
             Err(e) => {
                 let msg = format!("Failed to remove worker: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Get a worker's conversation transcript
+    ///
+    /// Returns the history of messages sent to and responses received from the worker.
+    /// Use this to inspect what a worker has been doing or to debug issues.
+    #[tool]
+    async fn cortex_worker_transcript(
+        &self,
+        worker_id: String,
+        /// Maximum number of entries to return (defaults to all)
+        limit: Option<usize>,
+    ) -> mcp_attr::Result<String> {
+        let wid = cortex::WorkerId::from_string(&worker_id);
+        match self.cortex_client.get_transcript(&wid, limit).await {
+            Ok(entries) => {
+                if entries.is_empty() {
+                    Ok(format!("No transcript entries for worker {}", worker_id))
+                } else {
+                    let mut output = format!("Transcript for worker {} ({} entries):\n\n", worker_id, entries.len());
+                    for (i, entry) in entries.iter().enumerate() {
+                        output.push_str(&format!("--- Entry {} ({}) ---\n", i + 1, entry.timestamp.format("%H:%M:%S")));
+
+                        // Show truncated prompt
+                        let prompt_preview = if entry.prompt.len() > 200 {
+                            format!("{}...", &entry.prompt[..200])
+                        } else {
+                            entry.prompt.clone()
+                        };
+                        output.push_str(&format!("Prompt: {}\n", prompt_preview));
+
+                        match &entry.response {
+                            Some(response) => {
+                                // Show truncated response
+                                let response_preview = if response.len() > 500 {
+                                    format!("{}...", &response[..500])
+                                } else {
+                                    response.clone()
+                                };
+                                if entry.is_error {
+                                    output.push_str(&format!("Error: {}\n", response_preview));
+                                } else {
+                                    output.push_str(&format!("Response: {}\n", response_preview));
+                                }
+                                output.push_str(&format!("Duration: {}ms\n", entry.duration_ms));
+                            }
+                            None => {
+                                output.push_str("Status: Processing...\n");
+                            }
+                        }
+                        output.push('\n');
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to get transcript: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
             }
         }
