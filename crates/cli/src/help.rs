@@ -122,6 +122,11 @@ pub fn command_registry() -> Vec<CommandInfo> {
             description: "Worker orchestration",
             category: Category::Services,
         },
+        CommandInfo {
+            name: "agent",
+            description: "Claude in zellij session",
+            category: Category::Services,
+        },
 
         // Configure - setup and settings
         CommandInfo {

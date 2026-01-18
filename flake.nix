@@ -92,6 +92,7 @@
                   just
                   git
                   surrealdb
+                  zellij
                 ];
                 git-hooks.hooks.single-line-commit = {
                   enable = true;

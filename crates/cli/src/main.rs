@@ -1,3 +1,4 @@
+mod agent;
 mod completions;
 mod config;
 mod daemon;
@@ -175,14 +176,20 @@ enum SystemCommands {
         #[command(subcommand)]
         action: CortexAction,
     },
-    /// Generate shell completions
+    /// Launch Claude agent in zellij session with self-restart capability
     #[command(display_order = 25)]
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+    /// Generate shell completions
+    #[command(display_order = 26)]
     Completions {
         /// Shell to generate completions for
         shell: CompletionShell,
     },
     /// Upgrade memex via nix and restart daemon if needed
-    #[command(display_order = 26)]
+    #[command(display_order = 27)]
     Upgrade,
 }
 
@@ -242,6 +249,40 @@ enum CortexAction {
         /// Maximum number of entries
         #[arg(short, long)]
         limit: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentAction {
+    /// Start agent in zellij session (default if no subcommand)
+    #[command(display_order = 1)]
+    Start {
+        /// Zellij session name (default: memex-agent)
+        #[arg(short, long)]
+        session: Option<String>,
+
+        /// Resume previous Claude conversation
+        #[arg(short, long)]
+        resume: bool,
+    },
+    /// Run agent directly (used internally when already in zellij)
+    #[command(hide = true)]
+    Run {
+        /// Resume previous Claude conversation
+        #[arg(short, long)]
+        resume: bool,
+    },
+    /// Restart the agent to pick up new MCP tools
+    #[command(display_order = 2)]
+    Restart,
+    /// List active zellij sessions
+    #[command(display_order = 3)]
+    Sessions,
+    /// Kill a zellij session
+    #[command(display_order = 4)]
+    Kill {
+        /// Session name to kill (default: memex-agent)
+        session: Option<String>,
     },
 }
 
@@ -481,6 +522,7 @@ async fn async_main(command: Commands) -> Result<()> {
             SystemCommands::Init => handle_init(),
             SystemCommands::Mcp { action } => handle_mcp(action).await,
             SystemCommands::Cortex { action } => handle_cortex(action, &socket_path).await,
+            SystemCommands::Agent { action } => handle_agent(action),
             SystemCommands::Completions { .. } => unreachable!("Handled in main()"),
             SystemCommands::Upgrade => handle_upgrade().await,
         },
@@ -549,6 +591,32 @@ async fn handle_mcp(action: McpAction) -> Result<()> {
             let cfg = config::load_config()?;
             let socket_path = config::get_socket_path(&cfg)?;
             mcp::start_server(&socket_path).await
+        }
+    }
+}
+
+fn handle_agent(action: AgentAction) -> Result<()> {
+    match action {
+        AgentAction::Start { session, resume } => agent::start(session, resume),
+        AgentAction::Run { resume } => agent::run(resume),
+        AgentAction::Restart => agent::restart(),
+        AgentAction::Sessions => {
+            let sessions = agent::list_sessions()?;
+            if sessions.is_empty() {
+                println!("No active zellij sessions.");
+            } else {
+                println!("Active zellij sessions:");
+                for session in sessions {
+                    println!("  {}", session);
+                }
+            }
+            Ok(())
+        }
+        AgentAction::Kill { session } => {
+            let session_name = session.unwrap_or_else(|| "memex-agent".to_string());
+            agent::kill_session(&session_name)?;
+            println!("Killed session: {}", session_name);
+            Ok(())
         }
     }
 }
