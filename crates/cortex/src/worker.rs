@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::error::{CortexError, Result};
-use crate::types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerState, WorkerStatus};
+use crate::types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerMcpConfig, WorkerState, WorkerStatus};
 
 /// Maximum number of transcript entries to keep per worker
 const MAX_TRANSCRIPT_ENTRIES: usize = 50;
@@ -203,7 +203,7 @@ impl WorkerManager {
         };
 
         // Phase 1: Acquire lock, extract config, update state, add transcript entry, release lock
-        let (cwd, model, last_session_id, transcript_idx) = {
+        let (cwd, model, last_session_id, mcp_config, transcript_idx) = {
             let mut workers = self.workers.write().await;
             let worker = workers.get_mut(id).ok_or_else(|| {
                 CortexError::WorkerNotFound(id.to_string())
@@ -234,6 +234,7 @@ impl WorkerManager {
                 worker.config.cwd.clone(),
                 worker.config.model.clone(),
                 worker.last_session_id.clone(),
+                worker.config.mcp_config.clone(),
                 idx.min(MAX_TRANSCRIPT_ENTRIES - 1), // Adjust index if we trimmed
             )
             // Lock released here
@@ -253,6 +254,18 @@ impl WorkerManager {
 
         // Skip permission prompts for automated use
         cmd.arg("--dangerously-skip-permissions");
+
+        // Apply MCP configuration
+        // By default, workers are isolated (no inherited MCP servers)
+        let mcp = mcp_config.unwrap_or_else(WorkerMcpConfig::none);
+        if mcp.strict {
+            // Use strict mode to ignore user's global MCP config
+            cmd.arg("--strict-mcp-config");
+        }
+        // Add any specified MCP server configs
+        for server_config in &mcp.servers {
+            cmd.arg("--mcp-config").arg(server_config);
+        }
 
         // Add resume if we have a session
         if let Some(ref session_id) = last_session_id {

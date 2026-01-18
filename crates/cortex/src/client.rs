@@ -32,16 +32,37 @@ impl CortexClient {
     }
 
     /// Create a new worker
+    ///
+    /// # Arguments
+    /// * `cwd` - Working directory for the worker
+    /// * `model` - Model to use (e.g., "haiku", "sonnet", "opus")
+    /// * `system_prompt` - Additional system prompt context
+    /// * `mcp_strict` - If true (default), worker won't inherit user's MCP servers
+    /// * `mcp_servers` - List of MCP server JSON configs to include
     pub async fn create_worker(
         &self,
         cwd: &str,
         model: Option<&str>,
         system_prompt: Option<&str>,
     ) -> Result<WorkerId> {
+        self.create_worker_with_mcp(cwd, model, system_prompt, None, None).await
+    }
+
+    /// Create a new worker with MCP configuration
+    pub async fn create_worker_with_mcp(
+        &self,
+        cwd: &str,
+        model: Option<&str>,
+        system_prompt: Option<&str>,
+        mcp_strict: Option<bool>,
+        mcp_servers: Option<Vec<String>>,
+    ) -> Result<WorkerId> {
         let params = json!({
             "cwd": cwd,
             "model": model,
             "system_prompt": system_prompt,
+            "mcp_strict": mcp_strict,
+            "mcp_servers": mcp_servers,
         });
 
         let result = self.client.request("cortex_create_worker", params).await?;

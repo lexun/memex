@@ -1986,6 +1986,10 @@ struct CreateWorkerParams {
     cwd: String,
     model: Option<String>,
     system_prompt: Option<String>,
+    /// If true (default), worker won't inherit user's MCP servers
+    mcp_strict: Option<bool>,
+    /// List of MCP server JSON configs to include
+    mcp_servers: Option<Vec<String>>,
 }
 
 async fn handle_cortex_create_worker(
@@ -2002,6 +2006,17 @@ async fn handle_cortex_create_worker(
     if let Some(ref prompt) = params.system_prompt {
         config = config.with_system_prompt(prompt);
     }
+
+    // Configure MCP access
+    // Default: strict mode (no inherited MCP servers)
+    let mcp_strict = params.mcp_strict.unwrap_or(true);
+    let mcp_servers = params.mcp_servers.unwrap_or_default();
+
+    let mcp_config = cortex::WorkerMcpConfig {
+        strict: mcp_strict,
+        servers: mcp_servers,
+    };
+    config = config.with_mcp_config(mcp_config);
 
     // Create in-memory worker
     let worker_id = stores.workers

@@ -92,6 +92,50 @@ impl WorkerStatus {
     }
 }
 
+/// MCP configuration for workers
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorkerMcpConfig {
+    /// If true, only use MCP servers specified in `servers`, ignoring user's global MCP config.
+    /// This prevents workers from inheriting user-scoped servers like Notion that may pop up auth dialogs.
+    #[serde(default = "default_strict")]
+    pub strict: bool,
+
+    /// MCP server configurations to include. Each entry is a JSON string containing MCP config.
+    /// If empty and strict is true, worker will have no MCP servers.
+    #[serde(default)]
+    pub servers: Vec<String>,
+}
+
+fn default_strict() -> bool {
+    true // Workers should be isolated by default
+}
+
+impl WorkerMcpConfig {
+    /// Create a new config with no MCP servers (fully isolated)
+    pub fn none() -> Self {
+        Self {
+            strict: true,
+            servers: vec![],
+        }
+    }
+
+    /// Create a config that inherits user's MCP configuration
+    pub fn inherit() -> Self {
+        Self {
+            strict: false,
+            servers: vec![],
+        }
+    }
+
+    /// Create a config with only specific MCP servers
+    pub fn only(servers: Vec<String>) -> Self {
+        Self {
+            strict: true,
+            servers,
+        }
+    }
+}
+
 /// Configuration for spawning a worker
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerConfig {
@@ -109,6 +153,11 @@ pub struct WorkerConfig {
 
     /// Maximum context tokens before summarization
     pub max_context: Option<u32>,
+
+    /// MCP configuration for the worker.
+    /// By default, workers are isolated and don't inherit user's MCP servers.
+    #[serde(default)]
+    pub mcp_config: Option<WorkerMcpConfig>,
 }
 
 impl WorkerConfig {
@@ -119,6 +168,7 @@ impl WorkerConfig {
             initial_message: None,
             model: None,
             max_context: None,
+            mcp_config: Some(WorkerMcpConfig::none()), // Isolated by default
         }
     }
 
@@ -134,6 +184,24 @@ impl WorkerConfig {
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    /// Configure MCP servers for this worker
+    pub fn with_mcp_config(mut self, config: WorkerMcpConfig) -> Self {
+        self.mcp_config = Some(config);
+        self
+    }
+
+    /// Make worker inherit user's MCP configuration
+    pub fn with_inherited_mcp(mut self) -> Self {
+        self.mcp_config = Some(WorkerMcpConfig::inherit());
+        self
+    }
+
+    /// Give worker access to only specific MCP servers
+    pub fn with_mcp_servers(mut self, servers: Vec<String>) -> Self {
+        self.mcp_config = Some(WorkerMcpConfig::only(servers));
         self
     }
 }

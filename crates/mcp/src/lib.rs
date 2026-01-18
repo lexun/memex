@@ -970,16 +970,39 @@ impl McpServer for MemexMcpServer {
         model: Option<String>,
         /// Additional system prompt context for the worker
         system_prompt: Option<String>,
+        /// If true (default), worker won't inherit user's MCP servers.
+        /// Set to false to let worker use the user's configured MCP servers.
+        mcp_strict: Option<bool>,
+        /// List of MCP server JSON configs to include.
+        /// Each entry should be a JSON string containing MCP server configuration.
+        /// Example: ["{\"mcpServers\":{\"memex\":{\"command\":\"memex\",\"args\":[\"mcp\",\"serve\"]}}}"]
+        mcp_servers: Option<Vec<String>>,
     ) -> mcp_attr::Result<String> {
         match self
             .cortex_client
-            .create_worker(&cwd, model.as_deref(), system_prompt.as_deref())
+            .create_worker_with_mcp(
+                &cwd,
+                model.as_deref(),
+                system_prompt.as_deref(),
+                mcp_strict,
+                mcp_servers.clone(),
+            )
             .await
         {
-            Ok(worker_id) => Ok(format!(
-                "Created worker: {}\n  Directory: {}",
-                worker_id, cwd
-            )),
+            Ok(worker_id) => {
+                let mcp_mode = if mcp_strict.unwrap_or(true) {
+                    "isolated (no inherited MCP servers)"
+                } else {
+                    "inheriting user's MCP servers"
+                };
+                let servers_info = mcp_servers
+                    .map(|s| format!("\n  MCP servers: {} configured", s.len()))
+                    .unwrap_or_default();
+                Ok(format!(
+                    "Created worker: {}\n  Directory: {}\n  MCP mode: {}{}",
+                    worker_id, cwd, mcp_mode, servers_info
+                ))
+            }
             Err(e) => {
                 let msg = format!("Failed to create worker: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))

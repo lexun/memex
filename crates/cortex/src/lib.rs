@@ -29,5 +29,5 @@ pub mod worker;
 
 pub use client::CortexClient;
 pub use error::{CortexError, Result};
-pub use types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerState, WorkerStatus};
+pub use types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerMcpConfig, WorkerState, WorkerStatus};
 pub use worker::{WorkerManager, WorkerResponse};
