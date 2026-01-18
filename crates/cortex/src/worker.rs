@@ -81,6 +81,50 @@ fn find_claude_binary() -> PathBuf {
     PathBuf::from("claude")
 }
 
+/// Capture the direnv/devshell environment for a directory
+///
+/// Runs `direnv export json` to get the environment variables that would be
+/// set by the .envrc in the given directory. This allows workers to spawn
+/// with the correct nix shell environment.
+///
+/// Returns an empty HashMap if direnv fails or isn't available.
+fn get_direnv_env(path: &std::path::Path) -> HashMap<String, String> {
+    let output = match std::process::Command::new("direnv")
+        .args(["export", "json"])
+        .current_dir(path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) => {
+            debug!("direnv not available: {}", e);
+            return HashMap::new();
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        debug!("direnv export failed: {}", stderr);
+        return HashMap::new();
+    }
+
+    // direnv outputs empty string if no .envrc or environment unchanged
+    if output.stdout.is_empty() {
+        debug!("No direnv environment for {}", path.display());
+        return HashMap::new();
+    }
+
+    match serde_json::from_slice::<HashMap<String, String>>(&output.stdout) {
+        Ok(env) => {
+            info!("Captured {} env vars from direnv for {}", env.len(), path.display());
+            env
+        }
+        Err(e) => {
+            debug!("Failed to parse direnv output: {}", e);
+            HashMap::new()
+        }
+    }
+}
+
 /// Result of sending a message to a worker
 #[derive(Debug, Clone)]
 pub struct WorkerResponse {
@@ -241,11 +285,21 @@ impl WorkerManager {
         };
 
         // Phase 2: Build and run command (NO LOCK HELD - allows concurrent operations)
+
+        // Capture direnv environment for the worker's directory
+        // This ensures workers have access to nix shell tools like `claude`
+        let direnv_env = get_direnv_env(std::path::Path::new(&cwd));
+
         let claude_path = find_claude_binary();
         let mut cmd = Command::new(&claude_path);
         cmd.arg("-p").arg(message);
         cmd.arg("--output-format").arg("json");
         cmd.current_dir(&cwd);
+
+        // Apply direnv environment (nix shell, etc.)
+        if !direnv_env.is_empty() {
+            cmd.envs(&direnv_env);
+        }
 
         // Add model if specified
         if let Some(ref model) = model {
