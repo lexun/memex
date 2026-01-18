@@ -2,6 +2,7 @@ mod completions;
 mod config;
 mod daemon;
 mod help;
+mod launchd;
 mod pid;
 
 use anyhow::Result;
@@ -198,6 +199,16 @@ enum DaemonAction {
     /// Run daemon in foreground (internal use after fork+exec)
     #[command(hide = true)]
     Run,
+    /// Enable automatic startup via launchd (macOS)
+    Enable,
+    /// Disable automatic startup via launchd (macOS)
+    Disable,
+    /// View daemon logs
+    Logs {
+        /// Follow log output (like tail -f)
+        #[arg(short, long)]
+        follow: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -483,7 +494,14 @@ async fn handle_daemon(action: DaemonAction) -> Result<()> {
             unreachable!()
         }
         DaemonAction::Stop => daemon::stop_daemon().await,
-        DaemonAction::Status => daemon::daemon_status(),
+        DaemonAction::Status => {
+            daemon::daemon_status()?;
+            println!();
+            launchd::status()
+        }
+        DaemonAction::Enable => launchd::enable(),
+        DaemonAction::Disable => launchd::disable(),
+        DaemonAction::Logs { follow } => launchd::tail_logs(follow),
     }
 }
 
