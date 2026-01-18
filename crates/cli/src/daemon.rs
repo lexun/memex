@@ -9,7 +9,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 
@@ -378,7 +378,25 @@ async fn handle_connection(stream: UnixStream, stores: Arc<Stores>) -> Result<()
 
 /// Handle a single request
 async fn handle_request(request: &Request, stores: &Arc<Stores>) -> Response {
+    let start = Instant::now();
     let result = dispatch_request(request, stores).await;
+    let elapsed = start.elapsed();
+
+    // Log timing for performance monitoring
+    let elapsed_ms = elapsed.as_millis();
+    if elapsed_ms > 100 {
+        tracing::warn!(
+            method = %request.method,
+            elapsed_ms = %elapsed_ms,
+            "Slow request"
+        );
+    } else {
+        tracing::debug!(
+            method = %request.method,
+            elapsed_ms = %elapsed_ms,
+            "Request completed"
+        );
+    }
 
     match result {
         Ok(value) => Response::success(&request.id, value).unwrap_or_else(|e| {

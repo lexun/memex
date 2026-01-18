@@ -3,6 +3,7 @@
 //! Provides low-level socket communication with JSON-RPC style messages.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -79,36 +80,46 @@ impl Client {
 
     /// Low-level: send a request and receive a response
     async fn send_request(&self, request: &Request) -> Result<Response> {
+        let total_start = Instant::now();
+
         // Connect to socket
+        let connect_start = Instant::now();
         let stream = UnixStream::connect(&self.socket_path)
             .await
             .with_context(|| format!(
                 "Failed to connect to daemon at {}. Is the daemon running?",
                 self.socket_path.display()
             ))?;
+        let connect_elapsed = connect_start.elapsed();
 
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
 
         // Serialize and send request
+        let serialize_start = Instant::now();
         let mut request_json = serde_json::to_string(request)
             .context("Failed to serialize request")?;
         request_json.push('\n');
+        let serialize_elapsed = serialize_start.elapsed();
 
+        let write_start = Instant::now();
         writer
             .write_all(request_json.as_bytes())
             .await
             .context("Failed to write request")?;
         writer.flush().await.context("Failed to flush request")?;
+        let write_elapsed = write_start.elapsed();
 
         trace!("Request sent, waiting for response");
 
         // Read response
+        let read_start = Instant::now();
         let mut response_line = String::new();
         reader
             .read_line(&mut response_line)
             .await
             .context("Failed to read response")?;
+        let read_elapsed = read_start.elapsed();
 
         if response_line.is_empty() {
             return Ok(Response::error(
@@ -117,10 +128,24 @@ impl Client {
             ));
         }
 
+        let deserialize_start = Instant::now();
         let response: Response = serde_json::from_str(&response_line)
             .context("Failed to parse response")?;
+        let deserialize_elapsed = deserialize_start.elapsed();
 
-        trace!("Received response for request {}", response.id);
+        let total_elapsed = total_start.elapsed();
+
+        // Log detailed timing breakdown
+        debug!(
+            method = %request.method,
+            total_ms = total_elapsed.as_micros() as f64 / 1000.0,
+            connect_ms = connect_elapsed.as_micros() as f64 / 1000.0,
+            serialize_ms = serialize_elapsed.as_micros() as f64 / 1000.0,
+            write_ms = write_elapsed.as_micros() as f64 / 1000.0,
+            read_ms = read_elapsed.as_micros() as f64 / 1000.0,
+            deserialize_ms = deserialize_elapsed.as_micros() as f64 / 1000.0,
+            "IPC timing breakdown"
+        );
 
         Ok(response)
     }

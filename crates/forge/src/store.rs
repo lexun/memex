@@ -3,10 +3,12 @@
 //! Handles task, note, and dependency operations.
 
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use db::Database;
 use surrealdb::sql::{Datetime, Thing};
+use tracing::debug;
 
 use crate::task::{Task, TaskDependency, TaskId, TaskNote, TaskStatus};
 use crate::worker::DbWorker;
@@ -49,6 +51,8 @@ impl Store {
         project: Option<&str>,
         status: Option<TaskStatus>,
     ) -> Result<Vec<Task>> {
+        let start = Instant::now();
+
         let mut query = String::from("SELECT * FROM task");
         let mut conditions = Vec::new();
 
@@ -66,6 +70,7 @@ impl Store {
 
         query.push_str(" ORDER BY priority ASC, created_at DESC");
 
+        let query_start = Instant::now();
         let mut stmt = self.db.client().query(&query);
 
         if let Some(p) = project {
@@ -76,7 +81,21 @@ impl Store {
         }
 
         let mut response = stmt.await.context("Failed to query tasks")?;
+        let query_elapsed = query_start.elapsed();
+
+        let parse_start = Instant::now();
         let tasks: Vec<Task> = response.take(0).context("Failed to parse tasks")?;
+        let parse_elapsed = parse_start.elapsed();
+
+        let total_elapsed = start.elapsed();
+        debug!(
+            operation = "list_tasks",
+            total_ms = total_elapsed.as_micros() as f64 / 1000.0,
+            query_ms = query_elapsed.as_micros() as f64 / 1000.0,
+            parse_ms = parse_elapsed.as_micros() as f64 / 1000.0,
+            task_count = tasks.len(),
+            "DB timing breakdown"
+        );
 
         Ok(tasks)
     }

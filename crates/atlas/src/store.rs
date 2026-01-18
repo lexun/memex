@@ -2,10 +2,13 @@
 //!
 //! Handles memo, event, fact, and entity storage.
 
+use std::time::Instant;
+
 use anyhow::{Context, Result};
 use db::Database;
 use serde::{Deserialize, Serialize};
 use surrealdb::sql::Thing;
+use tracing::debug;
 
 use crate::event::Event;
 use crate::fact::{Entity, Fact};
@@ -48,18 +51,35 @@ impl Store {
 
     /// List memos with optional limit
     pub async fn list_memos(&self, limit: Option<usize>) -> Result<Vec<Memo>> {
+        let start = Instant::now();
+
         let query = match limit {
             Some(n) => format!("SELECT * FROM memo ORDER BY created_at DESC LIMIT {}", n),
             None => "SELECT * FROM memo ORDER BY created_at DESC".to_string(),
         };
 
+        let query_start = Instant::now();
         let mut response = self
             .db
             .client()
             .query(&query)
             .await
             .context("Failed to query memos")?;
+        let query_elapsed = query_start.elapsed();
+
+        let parse_start = Instant::now();
         let memos: Vec<Memo> = response.take(0).context("Failed to parse memos")?;
+        let parse_elapsed = parse_start.elapsed();
+
+        let total_elapsed = start.elapsed();
+        debug!(
+            operation = "list_memos",
+            total_ms = total_elapsed.as_micros() as f64 / 1000.0,
+            query_ms = query_elapsed.as_micros() as f64 / 1000.0,
+            parse_ms = parse_elapsed.as_micros() as f64 / 1000.0,
+            memo_count = memos.len(),
+            "DB timing breakdown"
+        );
 
         Ok(memos)
     }
