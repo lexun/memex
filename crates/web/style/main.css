@@ -1,0 +1,159 @@
+:root {
+    --bg: #0a0a0a;
+    --fg: #e0e0e0;
+    --accent: #4a9eff;
+    --accent-dim: #2a5e9f;
+    --border: #333;
+    --surface: #1a1a1a;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 1rem 2rem;
+}
+
+nav {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 2rem;
+}
+
+nav a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+nav a:hover {
+    text-decoration: underline;
+}
+
+h1, h2, h3 {
+    color: var(--fg);
+    font-weight: 600;
+}
+
+h1 {
+    font-size: 2rem;
+    margin-bottom: 1.5rem;
+}
+
+h2 {
+    font-size: 1.25rem;
+    color: var(--accent);
+    margin-top: 2rem;
+    margin-bottom: 0.75rem;
+    text-transform: capitalize;
+}
+
+a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* Record list */
+.record-list {
+    display: grid;
+    gap: 1rem;
+}
+
+.record-type-section ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.record-type-section li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.record-type-section li:last-child {
+    border-bottom: none;
+}
+
+.description {
+    color: #888;
+    font-size: 0.9rem;
+}
+
+/* Record detail */
+.record-detail {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+}
+
+.record-detail header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.record-detail header h1 {
+    margin: 0;
+}
+
+.record-type {
+    background: var(--accent-dim);
+    color: white;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+}
+
+.metadata {
+    color: #888;
+    font-size: 0.9rem;
+    margin: 1rem 0;
+}
+
+.metadata p {
+    margin: 0.25rem 0;
+}
+
+.content {
+    margin-top: 1.5rem;
+}
+
+.content h3 {
+    margin-bottom: 0.5rem;
+}
+
+.content pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1rem;
+    overflow-x: auto;
+    font-family: 'SF Mono', Consolas, monospace;
+    font-size: 0.85rem;
+}
+
+.error {
+    color: #ff6b6b;
+    background: rgba(255, 107, 107, 0.1);
+    border: 1px solid #ff6b6b;
+    border-radius: 4px;
+    padding: 1rem;
+}
