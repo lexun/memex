@@ -94,6 +94,9 @@
                   surrealdb
                   zellij
                 ];
+                # Fix C++ standard library include path for RocksDB compilation
+                # The default libcxx include path is missing the c++/v1 subdirectory
+                env.CXXFLAGS = "-isystem ${pkgs.llvmPackages.libcxx}/include/c++/v1";
                 git-hooks.hooks.single-line-commit = {
                   enable = true;
                   name = "single-line commit";
