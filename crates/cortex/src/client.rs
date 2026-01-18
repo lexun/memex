@@ -11,7 +11,7 @@ use serde_json::json;
 use ipc::Client;
 
 use crate::types::{TranscriptEntry, WorkerId, WorkerStatus};
-use crate::worker::WorkerResponse;
+use crate::worker::{ShellValidation, WorkerResponse};
 
 /// Client for Cortex worker operations via daemon IPC
 pub struct CortexClient {
@@ -166,6 +166,46 @@ impl CortexClient {
             .await?;
         let transcript: Vec<TranscriptEntry> = serde_json::from_value(result)?;
         Ok(transcript)
+    }
+
+    /// Validate the shell environment for a worker
+    ///
+    /// Checks if the direnv/nix environment loads correctly for the worker's
+    /// directory. Use this before operations that depend on the shell environment
+    /// (like reload) to ensure they will succeed.
+    ///
+    /// # Returns
+    ///
+    /// - `ShellValidation::Success` if the environment loads correctly
+    /// - `ShellValidation::Failed` if there's an error (broken flake.nix, etc.)
+    pub async fn validate_shell(&self, worker_id: &WorkerId) -> Result<ShellValidation> {
+        let params = json!({
+            "worker_id": worker_id.0,
+        });
+
+        let result = self.client.request("cortex_validate_shell", params).await?;
+        let validation: ShellValidation = serde_json::from_value(result)?;
+        Ok(validation)
+    }
+
+    /// Validate the shell environment for a directory
+    ///
+    /// Checks if the direnv/nix environment loads correctly for the specified
+    /// directory. This can be used to validate environments before creating
+    /// workers or for arbitrary paths.
+    ///
+    /// # Returns
+    ///
+    /// - `ShellValidation::Success` if the environment loads correctly
+    /// - `ShellValidation::Failed` if there's an error (broken flake.nix, etc.)
+    pub async fn validate_shell_for_path(&self, path: &str) -> Result<ShellValidation> {
+        let params = json!({
+            "path": path,
+        });
+
+        let result = self.client.request("cortex_validate_shell", params).await?;
+        let validation: ShellValidation = serde_json::from_value(result)?;
+        Ok(validation)
     }
 }
 

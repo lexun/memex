@@ -30,4 +30,4 @@ pub mod worker;
 pub use client::CortexClient;
 pub use error::{CortexError, Result};
 pub use types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerMcpConfig, WorkerState, WorkerStatus};
-pub use worker::{WorkerManager, WorkerResponse};
+pub use worker::{ShellValidation, WorkerManager, WorkerResponse, validate_shell_env};

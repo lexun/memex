@@ -465,6 +465,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "cortex_list_workers" => handle_cortex_list_workers(&stores.workers).await,
         "cortex_remove_worker" => handle_cortex_remove_worker(request, stores).await,
         "cortex_worker_transcript" => handle_cortex_worker_transcript(request, &stores.workers).await,
+        "cortex_validate_shell" => handle_cortex_validate_shell(request, &stores.workers).await,
 
         // Vibetree operations (worktree management)
         "vibetree_list" => handle_vibetree_list(request).await,
@@ -2618,6 +2619,49 @@ async fn handle_cortex_worker_transcript(
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
     Ok(serde_json::to_value(transcript).unwrap())
+}
+
+#[derive(Deserialize)]
+struct ValidateShellParams {
+    /// Worker ID to validate shell for (if provided)
+    worker_id: Option<String>,
+    /// Directory path to validate shell for (alternative to worker_id)
+    path: Option<String>,
+}
+
+/// Validate the shell environment for a worker or directory
+///
+/// This checks if direnv can successfully load the environment.
+/// Use this before operations that depend on the shell (like reload)
+/// to verify the environment is valid.
+async fn handle_cortex_validate_shell(
+    request: &Request,
+    workers: &WorkerManager,
+) -> Result<serde_json::Value, IpcError> {
+    let params: ValidateShellParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let validation = if let Some(ref worker_id) = params.worker_id {
+        // Validate for a specific worker
+        let wid = WorkerId::from_string(worker_id);
+        workers
+            .validate_shell(&wid)
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?
+    } else if let Some(ref path) = params.path {
+        // Validate for a specific path
+        let path = std::path::Path::new(path);
+        workers
+            .validate_shell_for_path(path)
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?
+    } else {
+        return Err(IpcError::invalid_params(
+            "Must provide either worker_id or path".to_string(),
+        ));
+    };
+
+    Ok(serde_json::to_value(validation).unwrap())
 }
 
 /// Send a message asynchronously - returns immediately with a message ID

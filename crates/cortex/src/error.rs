@@ -19,6 +19,9 @@ pub enum CortexError {
     #[error("Process error: {0}")]
     ProcessError(String),
 
+    #[error("Validation failed: {0}")]
+    ValidationFailed(String),
+
     #[error("JSON serialization error: {0}")]
     JsonError(#[from] serde_json::Error),
 

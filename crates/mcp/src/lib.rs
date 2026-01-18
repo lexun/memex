@@ -1257,6 +1257,90 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Validate the shell environment for a worker or directory
+    ///
+    /// Checks if the direnv/nix shell environment loads correctly. This is useful
+    /// before performing operations that depend on the shell environment (like
+    /// reloading a worker) to ensure they will succeed.
+    ///
+    /// **Why this matters:** Workers operate in nix devshells via direnv. If a
+    /// worker modifies flake.nix and introduces an error, the shell will fail
+    /// to load. Validating first allows detecting and fixing issues before
+    /// attempting operations that would fail.
+    ///
+    /// Provide either worker_id (to validate a worker's directory) or path
+    /// (to validate an arbitrary directory), but not both.
+    #[tool]
+    async fn cortex_validate_shell(
+        &self,
+        /// Worker ID to validate shell for (mutually exclusive with path)
+        worker_id: Option<String>,
+        /// Directory path to validate shell for (mutually exclusive with worker_id)
+        path: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        // Must provide exactly one of worker_id or path
+        let (has_worker, has_path) = (worker_id.is_some(), path.is_some());
+        if has_worker == has_path {
+            return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                .with_message("Must provide exactly one of worker_id or path".to_string(), true));
+        }
+
+        let validation = if let Some(ref wid) = worker_id {
+            let worker_id = cortex::WorkerId::from_string(wid);
+            self.cortex_client.validate_shell(&worker_id).await
+        } else {
+            self.cortex_client.validate_shell_for_path(path.as_ref().unwrap()).await
+        };
+
+        match validation {
+            Ok(cortex::ShellValidation::Success { env }) => {
+                let mut output = String::from("Shell validation: SUCCESS\n");
+                output.push_str(&format!("Environment variables: {} loaded\n", env.len()));
+
+                // Show if nix environment is active
+                if let Some(path) = env.get("PATH") {
+                    if path.contains("/nix/store") {
+                        output.push_str("Nix environment: Active (PATH includes /nix/store)\n");
+                    } else {
+                        output.push_str("Nix environment: Not detected (PATH doesn't include /nix/store)\n");
+                    }
+                }
+
+                // Show key environment variables if present
+                let key_vars = ["NIX_BUILD_TOP", "IN_NIX_SHELL", "DIRENV_DIR"];
+                for var in key_vars {
+                    if let Some(val) = env.get(var) {
+                        let display_val = if val.len() > 50 {
+                            format!("{}...", &val[..50])
+                        } else {
+                            val.clone()
+                        };
+                        output.push_str(&format!("  {}: {}\n", var, display_val));
+                    }
+                }
+
+                Ok(output)
+            }
+            Ok(cortex::ShellValidation::Failed { error, exit_code }) => {
+                let mut output = String::from("Shell validation: FAILED\n\n");
+                output.push_str(&format!("Error: {}\n", error));
+                if let Some(code) = exit_code {
+                    output.push_str(&format!("Exit code: {}\n", code));
+                }
+                output.push_str("\nThe shell environment failed to load. This typically means:\n");
+                output.push_str("- There's a syntax error in flake.nix\n");
+                output.push_str("- A dependency failed to build\n");
+                output.push_str("- The .envrc is missing or invalid\n");
+                output.push_str("\nFix the issue before attempting operations that require the shell.");
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to validate shell: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Vibetree tools (git worktree management)
     // -------------------------------------------------------------------------

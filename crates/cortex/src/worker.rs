@@ -13,14 +13,16 @@
 //! - `--input-format stream-json` for true bidirectional communication
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::{CortexError, Result};
 use crate::types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerMcpConfig, WorkerState, WorkerStatus};
@@ -123,6 +125,171 @@ fn get_direnv_env(path: &std::path::Path) -> HashMap<String, String> {
             HashMap::new()
         }
     }
+}
+
+/// Default timeout for shell validation (60 seconds)
+const SHELL_VALIDATION_TIMEOUT_SECS: u64 = 60;
+
+/// Result of shell environment validation
+///
+/// Used to check if a worker's shell environment will load correctly
+/// before performing operations that depend on it (like reload).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ShellValidation {
+    /// Shell environment loaded successfully
+    Success {
+        /// Environment variables that would be set
+        env: HashMap<String, String>,
+    },
+    /// Shell environment failed to load
+    Failed {
+        /// Error message describing the failure
+        error: String,
+        /// Exit code if the command ran but failed
+        exit_code: Option<i32>,
+    },
+}
+
+impl ShellValidation {
+    /// Returns true if the validation succeeded
+    pub fn is_success(&self) -> bool {
+        matches!(self, ShellValidation::Success { .. })
+    }
+
+    /// Returns the error message if validation failed
+    pub fn error_message(&self) -> Option<&str> {
+        match self {
+            ShellValidation::Failed { error, .. } => Some(error),
+            ShellValidation::Success { .. } => None,
+        }
+    }
+}
+
+/// Validate that the shell environment for a directory loads correctly
+///
+/// This function checks if direnv can successfully export the environment
+/// for the given directory. It's used to verify that a worker's shell
+/// environment is valid before performing operations that depend on it.
+///
+/// # Why This Matters
+///
+/// Workers operate in nix devshells via direnv. If a worker modifies
+/// flake.nix and introduces an error, the shell will fail to load.
+/// Without validation, attempting to reload the worker would kill it
+/// before discovering the shell is broken, leaving it stuck.
+///
+/// By validating first, we can detect problems and report them to the
+/// worker so it can fix the issue before requesting a reload.
+///
+/// # Returns
+///
+/// - `ShellValidation::Success` if the environment loads correctly
+/// - `ShellValidation::Failed` if there's an error loading the environment
+pub async fn validate_shell_env(worktree_path: &Path) -> Result<ShellValidation> {
+    validate_shell_env_with_timeout(worktree_path, Duration::from_secs(SHELL_VALIDATION_TIMEOUT_SECS)).await
+}
+
+/// Validate shell environment with a custom timeout
+pub async fn validate_shell_env_with_timeout(
+    worktree_path: &Path,
+    timeout: Duration,
+) -> Result<ShellValidation> {
+    info!("Validating shell environment for {}", worktree_path.display());
+
+    // Use tokio::process::Command for async timeout support
+    let mut cmd = Command::new("direnv");
+    cmd.args(["export", "json"])
+        .current_dir(worktree_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Spawn the process
+    let child = cmd.spawn().map_err(|e| {
+        CortexError::ValidationFailed(format!("Failed to spawn direnv: {}", e))
+    })?;
+
+    // Wait for output with timeout
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            return Ok(ShellValidation::Failed {
+                error: format!("Failed to run direnv: {}", e),
+                exit_code: None,
+            });
+        }
+        Err(_) => {
+            return Ok(ShellValidation::Failed {
+                error: format!(
+                    "Shell validation timed out after {} seconds. This may indicate a hang in flake evaluation.",
+                    timeout.as_secs()
+                ),
+                exit_code: None,
+            });
+        }
+    };
+
+    // Check if command succeeded
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code();
+
+        warn!(
+            "Shell validation failed for {}: exit_code={:?}, stderr={}",
+            worktree_path.display(),
+            exit_code,
+            stderr
+        );
+
+        return Ok(ShellValidation::Failed {
+            error: if stderr.is_empty() {
+                "direnv export failed with no error output".to_string()
+            } else {
+                stderr
+            },
+            exit_code,
+        });
+    }
+
+    // Parse the environment
+    // Note: direnv outputs empty string if no .envrc or environment unchanged
+    if output.stdout.is_empty() {
+        debug!("No direnv environment for {} (empty output)", worktree_path.display());
+        // Empty output is still success - just means no env changes needed
+        return Ok(ShellValidation::Success {
+            env: HashMap::new(),
+        });
+    }
+
+    let env: HashMap<String, String> = match serde_json::from_slice(&output.stdout) {
+        Ok(env) => env,
+        Err(e) => {
+            return Ok(ShellValidation::Failed {
+                error: format!("Failed to parse direnv output: {}", e),
+                exit_code: None,
+            });
+        }
+    };
+
+    // Sanity check: PATH should include nix store if we're in a nix environment
+    if let Some(path) = env.get("PATH") {
+        if !path.contains("/nix/store") {
+            warn!(
+                "Shell validation warning: PATH doesn't include /nix/store for {}",
+                worktree_path.display()
+            );
+            // This isn't necessarily an error - the directory might not use nix
+            // But it's worth noting since cortex workers typically do
+        }
+    }
+
+    info!(
+        "Shell validation succeeded for {} ({} env vars)",
+        worktree_path.display(),
+        env.len()
+    );
+
+    Ok(ShellValidation::Success { env })
 }
 
 /// Result of sending a message to a worker
@@ -477,6 +644,39 @@ impl WorkerManager {
         // Return the most recent entries up to the limit
         let start = transcript.len().saturating_sub(limit);
         Ok(transcript[start..].to_vec())
+    }
+
+    /// Validate the shell environment for a worker's directory
+    ///
+    /// This checks if the direnv/nix environment loads correctly for the
+    /// worker's worktree. Use this before performing operations that depend
+    /// on the shell environment (like reload) to ensure they will succeed.
+    ///
+    /// # Returns
+    ///
+    /// - `ShellValidation::Success` if the environment loads correctly
+    /// - `ShellValidation::Failed` if there's an error (broken flake.nix, etc.)
+    pub async fn validate_shell(&self, id: &WorkerId) -> Result<ShellValidation> {
+        // Get the worker's directory
+        let cwd = {
+            let workers = self.workers.read().await;
+            let worker = workers.get(id).ok_or_else(|| {
+                CortexError::WorkerNotFound(id.to_string())
+            })?;
+            worker.config.cwd.clone()
+        };
+
+        // Validate the shell environment
+        let path = Path::new(&cwd);
+        validate_shell_env(path).await
+    }
+
+    /// Validate the shell environment for an arbitrary directory
+    ///
+    /// This is a convenience method for validating shell environments
+    /// without requiring a worker to exist for that directory.
+    pub async fn validate_shell_for_path(&self, path: &Path) -> Result<ShellValidation> {
+        validate_shell_env(path).await
     }
 }
 
