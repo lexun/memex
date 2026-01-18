@@ -26,7 +26,7 @@ use anyhow::Result;
 use mcp_attr::server::{mcp_server, serve_stdio, McpServer};
 use mcp_attr::ErrorCode;
 
-use atlas::{EventClient, KnowledgeClient, MemoClient};
+use atlas::{EventClient, KnowledgeClient, MemoClient, RecordClient};
 use cortex::CortexClient;
 use forge::task::{Task, TaskStatus};
 use forge::TaskClient;
@@ -38,6 +38,7 @@ pub struct MemexMcpServer {
     memo_client: MemoClient,
     event_client: EventClient,
     knowledge_client: KnowledgeClient,
+    record_client: RecordClient,
     cortex_client: CortexClient,
     ipc_client: IpcClient,
 }
@@ -49,6 +50,7 @@ impl MemexMcpServer {
         let memo_client = MemoClient::new(socket_path);
         let event_client = EventClient::new(socket_path);
         let knowledge_client = KnowledgeClient::new(socket_path);
+        let record_client = RecordClient::new(socket_path);
         let cortex_client = CortexClient::new(socket_path);
         let ipc_client = IpcClient::new(socket_path);
         Self {
@@ -56,6 +58,7 @@ impl MemexMcpServer {
             memo_client,
             event_client,
             knowledge_client,
+            record_client,
             cortex_client,
             ipc_client,
         }
@@ -1434,6 +1437,353 @@ impl McpServer for MemexMcpServer {
             }
             Err(e) => {
                 let msg = format!("Failed to merge worktree: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Graph tools (records and edges)
+    // -------------------------------------------------------------------------
+
+    /// List records in the knowledge graph
+    ///
+    /// Records are typed, stateful objects like repos, teams, rules, skills.
+    /// Use filters to find specific record types.
+    #[tool]
+    async fn list_records(
+        &self,
+        /// Filter by record type (repo, team, person, company, initiative, rule, skill, document, task)
+        record_type: Option<String>,
+        /// Include soft-deleted records
+        include_deleted: Option<bool>,
+        /// Maximum number of records to return
+        limit: Option<i32>,
+    ) -> mcp_attr::Result<String> {
+        let limit = limit.map(|l| l as usize);
+        match self
+            .record_client
+            .list_records(record_type.as_deref(), include_deleted.unwrap_or(false), limit)
+            .await
+        {
+            Ok(records) => {
+                if records.is_empty() {
+                    Ok("No records found".to_string())
+                } else {
+                    let mut output = format!("Records ({}):\n", records.len());
+                    for record in records {
+                        let id = record.id_str().unwrap_or_default();
+                        let deleted = if record.is_deleted() { " [DELETED]" } else { "" };
+                        output.push_str(&format!(
+                            "  [{}] {} ({}){}",
+                            record.record_type, record.name, id, deleted
+                        ));
+                        if let Some(ref desc) = record.description {
+                            if desc.len() > 40 {
+                                output.push_str(&format!("\n      {}...", &desc[..40]));
+                            } else {
+                                output.push_str(&format!("\n      {}", desc));
+                            }
+                        }
+                        output.push('\n');
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to list records: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Get a specific record by ID
+    #[tool]
+    async fn get_record(&self, id: String) -> mcp_attr::Result<String> {
+        match self.record_client.get_record(&id).await {
+            Ok(Some(record)) => {
+                let id_str = record.id_str().unwrap_or_default();
+                let mut output = format!("Record: {}\n", id_str);
+                output.push_str(&format!("  Type: {}\n", record.record_type));
+                output.push_str(&format!("  Name: {}\n", record.name));
+                if let Some(ref desc) = record.description {
+                    output.push_str(&format!("  Description: {}\n", desc));
+                }
+                if !record.content.is_null() && record.content != serde_json::json!({}) {
+                    output.push_str(&format!("  Content: {}\n", record.content));
+                }
+                output.push_str(&format!("  Created: {}\n", record.created_at));
+                if record.is_deleted() {
+                    output.push_str(&format!("  Deleted: {:?}\n", record.deleted_at));
+                }
+                Ok(output)
+            }
+            Ok(None) => {
+                let msg = format!("Record not found: {}", id);
+                Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS).with_message(msg, true))
+            }
+            Err(e) => {
+                let msg = format!("Failed to get record: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Create a new record in the knowledge graph
+    ///
+    /// Records are typed objects that can be connected via edges.
+    /// Common types: repo, team, person, rule, skill
+    #[tool]
+    async fn create_record(
+        &self,
+        /// Record type (repo, team, person, company, initiative, rule, skill, document, task)
+        record_type: String,
+        /// Human-readable name for the record
+        name: String,
+        /// Optional description
+        description: Option<String>,
+        /// Optional JSON content with type-specific fields
+        content: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        let content_json = if let Some(ref c) = content {
+            Some(serde_json::from_str(c).map_err(|e| {
+                mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                    .with_message(format!("Invalid JSON content: {}", e), true)
+            })?)
+        } else {
+            None
+        };
+
+        match self
+            .record_client
+            .create_record(&record_type, &name, description.as_deref(), content_json)
+            .await
+        {
+            Ok(record) => {
+                let id = record.id_str().unwrap_or_default();
+                Ok(format!(
+                    "Created record: {}\n  Type: {}\n  Name: {}",
+                    id, record.record_type, record.name
+                ))
+            }
+            Err(e) => {
+                let msg = format!("Failed to create record: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Update an existing record
+    #[tool]
+    async fn update_record(
+        &self,
+        /// Record ID to update
+        id: String,
+        /// New name (optional)
+        name: Option<String>,
+        /// New description (optional)
+        description: Option<String>,
+        /// New JSON content (optional, merges with existing)
+        content: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        let content_json = if let Some(ref c) = content {
+            Some(serde_json::from_str(c).map_err(|e| {
+                mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                    .with_message(format!("Invalid JSON content: {}", e), true)
+            })?)
+        } else {
+            None
+        };
+
+        match self
+            .record_client
+            .update_record(&id, name.as_deref(), description.as_deref(), content_json)
+            .await
+        {
+            Ok(Some(record)) => {
+                let id_str = record.id_str().unwrap_or_default();
+                Ok(format!("Updated record: {}\n  Name: {}", id_str, record.name))
+            }
+            Ok(None) => {
+                let msg = format!("Record not found: {}", id);
+                Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS).with_message(msg, true))
+            }
+            Err(e) => {
+                let msg = format!("Failed to update record: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Delete a record (soft-delete)
+    ///
+    /// Marks the record as deleted but preserves it in the database.
+    #[tool]
+    async fn delete_record(&self, id: String) -> mcp_attr::Result<String> {
+        match self.record_client.delete_record(&id).await {
+            Ok(Some(_)) => Ok(format!("Deleted record: {}", id)),
+            Ok(None) => {
+                let msg = format!("Record not found: {}", id);
+                Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS).with_message(msg, true))
+            }
+            Err(e) => {
+                let msg = format!("Failed to delete record: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Create an edge between two records
+    ///
+    /// Edges define relationships like "rule applies_to repo" or "person member_of team".
+    /// Valid relations: applies_to, belongs_to, member_of, owns, available_to, depends_on, related_to
+    #[tool]
+    async fn create_edge(
+        &self,
+        /// Source record ID
+        source: String,
+        /// Target record ID
+        target: String,
+        /// Relationship type (applies_to, belongs_to, member_of, owns, available_to, depends_on, related_to)
+        relation: String,
+        /// Optional JSON metadata for the edge
+        metadata: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        let metadata_json = if let Some(ref m) = metadata {
+            Some(serde_json::from_str(m).map_err(|e| {
+                mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                    .with_message(format!("Invalid JSON metadata: {}", e), true)
+            })?)
+        } else {
+            None
+        };
+
+        match self
+            .record_client
+            .create_edge(&source, &target, &relation, metadata_json)
+            .await
+        {
+            Ok(edge) => {
+                let id = edge.id_str().unwrap_or_default();
+                Ok(format!(
+                    "Created edge: {}\n  {} --{}-> {}",
+                    id, source, relation, target
+                ))
+            }
+            Err(e) => {
+                let msg = format!("Failed to create edge: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// List edges for a record
+    ///
+    /// Shows relationships connected to a record.
+    #[tool]
+    async fn list_edges(
+        &self,
+        /// Record ID to list edges for
+        id: String,
+        /// Direction: "from" (outgoing), "to" (incoming), or "both" (default)
+        direction: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        let dir = direction.as_deref().unwrap_or("both");
+        match self.record_client.list_edges(&id, dir).await {
+            Ok(edges) => {
+                if edges.is_empty() {
+                    Ok(format!("No edges found for record: {}", id))
+                } else {
+                    let mut output = format!("Edges for {} ({}):\n", id, edges.len());
+                    for edge in edges {
+                        let edge_id = edge.id_str().unwrap_or_default();
+                        let source = edge.source.id.to_raw();
+                        let target = edge.target.id.to_raw();
+                        output.push_str(&format!(
+                            "  [{}] {} --{}-> {}\n",
+                            edge_id, source, edge.relation, target
+                        ));
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to list edges: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Assemble context from a record
+    ///
+    /// Starting from a record (e.g., a repo), traverses edges to collect
+    /// related records like rules, skills, and team members that apply.
+    /// This is used to build context for LLM queries.
+    #[tool]
+    async fn assemble_context(
+        &self,
+        /// Record ID to start traversal from
+        id: String,
+        /// Maximum traversal depth (default: 3)
+        depth: Option<i32>,
+    ) -> mcp_attr::Result<String> {
+        let depth = depth.unwrap_or(3) as usize;
+        match self.record_client.assemble_context(&id, depth).await {
+            Ok(context) => {
+                let mut output = format!("Context from record: {}\n", id);
+                output.push_str(&format!("  Depth: {}\n", depth));
+                output.push_str(&format!("  Records found: {}\n\n", context.records.len()));
+
+                if context.records.is_empty() {
+                    output.push_str("No related records found.");
+                } else {
+                    // Group by type
+                    let rules = context.rules();
+                    let skills = context.skills();
+                    let people = context.people();
+
+                    if !rules.is_empty() {
+                        output.push_str(&format!("Rules ({}):\n", rules.len()));
+                        for r in rules {
+                            let content = r.content.get("content")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            output.push_str(&format!("  - {}: {}\n", r.name, content));
+                        }
+                        output.push('\n');
+                    }
+
+                    if !skills.is_empty() {
+                        output.push_str(&format!("Skills ({}):\n", skills.len()));
+                        for s in skills {
+                            let desc = s.description.as_deref().unwrap_or("");
+                            output.push_str(&format!("  - {}: {}\n", s.name, desc));
+                        }
+                        output.push('\n');
+                    }
+
+                    if !people.is_empty() {
+                        output.push_str(&format!("People ({}):\n", people.len()));
+                        for p in people {
+                            output.push_str(&format!("  - {}\n", p.name));
+                        }
+                        output.push('\n');
+                    }
+
+                    output.push_str("All records:\n");
+                    for record in &context.records {
+                        output.push_str(&format!(
+                            "  [{}] {} ({})\n",
+                            record.record_type,
+                            record.name,
+                            record.id_str().unwrap_or_default()
+                        ));
+                    }
+                }
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to assemble context: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
             }
         }

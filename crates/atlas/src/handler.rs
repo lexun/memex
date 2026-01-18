@@ -1,14 +1,15 @@
 //! Command handlers for Atlas CLI
 //!
-//! These handlers execute the memo and event management commands via the daemon.
+//! These handlers execute the memo, event, and record management commands via the daemon.
 
 use std::path::Path;
 
 use anyhow::Result;
 
-use crate::cli::{EventCommand, KnowledgeCommand, MemoCommand};
-use crate::client::{EventClient, KnowledgeClient, MemoClient};
+use crate::cli::{EdgeCommand, EventCommand, KnowledgeCommand, MemoCommand, RecordCommand};
+use crate::client::{EventClient, KnowledgeClient, MemoClient, RecordClient};
 use crate::event::Event;
+use crate::record::{Record, RecordEdge};
 use crate::Memo;
 
 /// Handle a memo command via the daemon
@@ -321,4 +322,282 @@ fn print_fact(fact: &serde_json::Value) {
         score,
         content
     );
+}
+
+/// Handle a record/graph command via the daemon
+pub async fn handle_record_command(cmd: RecordCommand, socket_path: &Path) -> Result<()> {
+    let client = RecordClient::new(socket_path);
+
+    match cmd {
+        RecordCommand::List {
+            record_type,
+            include_deleted,
+            limit,
+        } => {
+            let type_str = record_type.map(|t| t.to_string());
+            let records = client
+                .list_records(type_str.as_deref(), include_deleted, limit)
+                .await?;
+
+            if records.is_empty() {
+                println!("No records found");
+            } else {
+                println!("Found {} record(s):", records.len());
+                println!();
+                for record in records {
+                    print_record_summary(&record);
+                }
+            }
+            Ok(())
+        }
+
+        RecordCommand::Get { id } => {
+            match client.get_record(&id).await? {
+                Some(record) => print_record_detail(&record),
+                None => println!("Record not found: {}", id),
+            }
+            Ok(())
+        }
+
+        RecordCommand::Create {
+            record_type,
+            name,
+            description,
+            content,
+        } => {
+            let content_json = if let Some(c) = content {
+                Some(serde_json::from_str(&c)?)
+            } else {
+                None
+            };
+
+            let record = client
+                .create_record(
+                    &record_type.to_string(),
+                    &name,
+                    description.as_deref(),
+                    content_json,
+                )
+                .await?;
+
+            println!("Created record: {}", record.id_str().unwrap_or_default());
+            print_record_detail(&record);
+            Ok(())
+        }
+
+        RecordCommand::Update {
+            id,
+            name,
+            description,
+            content,
+        } => {
+            let content_json = if let Some(c) = content {
+                Some(serde_json::from_str(&c)?)
+            } else {
+                None
+            };
+
+            match client
+                .update_record(&id, name.as_deref(), description.as_deref(), content_json)
+                .await?
+            {
+                Some(record) => {
+                    println!("Updated record: {}", record.id_str().unwrap_or_default());
+                    print_record_detail(&record);
+                }
+                None => println!("Record not found: {}", id),
+            }
+            Ok(())
+        }
+
+        RecordCommand::Delete { id } => {
+            match client.delete_record(&id).await? {
+                Some(record) => {
+                    println!("Deleted record: {}", record.id_str().unwrap_or_default());
+                }
+                None => println!("Record not found: {}", id),
+            }
+            Ok(())
+        }
+
+        RecordCommand::Edge { action } => handle_edge_command(action, &client).await,
+
+        RecordCommand::Context { id, depth } => {
+            let context = client.assemble_context(&id, depth).await?;
+
+            println!("Context assembly from record: {}", id);
+            println!("  Depth: {}", depth);
+            println!("  Records found: {}", context.records.len());
+            println!();
+
+            if context.records.is_empty() {
+                println!("No related records found.");
+            } else {
+                // Group by type
+                let rules = context.rules();
+                let skills = context.skills();
+                let people = context.people();
+
+                if !rules.is_empty() {
+                    println!("Rules ({}):", rules.len());
+                    for record in rules {
+                        println!("  - {} ({})", record.name, record.id_str().unwrap_or_default());
+                        if let Some(desc) = &record.description {
+                            println!("    {}", desc);
+                        }
+                    }
+                    println!();
+                }
+
+                if !skills.is_empty() {
+                    println!("Skills ({}):", skills.len());
+                    for record in skills {
+                        println!("  - {} ({})", record.name, record.id_str().unwrap_or_default());
+                        if let Some(desc) = &record.description {
+                            println!("    {}", desc);
+                        }
+                    }
+                    println!();
+                }
+
+                if !people.is_empty() {
+                    println!("People ({}):", people.len());
+                    for record in people {
+                        println!("  - {} ({})", record.name, record.id_str().unwrap_or_default());
+                    }
+                    println!();
+                }
+
+                // Show all records
+                println!("All records:");
+                for record in &context.records {
+                    println!(
+                        "  [{}] {} ({})",
+                        record.record_type,
+                        record.name,
+                        record.id_str().unwrap_or_default()
+                    );
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn handle_edge_command(cmd: EdgeCommand, client: &RecordClient) -> Result<()> {
+    match cmd {
+        EdgeCommand::Add {
+            source,
+            target,
+            relation,
+            metadata,
+        } => {
+            let metadata_json = if let Some(m) = metadata {
+                Some(serde_json::from_str(&m)?)
+            } else {
+                None
+            };
+
+            let edge = client
+                .create_edge(&source, &target, &relation.to_string(), metadata_json)
+                .await?;
+
+            println!("Created edge: {}", edge.id_str().unwrap_or_default());
+            print_edge_detail(&edge);
+            Ok(())
+        }
+
+        EdgeCommand::List { id, direction } => {
+            let edges = client.list_edges(&id, &direction).await?;
+
+            if edges.is_empty() {
+                println!("No edges found for record: {}", id);
+            } else {
+                println!("Found {} edge(s):", edges.len());
+                println!();
+                for edge in edges {
+                    print_edge_summary(&edge);
+                }
+            }
+            Ok(())
+        }
+
+        EdgeCommand::Delete { id } => {
+            match client.delete_edge(&id).await? {
+                Some(edge) => {
+                    println!("Deleted edge: {}", edge.id_str().unwrap_or_default());
+                }
+                None => println!("Edge not found: {}", id),
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_record_summary(record: &Record) {
+    let id = record.id_str().unwrap_or_default();
+    let deleted = if record.is_deleted() { " [DELETED]" } else { "" };
+    println!(
+        "[{}] {} ({}){}",
+        record.record_type, record.name, id, deleted
+    );
+    if let Some(desc) = &record.description {
+        if !desc.is_empty() {
+            let truncated = if desc.len() > 60 {
+                format!("{}...", &desc[..60])
+            } else {
+                desc.clone()
+            };
+            println!("      {}", truncated);
+        }
+    }
+}
+
+fn print_record_detail(record: &Record) {
+    println!("Record: {}", record.id_str().unwrap_or_default());
+    println!("  Type: {}", record.record_type);
+    println!("  Name: {}", record.name);
+    if let Some(desc) = &record.description {
+        println!("  Description: {}", desc);
+    }
+    if !record.content.is_null() && record.content != serde_json::json!({}) {
+        println!("  Content:");
+        if let Ok(pretty) = serde_json::to_string_pretty(&record.content) {
+            for line in pretty.lines() {
+                println!("    {}", line);
+            }
+        }
+    }
+    println!("  Created: {}", record.created_at);
+    println!("  Updated: {}", record.updated_at);
+    if record.is_deleted() {
+        println!("  Deleted: {:?}", record.deleted_at);
+    }
+}
+
+fn print_edge_summary(edge: &RecordEdge) {
+    let id = edge.id_str().unwrap_or_default();
+    println!(
+        "[{}] {} --{}-> {}",
+        id,
+        edge.source.id.to_raw(),
+        edge.relation,
+        edge.target.id.to_raw()
+    );
+}
+
+fn print_edge_detail(edge: &RecordEdge) {
+    println!("Edge: {}", edge.id_str().unwrap_or_default());
+    println!("  Source: {}", edge.source);
+    println!("  Target: {}", edge.target);
+    println!("  Relation: {}", edge.relation);
+    if let Some(meta) = &edge.metadata {
+        println!("  Metadata:");
+        if let Ok(pretty) = serde_json::to_string_pretty(meta) {
+            for line in pretty.lines() {
+                println!("    {}", line);
+            }
+        }
+    }
+    println!("  Created: {}", edge.created_at);
 }

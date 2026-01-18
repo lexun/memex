@@ -20,3 +20,4 @@ data/
 
 # Vibetree
 .vibetree/
+crates/atlas/.memex/

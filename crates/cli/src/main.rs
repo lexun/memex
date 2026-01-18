@@ -89,15 +89,21 @@ enum KnowledgeCommands {
         #[command(subcommand)]
         action: atlas::EventCommand,
     },
-    /// Rebuild knowledge from memos
+    /// Manage graph records and edges
     #[command(display_order = 6)]
+    Graph {
+        #[command(subcommand)]
+        action: atlas::RecordCommand,
+    },
+    /// Rebuild knowledge from memos
+    #[command(display_order = 7)]
     Rebuild {
         /// Filter by project
         #[arg(short, long)]
         project: Option<String>,
     },
     /// Backfill missing embeddings without rebuilding
-    #[command(display_order = 7)]
+    #[command(display_order = 8)]
     Backfill {
         /// Number of facts to process per batch
         #[arg(short, long, default_value = "50")]
@@ -108,10 +114,10 @@ enum KnowledgeCommands {
         all: bool,
     },
     /// Show knowledge system status
-    #[command(display_order = 8)]
+    #[command(display_order = 9)]
     Status,
     /// List known entities
-    #[command(display_order = 9)]
+    #[command(display_order = 10)]
     Entities {
         /// Filter by project
         #[arg(short, long)]
@@ -126,7 +132,7 @@ enum KnowledgeCommands {
         limit: Option<usize>,
     },
     /// Get facts about a specific entity
-    #[command(display_order = 10)]
+    #[command(display_order = 11)]
     Entity {
         /// Entity name to look up
         name: String,
@@ -400,6 +406,9 @@ async fn async_main(command: Commands) -> Result<()> {
             }
             KnowledgeCommands::Event { action } => {
                 atlas::handle_event_command(action, &socket_path).await
+            }
+            KnowledgeCommands::Graph { action } => {
+                atlas::handle_record_command(action, &socket_path).await
             }
             KnowledgeCommands::Rebuild { project } => {
                 let client = atlas::KnowledgeClient::new(&socket_path);

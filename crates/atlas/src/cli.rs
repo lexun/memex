@@ -1,9 +1,9 @@
-//! CLI command definitions for Atlas memo and event management
+//! CLI command definitions for Atlas memo, event, and record management
 //!
 //! This module defines the clap subcommands that can be imported
 //! by the main CLI crate.
 
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 
 /// Memo management commands
 #[derive(Debug, Subcommand)]
@@ -149,5 +149,184 @@ pub enum KnowledgeCommand {
         /// Filter by project
         #[arg(short, long)]
         project: Option<String>,
+    },
+}
+
+/// Record type for CLI
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum RecordTypeCli {
+    Repo,
+    Team,
+    Person,
+    Company,
+    Initiative,
+    Rule,
+    Skill,
+    Document,
+    Task,
+}
+
+impl std::fmt::Display for RecordTypeCli {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecordTypeCli::Repo => write!(f, "repo"),
+            RecordTypeCli::Team => write!(f, "team"),
+            RecordTypeCli::Person => write!(f, "person"),
+            RecordTypeCli::Company => write!(f, "company"),
+            RecordTypeCli::Initiative => write!(f, "initiative"),
+            RecordTypeCli::Rule => write!(f, "rule"),
+            RecordTypeCli::Skill => write!(f, "skill"),
+            RecordTypeCli::Document => write!(f, "document"),
+            RecordTypeCli::Task => write!(f, "task"),
+        }
+    }
+}
+
+/// Edge relation for CLI
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum EdgeRelationCli {
+    AppliesTo,
+    BelongsTo,
+    MemberOf,
+    Owns,
+    AvailableTo,
+    DependsOn,
+    RelatedTo,
+}
+
+impl std::fmt::Display for EdgeRelationCli {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EdgeRelationCli::AppliesTo => write!(f, "applies_to"),
+            EdgeRelationCli::BelongsTo => write!(f, "belongs_to"),
+            EdgeRelationCli::MemberOf => write!(f, "member_of"),
+            EdgeRelationCli::Owns => write!(f, "owns"),
+            EdgeRelationCli::AvailableTo => write!(f, "available_to"),
+            EdgeRelationCli::DependsOn => write!(f, "depends_on"),
+            EdgeRelationCli::RelatedTo => write!(f, "related_to"),
+        }
+    }
+}
+
+/// Record management commands
+#[derive(Debug, Subcommand)]
+pub enum RecordCommand {
+    /// List records
+    List {
+        /// Filter by record type
+        #[arg(short = 't', long, value_enum)]
+        record_type: Option<RecordTypeCli>,
+
+        /// Include soft-deleted records
+        #[arg(short = 'd', long)]
+        include_deleted: bool,
+
+        /// Maximum number of records to show
+        #[arg(short, long)]
+        limit: Option<usize>,
+    },
+
+    /// Get a record by ID
+    Get {
+        /// Record ID
+        id: String,
+    },
+
+    /// Create a new record
+    Create {
+        /// Record type
+        #[arg(value_enum)]
+        record_type: RecordTypeCli,
+
+        /// Record name
+        name: String,
+
+        /// Description
+        #[arg(short, long)]
+        description: Option<String>,
+
+        /// JSON content (type-specific fields)
+        #[arg(short, long)]
+        content: Option<String>,
+    },
+
+    /// Update a record
+    Update {
+        /// Record ID
+        id: String,
+
+        /// New name
+        #[arg(short, long)]
+        name: Option<String>,
+
+        /// New description
+        #[arg(short, long)]
+        description: Option<String>,
+
+        /// JSON content to merge
+        #[arg(short, long)]
+        content: Option<String>,
+    },
+
+    /// Delete a record (soft-delete)
+    Delete {
+        /// Record ID
+        id: String,
+    },
+
+    /// Edge management
+    Edge {
+        #[command(subcommand)]
+        action: EdgeCommand,
+    },
+
+    /// Assemble context from a record
+    ///
+    /// Starting from a record (e.g., a repo), traverses edges to collect
+    /// related records like rules, skills, team members, etc.
+    Context {
+        /// Record ID to start from
+        id: String,
+
+        /// Maximum traversal depth
+        #[arg(short, long, default_value = "3")]
+        depth: usize,
+    },
+}
+
+/// Edge management commands
+#[derive(Debug, Subcommand)]
+pub enum EdgeCommand {
+    /// Create an edge between records
+    Add {
+        /// Source record ID
+        source: String,
+
+        /// Target record ID
+        target: String,
+
+        /// Relationship type
+        #[arg(value_enum)]
+        relation: EdgeRelationCli,
+
+        /// Optional JSON metadata
+        #[arg(short, long)]
+        metadata: Option<String>,
+    },
+
+    /// List edges from/to a record
+    List {
+        /// Record ID
+        id: String,
+
+        /// Direction: "from" (outgoing), "to" (incoming), or "both"
+        #[arg(short, long, default_value = "both")]
+        direction: String,
+    },
+
+    /// Delete an edge
+    Delete {
+        /// Edge ID
+        id: String,
     },
 }

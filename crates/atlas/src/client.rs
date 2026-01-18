@@ -261,11 +261,26 @@ impl KnowledgeClient {
         project: Option<&str>,
         limit: Option<usize>,
     ) -> Result<QueryResult> {
+        self.query_with_context(query, project, limit, None).await
+    }
+
+    /// Query knowledge with optional graph context from a record
+    ///
+    /// If record_id is provided, rules and skills that apply to that record
+    /// will be included in the query context for the LLM.
+    pub async fn query_with_context(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        limit: Option<usize>,
+        record_id: Option<&str>,
+    ) -> Result<QueryResult> {
         #[derive(Serialize)]
         struct Params<'a> {
             query: &'a str,
             project: Option<&'a str>,
             limit: Option<usize>,
+            record_id: Option<&'a str>,
         }
 
         let result = self
@@ -276,6 +291,7 @@ impl KnowledgeClient {
                     query,
                     project,
                     limit,
+                    record_id,
                 },
             )
             .await
@@ -493,4 +509,243 @@ pub struct FactStats {
     pub total: usize,
     pub with_embeddings: usize,
     pub without_embeddings: usize,
+}
+
+// ============================================================================
+// Record Client - Graph/Record management
+// ============================================================================
+
+use crate::record::{ContextAssembly, Record, RecordEdge};
+
+/// Client for managing records and edges in the graph
+pub struct RecordClient {
+    client: IpcClient,
+}
+
+impl RecordClient {
+    /// Create a new client for the given socket path
+    pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        Self {
+            client: IpcClient::new(socket_path),
+        }
+    }
+
+    /// List records with optional filters
+    pub async fn list_records(
+        &self,
+        record_type: Option<&str>,
+        include_deleted: bool,
+        limit: Option<usize>,
+    ) -> Result<Vec<Record>> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            record_type: Option<&'a str>,
+            include_deleted: bool,
+            limit: Option<usize>,
+        }
+
+        let result = self
+            .client
+            .request(
+                "list_records",
+                Params {
+                    record_type,
+                    include_deleted,
+                    limit,
+                },
+            )
+            .await
+            .context("Failed to list records")?;
+
+        serde_json::from_value(result).context("Failed to parse records")
+    }
+
+    /// Get a record by ID
+    pub async fn get_record(&self, id: &str) -> Result<Option<Record>> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+        }
+
+        let result = self
+            .client
+            .request("get_record", Params { id })
+            .await
+            .context("Failed to get record")?;
+
+        serde_json::from_value(result).context("Failed to parse record")
+    }
+
+    /// Create a new record
+    pub async fn create_record(
+        &self,
+        record_type: &str,
+        name: &str,
+        description: Option<&str>,
+        content: Option<serde_json::Value>,
+    ) -> Result<Record> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            record_type: &'a str,
+            name: &'a str,
+            description: Option<&'a str>,
+            content: Option<serde_json::Value>,
+        }
+
+        let result = self
+            .client
+            .request(
+                "create_record",
+                Params {
+                    record_type,
+                    name,
+                    description,
+                    content,
+                },
+            )
+            .await
+            .context("Failed to create record")?;
+
+        serde_json::from_value(result).context("Failed to parse created record")
+    }
+
+    /// Update a record
+    pub async fn update_record(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        content: Option<serde_json::Value>,
+    ) -> Result<Option<Record>> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+            name: Option<&'a str>,
+            description: Option<&'a str>,
+            content: Option<serde_json::Value>,
+        }
+
+        let result = self
+            .client
+            .request(
+                "update_record",
+                Params {
+                    id,
+                    name,
+                    description,
+                    content,
+                },
+            )
+            .await
+            .context("Failed to update record")?;
+
+        serde_json::from_value(result).context("Failed to parse updated record")
+    }
+
+    /// Delete a record (soft-delete)
+    pub async fn delete_record(&self, id: &str) -> Result<Option<Record>> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+        }
+
+        let result = self
+            .client
+            .request("delete_record", Params { id })
+            .await
+            .context("Failed to delete record")?;
+
+        serde_json::from_value(result).context("Failed to parse deleted record")
+    }
+
+    /// Create an edge between two records
+    pub async fn create_edge(
+        &self,
+        source: &str,
+        target: &str,
+        relation: &str,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<RecordEdge> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            source: &'a str,
+            target: &'a str,
+            relation: &'a str,
+            metadata: Option<serde_json::Value>,
+        }
+
+        let result = self
+            .client
+            .request(
+                "create_edge",
+                Params {
+                    source,
+                    target,
+                    relation,
+                    metadata,
+                },
+            )
+            .await
+            .context("Failed to create edge")?;
+
+        serde_json::from_value(result).context("Failed to parse created edge")
+    }
+
+    /// List edges from/to a record
+    pub async fn list_edges(
+        &self,
+        id: &str,
+        direction: &str,
+    ) -> Result<Vec<RecordEdge>> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+            direction: &'a str,
+        }
+
+        let result = self
+            .client
+            .request("list_edges", Params { id, direction })
+            .await
+            .context("Failed to list edges")?;
+
+        serde_json::from_value(result).context("Failed to parse edges")
+    }
+
+    /// Delete an edge
+    pub async fn delete_edge(&self, id: &str) -> Result<Option<RecordEdge>> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+        }
+
+        let result = self
+            .client
+            .request("delete_edge", Params { id })
+            .await
+            .context("Failed to delete edge")?;
+
+        serde_json::from_value(result).context("Failed to parse deleted edge")
+    }
+
+    /// Assemble context from a record
+    pub async fn assemble_context(
+        &self,
+        id: &str,
+        depth: usize,
+    ) -> Result<ContextAssembly> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+            depth: usize,
+        }
+
+        let result = self
+            .client
+            .request("assemble_context", Params { id, depth })
+            .await
+            .context("Failed to assemble context")?;
+
+        serde_json::from_value(result).context("Failed to parse context assembly")
+    }
 }

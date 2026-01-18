@@ -19,7 +19,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use atlas::{Event, EventSource, Extractor, MemoSource, QueryDecomposer, Store as AtlasStore};
+use atlas::{Event, EventSource, Extractor, MemoSource, QueryDecomposer, Record, RecordType, Store as AtlasStore};
 use cortex::{WorkerConfig, WorkerId, WorkerManager, WorkerState, WorkerStatus};
 use db::Database;
 use forge::{DbWorker, Store as ForgeStore, Task, TaskStatus};
@@ -404,6 +404,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         // Task operations (forge) - these also emit events to atlas
         "create_task" => handle_create_task(request, stores).await,
         "list_tasks" => handle_list_tasks(request, &stores.forge).await,
+        "list_tasks_records" => handle_list_tasks_records(request, &stores.atlas).await,
         "ready_tasks" => handle_ready_tasks(request, &stores.forge).await,
         "get_task" => handle_get_task(request, &stores.forge).await,
         "update_task" => handle_update_task(request, stores).await,
@@ -444,6 +445,17 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "get_entity_facts" => handle_get_entity_facts(request, &stores.atlas).await,
         "get_related_facts" => handle_get_related_facts(request, &stores.atlas).await,
 
+        // Record/Graph operations (atlas)
+        "list_records" => handle_list_records(request, &stores.atlas).await,
+        "get_record" => handle_get_record(request, &stores.atlas).await,
+        "create_record" => handle_create_record(request, &stores.atlas).await,
+        "update_record" => handle_update_record(request, &stores.atlas).await,
+        "delete_record" => handle_delete_record(request, &stores.atlas).await,
+        "create_edge" => handle_create_edge(request, &stores.atlas).await,
+        "list_edges" => handle_list_edges(request, &stores.atlas).await,
+        "delete_edge" => handle_delete_edge(request, &stores.atlas).await,
+        "assemble_context" => handle_assemble_context(request, &stores.atlas).await,
+
         // Cortex operations (worker management)
         "cortex_create_worker" => handle_cortex_create_worker(request, stores).await,
         "cortex_send_message" => handle_cortex_send_message(request, stores).await,
@@ -467,6 +479,70 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
 
 // ========== Task Handlers ==========
 
+/// Convert a Forge Task to a Record for dual-write
+fn task_to_record(task: &Task) -> Record {
+    let forge_id = task.id_str().unwrap_or_default();
+    let content = json!({
+        "forge_id": forge_id,
+        "status": task.status.to_string(),
+        "priority": task.priority,
+        "project": task.project,
+        "completed_at": task.completed_at,
+    });
+
+    Record::new(RecordType::Task, &task.title)
+        .with_description(task.description.clone().unwrap_or_default())
+        .with_content(content)
+}
+
+/// Dual-write: create or update a Record shadow of a Forge Task
+async fn sync_task_to_record(task: &Task, stores: &Stores) {
+    let forge_id = task.id_str().unwrap_or_default();
+
+    // Check if a record already exists for this forge task
+    // We search by forge_id in content
+    let existing = stores.atlas.get_record_by_forge_id(&forge_id).await;
+
+    match existing {
+        Ok(Some(record)) => {
+            // Update existing record
+            let record_id = record.id_str().unwrap_or_default();
+            let content = json!({
+                "forge_id": forge_id,
+                "status": task.status.to_string(),
+                "priority": task.priority,
+                "project": task.project,
+                "completed_at": task.completed_at,
+            });
+            if let Err(e) = stores.atlas.update_record(
+                &record_id,
+                Some(&task.title),
+                task.description.as_deref(),
+                Some(content),
+            ).await {
+                tracing::warn!("Failed to sync task to record (update): {}", e);
+            } else {
+                tracing::debug!("Synced task {} to record {}", forge_id, record_id);
+            }
+        }
+        Ok(None) => {
+            // Create new record
+            let record = task_to_record(task);
+            match stores.atlas.create_record(record).await {
+                Ok(created) => {
+                    tracing::debug!("Created record {} for task {}", created.id_str().unwrap_or_default(), forge_id);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to sync task to record (create): {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to check for existing record: {}", e);
+        }
+    }
+}
+
 async fn handle_create_task(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let task: Task = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid task: {}", e)))?;
@@ -487,6 +563,9 @@ async fn handle_create_task(request: &Request, stores: &Stores) -> Result<serde_
     if let Err(e) = stores.atlas.record_event(event).await {
         tracing::warn!("Failed to record task.created event: {}", e);
     }
+
+    // Dual-write: sync task to Records
+    sync_task_to_record(&created, stores).await;
 
     // Extract knowledge from task content if extractor is available
     if let Some(ref extractor) = stores.extractor {
@@ -533,6 +612,48 @@ async fn handle_list_tasks(request: &Request, store: &ForgeStore) -> Result<serd
         .await
         .map(|tasks| serde_json::to_value(tasks).unwrap())
         .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+/// Experimental: List tasks from the Records backend
+/// This queries tasks stored as Records (dual-write shadow copies)
+/// Used to compare query quality between Forge and Records
+async fn handle_list_tasks_records(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: ListTasksParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(ListTasksParams { project: None, status: None });
+
+    // Get all task records
+    let records = store
+        .list_records(Some("task"), false, None)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Filter by status and project if specified
+    let filtered: Vec<_> = records
+        .into_iter()
+        .filter(|r| {
+            // Filter by status
+            if let Some(ref status_filter) = params.status {
+                if let Some(status) = r.content.get("status").and_then(|v| v.as_str()) {
+                    if status != status_filter {
+                        return false;
+                    }
+                }
+            }
+            // Filter by project
+            if let Some(ref project_filter) = params.project {
+                if let Some(project) = r.content.get("project").and_then(|v| v.as_str()) {
+                    if project != project_filter {
+                        return false;
+                    }
+                } else {
+                    return false; // No project set but filter requires one
+                }
+            }
+            true
+        })
+        .collect();
+
+    Ok(serde_json::to_value(filtered).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -632,6 +753,9 @@ async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_
         if let Err(e) = stores.atlas.record_event(event).await {
             tracing::warn!("Failed to record task.updated event: {}", e);
         }
+
+        // Dual-write: sync task to Records
+        sync_task_to_record(task, stores).await;
     }
 
     Ok(serde_json::to_value(updated).unwrap())
@@ -676,6 +800,9 @@ async fn handle_close_task(request: &Request, stores: &Stores) -> Result<serde_j
         if let Err(e) = stores.atlas.record_event(event).await {
             tracing::warn!("Failed to record task.closed event: {}", e);
         }
+
+        // Dual-write: sync task to Records (updates status to completed/cancelled)
+        sync_task_to_record(task, stores).await;
     }
 
     Ok(serde_json::to_value(closed).unwrap())
@@ -712,6 +839,18 @@ async fn handle_delete_task(request: &Request, stores: &Stores) -> Result<serde_
         );
         if let Err(e) = stores.atlas.record_event(event).await {
             tracing::warn!("Failed to record task.deleted event: {}", e);
+        }
+
+        // Dual-write: soft-delete the corresponding Record
+        let forge_id = task.id_str().unwrap_or_default();
+        if let Ok(Some(record)) = stores.atlas.get_record_by_forge_id(&forge_id).await {
+            if let Some(record_id) = record.id_str() {
+                if let Err(e) = stores.atlas.delete_record(&record_id).await {
+                    tracing::warn!("Failed to soft-delete record for task {}: {}", forge_id, e);
+                } else {
+                    tracing::debug!("Soft-deleted record {} for task {}", record_id, forge_id);
+                }
+            }
         }
     }
 
@@ -1231,6 +1370,11 @@ struct KnowledgeParams {
     project: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
+    /// Optional record ID to assemble context from (e.g., a repo record)
+    /// If provided, rules and skills that apply_to this record will be
+    /// included in the query context.
+    #[serde(default)]
+    record_id: Option<String>,
 }
 
 /// Query knowledge and return an LLM-summarized answer
@@ -1432,24 +1576,91 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
     };
 
     // Build context from facts
-    let context = results
+    let facts_context = results
         .iter()
         .enumerate()
         .map(|(i, r)| format!("{}. {} (confidence: {:.0}%)", i + 1, r.content, r.confidence * 100.0))
         .collect::<Vec<_>>()
         .join("\n");
 
+    // Assemble graph context if record_id is provided
+    let graph_context = if let Some(ref record_id) = params.record_id {
+        match stores.atlas.assemble_context(record_id, 3).await {
+            Ok(assembly) => {
+                let rules = assembly.rules();
+                let skills = assembly.skills();
+
+                let mut sections = Vec::new();
+
+                if !rules.is_empty() {
+                    let rules_text = rules
+                        .iter()
+                        .map(|r| {
+                            let content = r.content.get("content")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&r.name);
+                            format!("- {}: {}", r.name, content)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    sections.push(format!("Rules:\n{}", rules_text));
+                }
+
+                if !skills.is_empty() {
+                    let skills_text = skills
+                        .iter()
+                        .map(|s| {
+                            let desc = s.description.as_deref().unwrap_or("");
+                            format!("- {}: {}", s.name, desc)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    sections.push(format!("Available Skills:\n{}", skills_text));
+                }
+
+                if sections.is_empty() {
+                    None
+                } else {
+                    Some(sections.join("\n\n"))
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to assemble context from record {}: {}", record_id, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Use LLM to summarize
-    let system = "You are a helpful assistant that answers questions based on facts from a knowledge base. \
+    let system = if graph_context.is_some() {
+        "You are a helpful assistant that answers questions based on facts from a knowledge base. \
+        You also have access to rules and guidelines that apply to the current context - follow them when relevant. \
         Provide comprehensive answers that include all relevant details from the facts. \
         Cover all aspects of the question using the available information. \
-        If the facts don't fully answer the question, say what you know and note what's missing.";
+        If the facts don't fully answer the question, say what you know and note what's missing."
+    } else {
+        "You are a helpful assistant that answers questions based on facts from a knowledge base. \
+        Provide comprehensive answers that include all relevant details from the facts. \
+        Cover all aspects of the question using the available information. \
+        If the facts don't fully answer the question, say what you know and note what's missing."
+    };
 
-    let user = format!(
-        "Question: {}\n\nKnown facts:\n{}\n\nAnswer the question based on these facts.",
-        params.query,
-        context
-    );
+    let user = if let Some(ref graph_ctx) = graph_context {
+        format!(
+            "Context (rules and skills that apply):\n{}\n\nQuestion: {}\n\nKnown facts:\n{}\n\nAnswer the question based on these facts, following any relevant rules.",
+            graph_ctx,
+            params.query,
+            facts_context
+        )
+    } else {
+        format!(
+            "Question: {}\n\nKnown facts:\n{}\n\nAnswer the question based on these facts.",
+            params.query,
+            facts_context
+        )
+    };
 
     let answer = extractor
         .client()
@@ -1457,11 +1668,19 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
         .await
         .map_err(|e| IpcError::internal(format!("LLM completion failed: {}", e)))?;
 
-    Ok(json!({
+    let mut response = json!({
         "query": params.query,
         "answer": answer,
         "facts_used": facts_used,
-    }))
+    });
+
+    // Include graph context info if it was used
+    if graph_context.is_some() {
+        response["graph_context_used"] = json!(true);
+        response["record_id"] = json!(params.record_id);
+    }
+
+    Ok(response)
 }
 
 /// Search for raw facts matching a query
@@ -1690,6 +1909,231 @@ async fn handle_get_related_facts(request: &Request, store: &AtlasStore) -> Resu
         "related_facts": facts,
         "count": facts.len(),
     }))
+}
+
+// ========== Record/Graph Handlers ==========
+
+use atlas::EdgeRelation;
+
+#[derive(Deserialize)]
+struct ListRecordsParams {
+    #[serde(default)]
+    record_type: Option<String>,
+    #[serde(default)]
+    include_deleted: bool,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn handle_list_records(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: ListRecordsParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(ListRecordsParams {
+            record_type: None,
+            include_deleted: false,
+            limit: None,
+        });
+
+    let records = store
+        .list_records(params.record_type.as_deref(), params.include_deleted, params.limit)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(records).unwrap())
+}
+
+#[derive(Deserialize)]
+struct GetRecordParams {
+    id: String,
+}
+
+async fn handle_get_record(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: GetRecordParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let record = store
+        .get_record(&params.id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(record).unwrap())
+}
+
+#[derive(Deserialize)]
+struct CreateRecordParams {
+    record_type: String,
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    content: Option<serde_json::Value>,
+}
+
+async fn handle_create_record(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: CreateRecordParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    // Parse record type
+    let record_type: RecordType = params.record_type.parse()
+        .map_err(|e: String| IpcError::invalid_params(e))?;
+
+    let mut record = Record::new(record_type, &params.name);
+    if let Some(desc) = params.description {
+        record = record.with_description(desc);
+    }
+    if let Some(content) = params.content {
+        record = record.with_content(content);
+    }
+
+    let created = store
+        .create_record(record)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(created).unwrap())
+}
+
+#[derive(Deserialize)]
+struct UpdateRecordParams {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    content: Option<serde_json::Value>,
+}
+
+async fn handle_update_record(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: UpdateRecordParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let record = store
+        .update_record(
+            &params.id,
+            params.name.as_deref(),
+            params.description.as_deref(),
+            params.content,
+        )
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(record).unwrap())
+}
+
+#[derive(Deserialize)]
+struct DeleteRecordParams {
+    id: String,
+}
+
+async fn handle_delete_record(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: DeleteRecordParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let record = store
+        .delete_record(&params.id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(record).unwrap())
+}
+
+#[derive(Deserialize)]
+struct CreateEdgeParams {
+    source: String,
+    target: String,
+    relation: String,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+async fn handle_create_edge(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: CreateEdgeParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    // Parse relation type
+    let relation: EdgeRelation = params.relation.parse()
+        .map_err(|e: String| IpcError::invalid_params(e))?;
+
+    let edge = store
+        .create_edge(&params.source, &params.target, relation, params.metadata)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(edge).unwrap())
+}
+
+#[derive(Deserialize)]
+struct ListEdgesParams {
+    id: String,
+    #[serde(default = "default_edge_direction")]
+    direction: String,
+}
+
+fn default_edge_direction() -> String {
+    "both".to_string()
+}
+
+async fn handle_list_edges(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: ListEdgesParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let edges = match params.direction.as_str() {
+        "from" => store.get_edges_from(&params.id, None).await
+            .map_err(|e| IpcError::internal(e.to_string()))?,
+        "to" => store.get_edges_to(&params.id, None).await
+            .map_err(|e| IpcError::internal(e.to_string()))?,
+        "both" | _ => {
+            let from = store.get_edges_from(&params.id, None).await
+                .map_err(|e| IpcError::internal(e.to_string()))?;
+            let to = store.get_edges_to(&params.id, None).await
+                .map_err(|e| IpcError::internal(e.to_string()))?;
+            let mut all = from;
+            all.extend(to);
+            all
+        }
+    };
+
+    Ok(serde_json::to_value(edges).unwrap())
+}
+
+#[derive(Deserialize)]
+struct DeleteEdgeParams {
+    id: String,
+}
+
+async fn handle_delete_edge(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: DeleteEdgeParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let edge = store
+        .delete_edge(&params.id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(edge).unwrap())
+}
+
+#[derive(Deserialize)]
+struct AssembleContextParams {
+    id: String,
+    #[serde(default = "default_context_depth")]
+    depth: usize,
+}
+
+fn default_context_depth() -> usize {
+    3
+}
+
+async fn handle_assemble_context(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: AssembleContextParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let context = store
+        .assemble_context(&params.id, params.depth)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(context).unwrap())
 }
 
 // ========== Extraction Handlers ==========

@@ -10,6 +10,7 @@ use surrealdb::sql::Thing;
 use crate::event::Event;
 use crate::fact::{Entity, Fact};
 use crate::memo::{Memo, MemoSource};
+use crate::record::{ContextAssembly, EdgeRelation, Record, RecordEdge};
 
 /// Database store for Atlas
 #[derive(Clone)]
@@ -1000,5 +1001,483 @@ pub struct FactSearchResult {
 
 fn default_confidence() -> f32 {
     1.0
+}
+
+// ========== Record Operations (in Store impl) ==========
+
+impl Store {
+    // ========== Record CRUD Operations ==========
+
+    /// Create a new record
+    pub async fn create_record(&self, record: Record) -> Result<Record> {
+        let created: Option<Record> = self
+            .db
+            .client()
+            .create("record")
+            .content(record)
+            .await
+            .context("Failed to create record")?;
+
+        created.context("Record creation returned no result")
+    }
+
+    /// Get a record by ID
+    pub async fn get_record(&self, id: &str) -> Result<Option<Record>> {
+        let record: Option<Record> = self
+            .db
+            .client()
+            .select(("record", id))
+            .await
+            .context("Failed to get record")?;
+
+        Ok(record)
+    }
+
+    /// Update a record's fields
+    pub async fn update_record(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        content: Option<serde_json::Value>,
+    ) -> Result<Option<Record>> {
+        let mut updates = vec!["updated_at = time::now()".to_string()];
+
+        if let Some(n) = name {
+            updates.push(format!("name = '{}'", n.replace('\'', "\\'")));
+        }
+        if let Some(d) = description {
+            updates.push(format!("description = '{}'", d.replace('\'', "\\'")));
+        }
+        if content.is_some() {
+            updates.push("content = $content".to_string());
+        }
+
+        let sql = format!(
+            "UPDATE record:{} SET {}",
+            id,
+            updates.join(", ")
+        );
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("content", content))
+            .await
+            .context("Failed to update record")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
+    /// Soft-delete a record (sets deleted_at timestamp)
+    pub async fn delete_record(&self, id: &str) -> Result<Option<Record>> {
+        let sql = "UPDATE type::thing('record', $id) SET deleted_at = time::now(), updated_at = time::now()";
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("id", id.to_string()))
+            .await
+            .context("Failed to soft-delete record")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
+    /// Get a record by type and name (unique index)
+    pub async fn get_record_by_type_name(
+        &self,
+        record_type: &str,
+        name: &str,
+    ) -> Result<Option<Record>> {
+        let sql = "SELECT * FROM record WHERE record_type = $type AND name = $name LIMIT 1";
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("type", record_type.to_string()))
+            .bind(("name", name.to_string()))
+            .await
+            .context("Failed to get record by type+name")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
+    /// Get a record by its forge_id (stored in content.forge_id)
+    /// Used for dual-write sync between Forge tasks and Records
+    pub async fn get_record_by_forge_id(&self, forge_id: &str) -> Result<Option<Record>> {
+        let sql = "SELECT * FROM record WHERE content.forge_id = $forge_id AND deleted_at IS NONE LIMIT 1";
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("forge_id", forge_id.to_string()))
+            .await
+            .context("Failed to get record by forge_id")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
+    /// List records with optional filters
+    pub async fn list_records(
+        &self,
+        record_type: Option<&str>,
+        include_deleted: bool,
+        limit: Option<usize>,
+    ) -> Result<Vec<Record>> {
+        let mut query = String::from("SELECT * FROM record");
+        let mut conditions = Vec::new();
+
+        if !include_deleted {
+            conditions.push("deleted_at IS NONE");
+        }
+        if record_type.is_some() {
+            conditions.push("record_type = $record_type");
+        }
+
+        if !conditions.is_empty() {
+            query.push_str(" WHERE ");
+            query.push_str(&conditions.join(" AND "));
+        }
+
+        query.push_str(" ORDER BY name ASC");
+
+        if let Some(n) = limit {
+            query.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("record_type", record_type.map(|s| s.to_string())))
+            .await
+            .context("Failed to query records")?;
+
+        let records: Vec<Record> = response.take(0).context("Failed to parse records")?;
+        Ok(records)
+    }
+
+    /// Search records by name (case-insensitive partial match)
+    pub async fn search_records(
+        &self,
+        query: &str,
+        record_type: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Record>> {
+        let mut sql = String::from(
+            "SELECT * FROM record WHERE deleted_at IS NONE AND \
+             (string::lowercase(name) CONTAINS string::lowercase($query) OR \
+              string::lowercase(description ?? '') CONTAINS string::lowercase($query))"
+        );
+
+        if record_type.is_some() {
+            sql.push_str(" AND record_type = $record_type");
+        }
+
+        sql.push_str(" ORDER BY name ASC");
+
+        if let Some(n) = limit {
+            sql.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("query", query.to_string()))
+            .bind(("record_type", record_type.map(|s| s.to_string())))
+            .await
+            .context("Failed to search records")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records)
+    }
+
+    /// Find record by type and name (exact match)
+    pub async fn find_record_by_name(
+        &self,
+        record_type: &str,
+        name: &str,
+    ) -> Result<Option<Record>> {
+        let sql = "SELECT * FROM record WHERE record_type = $record_type AND name = $name AND deleted_at IS NONE LIMIT 1";
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("record_type", record_type.to_string()))
+            .bind(("name", name.to_string()))
+            .await
+            .context("Failed to find record")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
+    // ========== Edge Operations ==========
+
+    /// Create an edge between two records
+    pub async fn create_edge(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        relation: EdgeRelation,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<RecordEdge> {
+        let source = Thing::from(("record", source_id));
+        let target = Thing::from(("record", target_id));
+
+        let edge = RecordEdge::new(source, target, relation);
+        let edge = if let Some(m) = metadata {
+            edge.with_metadata(m)
+        } else {
+            edge
+        };
+
+        let created: Option<RecordEdge> = self
+            .db
+            .client()
+            .create("record_edge")
+            .content(edge)
+            .await
+            .context("Failed to create edge")?;
+
+        created.context("Edge creation returned no result")
+    }
+
+    /// Delete an edge by ID
+    pub async fn delete_edge(&self, id: &str) -> Result<Option<RecordEdge>> {
+        let deleted: Option<RecordEdge> = self
+            .db
+            .client()
+            .delete(("record_edge", id))
+            .await
+            .context("Failed to delete edge")?;
+
+        Ok(deleted)
+    }
+
+    /// Get all edges from a source record
+    pub async fn get_edges_from(
+        &self,
+        source_id: &str,
+        relation: Option<EdgeRelation>,
+    ) -> Result<Vec<RecordEdge>> {
+        let mut sql = String::from(
+            "SELECT * FROM record_edge WHERE source = type::thing('record', $source_id)"
+        );
+
+        if relation.is_some() {
+            sql.push_str(" AND relation = $relation");
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("source_id", source_id.to_string()))
+            .bind(("relation", relation.map(|r| r.to_string())))
+            .await
+            .context("Failed to get edges from record")?;
+
+        let edges: Vec<RecordEdge> = response.take(0).unwrap_or_default();
+        Ok(edges)
+    }
+
+    /// Get all edges to a target record
+    pub async fn get_edges_to(
+        &self,
+        target_id: &str,
+        relation: Option<EdgeRelation>,
+    ) -> Result<Vec<RecordEdge>> {
+        let mut sql = String::from(
+            "SELECT * FROM record_edge WHERE target = type::thing('record', $target_id)"
+        );
+
+        if relation.is_some() {
+            sql.push_str(" AND relation = $relation");
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("target_id", target_id.to_string()))
+            .bind(("relation", relation.map(|r| r.to_string())))
+            .await
+            .context("Failed to get edges to record")?;
+
+        let edges: Vec<RecordEdge> = response.take(0).unwrap_or_default();
+        Ok(edges)
+    }
+
+    // ========== Graph Traversal for Context Assembly ==========
+
+    /// Traverse the record graph from a starting point to collect context
+    ///
+    /// Starting from a record (e.g., a Repo), follows edges to collect:
+    /// - Rules that apply_to this record or its ancestors
+    /// - Skills available_to this record or its ancestors
+    /// - People who are member_of related teams
+    /// - Teams this record belongs_to
+    ///
+    /// Returns a ContextAssembly with all collected records.
+    pub async fn assemble_context(
+        &self,
+        start_record_id: &str,
+        max_depth: usize,
+    ) -> Result<ContextAssembly> {
+        let mut assembly = ContextAssembly::default();
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut to_visit = vec![(start_record_id.to_string(), 0usize)];
+
+        while let Some((record_id, depth)) = to_visit.pop() {
+            if visited.contains(&record_id) || depth > max_depth {
+                continue;
+            }
+            visited.insert(record_id.clone());
+
+            // Get the record
+            if let Some(record) = self.get_record(&record_id).await? {
+                if record.is_deleted() {
+                    continue;
+                }
+
+                assembly.traversal_path.push(format!(
+                    "{}:{} (depth {})",
+                    record.record_type, record.name, depth
+                ));
+                assembly.records.push(record);
+            }
+
+            // Get outgoing edges (this record -> targets)
+            let edges_out = self.get_edges_from(&record_id, None).await?;
+            for edge in edges_out {
+                let target_id = edge.target.id.to_raw();
+                if !visited.contains(&target_id) {
+                    // Follow belongs_to edges upward
+                    if edge.relation == "belongs_to" {
+                        to_visit.push((target_id, depth + 1));
+                    }
+                }
+            }
+
+            // Get incoming edges (sources -> this record)
+            let edges_in = self.get_edges_to(&record_id, None).await?;
+            for edge in edges_in {
+                let source_id = edge.source.id.to_raw();
+                if !visited.contains(&source_id) {
+                    // Collect rules/skills that apply_to or are available_to this record,
+                    // and people who are member_of (if this is a team)
+                    if edge.relation == "applies_to"
+                        || edge.relation == "available_to"
+                        || edge.relation == "member_of"
+                    {
+                        to_visit.push((source_id, depth + 1));
+                    }
+                }
+            }
+        }
+
+        Ok(assembly)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::record::{EdgeRelation, Record, RecordType};
+    use db::DatabaseConfig;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    /// Integration test for record CRUD and graph traversal
+    /// Run with: cargo test -p atlas record_integration -- --nocapture --ignored
+    #[tokio::test]
+    #[ignore] // Requires running database
+    async fn record_integration() -> Result<()> {
+        // Connect to local dev database
+        let config = DatabaseConfig::embedded(PathBuf::from("./.memex/db"));
+        let db = db::Database::connect(&config, "atlas", None).await?;
+        let store = Store::new(db);
+
+        // Clean up any existing test records (by looking them up first)
+        async fn cleanup(store: &Store, record_type: &str, name: &str) {
+            if let Ok(Some(r)) = store.get_record_by_type_name(record_type, name).await {
+                if let Some(id) = r.id_str() {
+                    let _ = store.delete_record(&id).await;
+                }
+            }
+        }
+        cleanup(&store, "rule", "test-rust-style").await;
+        cleanup(&store, "repo", "test-memex").await;
+        cleanup(&store, "team", "test-core-team").await;
+
+        // 1. Create a rule record
+        let rule = Record::new(RecordType::Rule, "test-rust-style")
+            .with_description("Rust coding standards")
+            .with_content(json!({
+                "content": "Use snake_case for functions",
+                "severity": "warning",
+                "auto_apply": true
+            }));
+        let rule = store.create_record(rule).await?;
+        let rule_id = rule.id_str().expect("rule should have id");
+        println!("Created rule: {}", rule_id);
+
+        // 2. Create a repo record
+        let repo = Record::new(RecordType::Repo, "test-memex")
+            .with_description("Knowledge management system")
+            .with_content(json!({
+                "path": "/Users/luke/workspace/lexun/memex",
+                "default_branch": "main",
+                "languages": ["rust"]
+            }));
+        let repo = store.create_record(repo).await?;
+        let repo_id = repo.id_str().expect("repo should have id");
+        println!("Created repo: {}", repo_id);
+
+        // 3. Create a team record
+        let team = Record::new(RecordType::Team, "test-core-team")
+            .with_description("Core development team");
+        let team = store.create_record(team).await?;
+        let team_id = team.id_str().expect("team should have id");
+        println!("Created team: {}", team_id);
+
+        // 4. Create edges: rule applies_to repo, repo belongs_to team
+        store.create_edge(&rule_id, &repo_id, EdgeRelation::AppliesTo, None).await?;
+        println!("Created edge: rule --applies_to--> repo");
+
+        store.create_edge(&repo_id, &team_id, EdgeRelation::BelongsTo, None).await?;
+        println!("Created edge: repo --belongs_to--> team");
+
+        // 5. Test context assembly from repo
+        let context = store.assemble_context(&repo_id, 3).await?;
+        println!("\nContext assembly from repo (depth 3):");
+        println!("  Records found: {}", context.records.len());
+        println!("  Rules: {}", context.rules().len());
+        for record in &context.records {
+            println!("    - {} ({}): {}", record.name, record.record_type, record.description.as_deref().unwrap_or(""));
+        }
+
+        // Verify we found the rule via applies_to traversal
+        assert!(!context.rules().is_empty(), "Should find rules that apply_to the repo");
+
+        // 6. Clean up
+        store.delete_record(&rule_id).await?;
+        store.delete_record(&repo_id).await?;
+        store.delete_record(&team_id).await?;
+        println!("\nCleaned up test records");
+
+        Ok(())
+    }
 }
 

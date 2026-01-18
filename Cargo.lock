@@ -425,6 +425,7 @@ dependencies = [
  "serde_json",
  "surrealdb",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 

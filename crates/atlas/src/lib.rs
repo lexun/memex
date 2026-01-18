@@ -11,17 +11,19 @@ pub mod fact;
 pub mod handler;
 pub mod memo;
 pub mod query;
+pub mod record;
 pub mod store;
 
-pub use cli::{EventCommand, KnowledgeCommand, MemoCommand};
+pub use cli::{EdgeCommand, EdgeRelationCli, EventCommand, KnowledgeCommand, MemoCommand, RecordCommand, RecordTypeCli};
 pub use client::{
     BackfillResult, EntityFactsResult, EventClient, FactStats, KnowledgeClient, KnowledgeStatus,
-    MemoClient, QueryResult, RebuildResult, RelatedFactsResult, SearchResult,
+    MemoClient, QueryResult, RebuildResult, RecordClient, RelatedFactsResult, SearchResult,
 };
 pub use event::{Event, EventAuthority, EventSource};
 pub use extraction::{ExtractedFact, ExtractionResult, Extractor};
 pub use fact::{Entity, EntityType, EpisodeRef, Fact, FactType};
 pub use query::{DecomposedQuery, HypotheticalGenerator, QueryDecomposer, QueryIntent, TemporalFilter, TemporalParser};
-pub use handler::{handle_event_command, handle_knowledge_command, handle_memo_command};
+pub use handler::{handle_event_command, handle_knowledge_command, handle_memo_command, handle_record_command};
 pub use memo::{Memo, MemoAuthority, MemoSource};
+pub use record::{ContextAssembly, EdgeRelation, Record, RecordEdge, RecordType};
 pub use store::Store;

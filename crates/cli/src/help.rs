@@ -76,6 +76,11 @@ pub fn command_registry() -> Vec<CommandInfo> {
 
         // Explore - data exploration and power-user tools
         CommandInfo {
+            name: "graph",
+            description: "Manage records and edges",
+            category: Category::Explore,
+        },
+        CommandInfo {
             name: "search",
             description: "Search facts",
             category: Category::Explore,
