@@ -1386,6 +1386,9 @@ impl McpServer for MemexMcpServer {
     ///
     /// Merges the specified branch into the target branch (default: main).
     /// Optionally squashes commits and removes the worktree after merge.
+    ///
+    /// IMPORTANT: Always provide a clear, descriptive commit message.
+    /// Use single-line messages under 50 characters (e.g., "Add user authentication").
     #[tool]
     async fn vibetree_merge(
         &self,
@@ -1393,14 +1396,15 @@ impl McpServer for MemexMcpServer {
         cwd: String,
         /// Name of the branch to merge
         branch_name: String,
+        /// Commit message for the merge. Required. Use a single line under 50 chars
+        /// describing what the branch adds (e.g., "Add macOS launchd daemon autostart").
+        message: String,
         /// Target branch to merge into (default: "main")
         into: Option<String>,
         /// Squash commits into a single commit
         squash: Option<bool>,
         /// Remove the worktree after successful merge
         remove: Option<bool>,
-        /// Custom commit message for the merge
-        message: Option<String>,
     ) -> mcp_attr::Result<String> {
         let params = serde_json::json!({
             "cwd": cwd,
