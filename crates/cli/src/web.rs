@@ -262,7 +262,7 @@ async fn workers_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
 // -----------------------------------------------------------------------------
 
 async fn people_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let records = state.atlas.list_records(Some("Person"), false, None).await.unwrap_or_default();
+    let records = state.atlas.list_records(Some("person"), false, None).await.unwrap_or_default();
     let people: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
 
     let template = PeopleTemplate {
@@ -274,7 +274,7 @@ async fn people_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
 }
 
 async fn teams_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let records = state.atlas.list_records(Some("Team"), false, None).await.unwrap_or_default();
+    let records = state.atlas.list_records(Some("team"), false, None).await.unwrap_or_default();
     let teams: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
 
     let template = TeamsTemplate {
@@ -286,7 +286,7 @@ async fn teams_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
 }
 
 async fn projects_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let records = state.atlas.list_records(Some("Project"), false, None).await.unwrap_or_default();
+    let records = state.atlas.list_records(Some("initiative"), false, None).await.unwrap_or_default();
     let projects: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
 
     let template = ProjectsTemplate {
@@ -298,7 +298,7 @@ async fn projects_page(State(state): State<Arc<WebState>>) -> impl IntoResponse 
 }
 
 async fn repos_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let records = state.atlas.list_records(Some("Repository"), false, None).await.unwrap_or_default();
+    let records = state.atlas.list_records(Some("repo"), false, None).await.unwrap_or_default();
     let repos: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
 
     let template = ReposTemplate {
@@ -310,7 +310,7 @@ async fn repos_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
 }
 
 async fn rules_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let records = state.atlas.list_records(Some("Rule"), false, None).await.unwrap_or_default();
+    let records = state.atlas.list_records(Some("rule"), false, None).await.unwrap_or_default();
     let rules: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
 
     let template = RulesTemplate {
