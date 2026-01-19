@@ -264,26 +264,41 @@ fn build_extraction_prompt(context: &ExtractionContext) -> String {
 
 Extract knowledge from the episode below and output structured JSON.
 
-**RECORDS**: Create or reference records for significant entities mentioned.
+**RECORDS**: Create records for ALL significant entities mentioned.
+- Record types: repo, person, team, company, rule, skill, document, initiative
 - If an entity clearly matches an existing record above, use action="reference" with existing_id
 - If updating info about an existing record, use action="update" with existing_id
 - Only use action="create" for genuinely new entities not in the list above
-- Record types: repo, project, person, team, company, rule, skill, document, initiative
+
+**IMPORTANT - Always create records for:**
+- REPOS: Any code repository mentioned (e.g., "acme-api", "frontend-app"). Create even if only mentioned in passing.
+- PEOPLE: Any person mentioned by name
+- TEAMS: Any team or group mentioned
+- COMPANIES: Any organization mentioned
 
 **RULES**: When you identify a preference, guideline, or convention, create a Rule record.
-- Rules should be actionable guidelines that can inform agent behavior
+- PRESERVE EXACT WORDING: Use the original phrasing from the source as the rule name
+- If source says "Two approvals required", name it "Two approvals for PRs" not "Pull request approval requirement"
+- If source says "Conventional commit format", name it "Conventional commits required" not "Commit message formatting"
+- Keep the original terminology - don't paraphrase or use synonyms
 - Include the full rule text in the description field
-- Example: "Single-line commits" with description "Git commit messages should be single line, under 50 characters"
 
-**LINKS**: Connect records with relationships.
-- Relations: applies_to, belongs_to, member_of, owns, available_to, depends_on, related_to
-- Source and target can be record names (for new records) or existing_id values
-- Example: A rule "applies_to" a repo
+**LINKS**: Connect records with relationships. CREATE ALL APPLICABLE LINKS:
+- member_of: Person is a member of a Team (includes leaders - "led by Alice" means Alice member_of Team)
+- belongs_to: Team belongs to a Company; Repo belongs to an Organization
+- owns: Team owns a Repo
+- applies_to: Rule applies to a Repo or Team. "applies to all repos" means create applies_to link for EACH repo.
+- related_to: General relationship
+- depends_on: Technical dependency
+
+CRITICAL:
+- When text says "led by Alice", create: Alice member_of Team
+- When text says "Team owns repo-name", create: Team owns repo-name
+- When text says "applies to all repos", create applies_to link to EACH repo mentioned
+- Don't skip links just because they seem obvious - create them explicitly
 
 **QUESTIONS**: When you cannot confidently resolve a reference, create a question.
 - Low confidence (<0.5) items should become questions instead of records
-- Include the ambiguous source text and possible options if known
-- Example: "This mentions 'the API' - which repo does this refer to?"
 
 **Confidence levels:**
 - High (0.8-1.0): Explicit statements, clear matches to existing records
@@ -297,7 +312,7 @@ Output JSON only (no markdown code blocks, no explanation):
       "action": "create" | "update" | "reference",
       "existing_id": "only if action is update or reference",
       "record_type": "rule|repo|person|team|company|initiative|skill|document",
-      "name": "Canonical name",
+      "name": "Canonical name (preserve original wording for rules)",
       "description": "What this represents or the full rule text",
       "content": {{}},
       "confidence": 0.0-1.0

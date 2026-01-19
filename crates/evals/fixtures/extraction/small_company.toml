@@ -1,0 +1,151 @@
+# Extraction Test: Small Company
+#
+# Tests basic extraction of a company with teams, people, repos, and rules.
+# This is intentionally small for fast iteration.
+
+[meta]
+name = "small_company"
+description = "A small company with two teams building a product"
+
+# =============================================================================
+# EXPECTED RECORDS
+# These are the records we expect extraction to produce from the memos below.
+# =============================================================================
+
+[[expected.records]]
+type = "company"
+name = "Acme Corp"
+description = "A software company building developer tools"
+
+[[expected.records]]
+type = "team"
+name = "Platform Team"
+description = "Backend infrastructure and APIs"
+
+[[expected.records]]
+type = "team"
+name = "Frontend Team"
+description = "User interfaces and web applications"
+
+[[expected.records]]
+type = "person"
+name = "Alice Chen"
+description = "Engineering lead for Platform Team"
+
+[[expected.records]]
+type = "person"
+name = "Bob Martinez"
+description = "Engineering lead for Frontend Team"
+
+[[expected.records]]
+type = "person"
+name = "Casey Chen"
+description = "Backend engineer on Platform Team"
+
+[[expected.records]]
+type = "repo"
+name = "acme-api"
+description = "Core API service"
+
+[[expected.records]]
+type = "repo"
+name = "acme-web"
+description = "Customer-facing web application"
+
+[[expected.records]]
+type = "rule"
+name = "Conventional commits required"
+description = "All commits must follow conventional commit format"
+
+[[expected.records]]
+type = "rule"
+name = "Two approvals for PRs"
+description = "Pull requests require two approvals before merge"
+
+# =============================================================================
+# EXPECTED EDGES
+# These are the relationships we expect between records.
+# =============================================================================
+
+[[expected.edges]]
+from = "Platform Team"
+relation = "belongs_to"
+to = "Acme Corp"
+
+[[expected.edges]]
+from = "Frontend Team"
+relation = "belongs_to"
+to = "Acme Corp"
+
+[[expected.edges]]
+from = "Alice Chen"
+relation = "member_of"
+to = "Platform Team"
+
+[[expected.edges]]
+from = "Bob Martinez"
+relation = "member_of"
+to = "Frontend Team"
+
+[[expected.edges]]
+from = "Casey Chen"
+relation = "member_of"
+to = "Platform Team"
+
+[[expected.edges]]
+from = "Platform Team"
+relation = "owns"
+to = "acme-api"
+
+[[expected.edges]]
+from = "Frontend Team"
+relation = "owns"
+to = "acme-web"
+
+[[expected.edges]]
+from = "Conventional commits required"
+relation = "applies_to"
+to = "acme-api"
+
+[[expected.edges]]
+from = "Conventional commits required"
+relation = "applies_to"
+to = "acme-web"
+
+[[expected.edges]]
+from = "Two approvals for PRs"
+relation = "applies_to"
+to = "acme-api"
+
+# =============================================================================
+# TEST MEMOS
+# These are the memos that will be recorded and then extracted.
+# The extraction should produce the expected records and edges above.
+# =============================================================================
+
+[[memos]]
+content = """
+Acme Corp is a software company building developer tools. We have two main engineering teams:
+- Platform Team: handles backend infrastructure and APIs, led by Alice Chen
+- Frontend Team: builds user interfaces and web applications, led by Bob Martinez
+"""
+
+[[memos]]
+content = """
+Casey Chen joined the Platform Team today. He'll be working on the acme-api
+repository with Alice. Charlie has experience with Rust and distributed systems.
+"""
+
+[[memos]]
+content = """
+Repository ownership at Acme:
+- acme-api: owned by Platform Team (core API service)
+- acme-web: owned by Frontend Team (customer-facing web application)
+"""
+
+[[memos]]
+content = """
+New engineering rules for Acme repos:
+1. All commits must follow conventional commit format (applies to all repos)
+2. Pull requests on acme-api require two approvals before merge
+"""
