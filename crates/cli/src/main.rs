@@ -5,6 +5,7 @@ mod daemon;
 mod help;
 mod launchd;
 mod pid;
+mod web;
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};

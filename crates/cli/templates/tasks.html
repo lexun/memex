@@ -1,0 +1,38 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<h1>Tasks</h1>
+
+{% if tasks.is_empty() %}
+<div class="card">
+    <p>No tasks found.</p>
+</div>
+{% else %}
+<table>
+    <thead>
+        <tr>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Priority</th>
+            <th>Project</th>
+            <th>Created</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for task in tasks %}
+        <tr>
+            <td>{{ task.title }}</td>
+            <td>
+                <span class="badge badge-status {% if task.status == "pending" %}pending{% else if task.status == "blocked" %}blocked{% endif %}">
+                    {{ task.status }}
+                </span>
+            </td>
+            <td>{{ task.priority }}</td>
+            <td>{{ task.project.as_deref().unwrap_or("-") }}</td>
+            <td class="card-meta">{{ task.created_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

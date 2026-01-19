@@ -29,6 +29,7 @@ use serde_json::json;
 
 use crate::config::{get_config_dir, get_db_path, get_pid_file, get_socket_path, load_config, Config};
 use crate::pid::{check_daemon, remove_pid_file, write_pid_file, PidInfo};
+use crate::web;
 
 /// State for a pending async response
 struct AsyncResponseState {
@@ -266,9 +267,12 @@ impl Daemon {
         };
 
         // Create stores
+        let forge_store = ForgeStore::new(forge_db);
+        let atlas_store = AtlasStore::new(atlas_db);
+
         let stores = Arc::new(Stores {
-            forge: ForgeStore::new(forge_db),
-            atlas: AtlasStore::new(atlas_db),
+            forge: forge_store.clone(),
+            atlas: atlas_store.clone(),
             extractor,
             workers: WorkerManager::new(),
             async_responses: RwLock::new(HashMap::new()),
@@ -279,18 +283,49 @@ impl Daemon {
             tracing::warn!("Failed to load workers from DB: {}", e);
         }
 
-        // Bind the socket
+        // Bind the Unix socket for IPC
         let listener = UnixListener::bind(&self.socket_path)
             .with_context(|| format!("Failed to bind socket: {}", self.socket_path.display()))?;
 
         tracing::info!("Daemon listening on {}", self.socket_path.display());
 
+        // Start web server if enabled
+        let web_handle = if self.config.web.enabled {
+            let web_state = Arc::new(web::WebState {
+                forge: forge_store,
+                atlas: atlas_store,
+            });
+            let web_router = web::build_router(web_state, &self.config.web);
+            let web_addr = format!("{}:{}", self.config.web.host, self.config.web.port);
+
+            tracing::info!("Web UI available at http://{}", web_addr);
+
+            let web_listener = tokio::net::TcpListener::bind(&web_addr)
+                .await
+                .with_context(|| format!("Failed to bind web server to {}", web_addr))?;
+
+            Some(tokio::spawn(async move {
+                if let Err(e) = axum::serve(web_listener, web_router).await {
+                    tracing::error!("Web server error: {}", e);
+                }
+            }))
+        } else {
+            tracing::info!("Web UI disabled");
+            None
+        };
+
         // Write PID file
         let pid_info = PidInfo::new(process::id(), &self.socket_path);
         write_pid_file(&self.pid_path, &pid_info)?;
 
-        // Run the server
+        // Run the IPC server
         let result = self.run_server(listener, stores).await;
+
+        // Abort web server if running
+        if let Some(handle) = web_handle {
+            handle.abort();
+        }
+
         self.cleanup();
         result
     }

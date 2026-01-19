@@ -13,6 +13,8 @@ pub struct Config {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub llm: LlmConfig,
+    #[serde(default)]
+    pub web: WebConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +28,41 @@ impl Default for DaemonConfig {
         Self {
             socket_path: None,
             pid_file: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Enable the web UI server (default: true)
+    #[serde(default = "default_web_enabled")]
+    pub enabled: bool,
+    /// Port for the web UI server (default: 3030)
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+    /// Host to bind to (default: 127.0.0.1)
+    #[serde(default = "default_web_host")]
+    pub host: String,
+}
+
+fn default_web_enabled() -> bool {
+    true
+}
+
+fn default_web_port() -> u16 {
+    3030
+}
+
+fn default_web_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_web_enabled(),
+            port: default_web_port(),
+            host: default_web_host(),
         }
     }
 }
@@ -131,6 +168,9 @@ pub fn get_config_value(config: &Config, key: &str) -> Option<String> {
         "llm.embedding_model" => Some(config.llm.embedding_model.clone()),
         "llm.api_key" => Some("********".to_string()), // Don't expose API key
         "llm.base_url" => config.llm.base_url.clone(),
+        "web.enabled" => Some(config.web.enabled.to_string()),
+        "web.port" => Some(config.web.port.to_string()),
+        "web.host" => Some(config.web.host.clone()),
         _ => None,
     }
 }
