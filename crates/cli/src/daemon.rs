@@ -498,6 +498,10 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "get_entity_facts" => handle_get_entity_facts(request, &stores.atlas).await,
         "get_related_facts" => handle_get_related_facts(request, &stores.atlas).await,
 
+        // Record extraction operations (new Records + Links pipeline)
+        "extract_records_from_memo" => handle_extract_records_from_memo(request, stores).await,
+        "backfill_records" => handle_backfill_records(request, stores).await,
+
         // Record/Graph operations (atlas)
         "list_records" => handle_list_records(request, &stores.atlas).await,
         "get_record" => handle_get_record(request, &stores.atlas).await,
@@ -2289,6 +2293,174 @@ async fn handle_extract_facts(request: &Request, stores: &Stores) -> Result<serd
         "facts_created": facts_created,
         "entities_created": entities_created,
         "links_created": links_created,
+    }))
+}
+
+// ============================================================================
+// Record Extraction Handlers (new Records + Links pipeline)
+// ============================================================================
+
+#[derive(Deserialize)]
+struct ExtractRecordsFromMemoParams {
+    memo_id: String,
+    #[serde(default = "default_threshold")]
+    threshold: f32,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+fn default_threshold() -> f32 {
+    0.5
+}
+
+async fn handle_extract_records_from_memo(
+    request: &Request,
+    stores: &Stores,
+) -> Result<serde_json::Value, IpcError> {
+    let params: ExtractRecordsFromMemoParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(e.to_string()))?;
+
+    // Get the LLM client from extractor
+    let llm = match &stores.extractor {
+        Some(e) => e.client(),
+        None => {
+            return Err(IpcError::internal(
+                "LLM not configured - cannot extract records".to_string(),
+            ));
+        }
+    };
+
+    // Get the memo
+    let memo = stores
+        .atlas
+        .get_memo(&params.memo_id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?
+        .ok_or_else(|| IpcError::internal(format!("Memo not found: {}", params.memo_id)))?;
+
+    // Get extraction context (existing records)
+    let context = stores
+        .atlas
+        .get_extraction_context()
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Create record extractor and extract
+    let extractor = atlas::RecordExtractor::new(llm);
+    let result = extractor
+        .extract_from_memo(&memo.content, &params.memo_id, &context)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // If not dry run, process the results (create records, edges, etc.)
+    if !params.dry_run {
+        let _processing_result = stores
+            .atlas
+            .process_extraction_results(&result, params.threshold)
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?;
+    }
+
+    // Return the extraction result (what was/would be created)
+    serde_json::to_value(&result).map_err(|e| IpcError::internal(e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct BackfillRecordsParams {
+    #[serde(default = "default_records_batch_size")]
+    batch_size: usize,
+    #[serde(default = "default_threshold")]
+    threshold: f32,
+}
+
+fn default_records_batch_size() -> usize {
+    50
+}
+
+async fn handle_backfill_records(
+    request: &Request,
+    stores: &Stores,
+) -> Result<serde_json::Value, IpcError> {
+    let params: BackfillRecordsParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(BackfillRecordsParams {
+            batch_size: 50,
+            threshold: 0.5,
+        });
+
+    // Get the LLM client from extractor
+    let llm = match &stores.extractor {
+        Some(e) => e.client(),
+        None => {
+            return Err(IpcError::internal(
+                "LLM not configured - cannot backfill records".to_string(),
+            ));
+        }
+    };
+
+    let mut memos_processed = 0;
+    let mut records_created = 0;
+    let mut records_updated = 0;
+    let mut edges_created = 0;
+    let mut questions_generated = 0;
+
+    // Get memos to process
+    let memos = stores
+        .atlas
+        .list_memos(Some(params.batch_size))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Create record extractor
+    let extractor = atlas::RecordExtractor::new(llm);
+
+    for memo in memos {
+        memos_processed += 1;
+        let memo_id = memo.id_str().unwrap_or_default();
+
+        // Get fresh context for each memo (to include newly created records)
+        let context = match stores.atlas.get_extraction_context().await {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                tracing::warn!("Failed to get extraction context: {}", e);
+                continue;
+            }
+        };
+
+        // Extract records from this memo
+        match extractor.extract_from_memo(&memo.content, &memo_id, &context).await {
+            Ok(result) => {
+                // Process the results
+                match stores
+                    .atlas
+                    .process_extraction_results(&result, params.threshold)
+                    .await
+                {
+                    Ok(processing_result) => {
+                        records_created += processing_result.created_records.len();
+                        records_updated += processing_result.updated_records.len();
+                        edges_created += processing_result.created_edges.len();
+                        questions_generated += processing_result.questions.len();
+
+                        // TODO: Create clarification tasks for questions
+                        // For now, just count them
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to process extraction results for memo {}: {}", memo_id, e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Extraction failed for memo {}: {}", memo_id, e);
+            }
+        }
+    }
+
+    Ok(json!({
+        "memos_processed": memos_processed,
+        "records_created": records_created,
+        "records_updated": records_updated,
+        "edges_created": edges_created,
+        "questions_generated": questions_generated,
     }))
 }
 

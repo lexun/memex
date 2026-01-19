@@ -12,12 +12,14 @@ pub mod handler;
 pub mod memo;
 pub mod query;
 pub mod record;
+pub mod record_extraction;
 pub mod store;
 
 pub use cli::{EdgeCommand, EdgeRelationCli, EventCommand, KnowledgeCommand, MemoCommand, RecordCommand, RecordTypeCli};
 pub use client::{
     BackfillResult, EntityFactsResult, EventClient, FactStats, KnowledgeClient, KnowledgeStatus,
-    MemoClient, QueryResult, RebuildResult, RecordClient, RelatedFactsResult, SearchResult,
+    MemoClient, QueryResult, RebuildResult, RecordBackfillResult, RecordClient, RelatedFactsResult,
+    SearchResult,
 };
 pub use event::{Event, EventAuthority, EventSource};
 pub use extraction::{ExtractedFact, ExtractionResult, Extractor};
@@ -26,4 +28,9 @@ pub use query::{DecomposedQuery, HypotheticalGenerator, QueryDecomposer, QueryIn
 pub use handler::{handle_event_command, handle_knowledge_command, handle_memo_command, handle_record_command};
 pub use memo::{Memo, MemoAuthority, MemoSource};
 pub use record::{ContextAssembly, EdgeRelation, Record, RecordEdge, RecordType};
+pub use record_extraction::{
+    ExtractionContext, ExtractionProcessingResult, ExtractionQuestion,
+    ExtractedLink, ExtractedRecord, RecordAction, RecordExtractionResult,
+    RecordExtractor, RecordSummary,
+};
 pub use store::Store;

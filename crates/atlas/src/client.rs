@@ -478,6 +478,69 @@ impl KnowledgeClient {
 
         serde_json::from_value(result).context("Failed to parse related facts")
     }
+
+    /// Extract records from a specific memo using the new Records + Links pipeline
+    ///
+    /// If dry_run is true, returns what would be extracted without creating records.
+    pub async fn extract_records_from_memo(
+        &self,
+        memo_id: &str,
+        threshold: f32,
+        dry_run: bool,
+    ) -> Result<crate::record_extraction::RecordExtractionResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            memo_id: &'a str,
+            threshold: f32,
+            dry_run: bool,
+        }
+
+        let result = self
+            .client
+            .request(
+                "extract_records_from_memo",
+                Params {
+                    memo_id,
+                    threshold,
+                    dry_run,
+                },
+            )
+            .await
+            .context("Failed to extract records from memo")?;
+
+        serde_json::from_value(result).context("Failed to parse extraction result")
+    }
+
+    /// Backfill records from all memos using the new Records + Links pipeline
+    pub async fn backfill_records(
+        &self,
+        batch_size: usize,
+        threshold: f32,
+    ) -> Result<RecordBackfillResult> {
+        #[derive(Serialize)]
+        struct Params {
+            batch_size: usize,
+            threshold: f32,
+        }
+
+        let result = self
+            .client
+            .request("backfill_records", Params { batch_size, threshold })
+            .await
+            .context("Failed to backfill records")?;
+
+        serde_json::from_value(result).context("Failed to parse backfill result")
+    }
+}
+
+/// Result of backfilling records from memos
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecordBackfillResult {
+    pub memos_processed: usize,
+    pub records_created: usize,
+    pub records_updated: usize,
+    pub edges_created: usize,
+    pub questions_generated: usize,
 }
 
 /// Result of getting facts for an entity

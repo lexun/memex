@@ -294,6 +294,108 @@ pub async fn handle_knowledge_command(cmd: KnowledgeCommand, socket_path: &Path)
             }
             Ok(())
         }
+
+        KnowledgeCommand::ExtractRecords {
+            memo_id,
+            threshold,
+            dry_run,
+        } => {
+            println!("Extracting records from memo: {}", memo_id);
+            let result = client
+                .extract_records_from_memo(&memo_id, threshold, dry_run)
+                .await?;
+
+            if dry_run {
+                println!("\n[DRY RUN - no records created]");
+            }
+
+            println!("\nExtraction results:");
+
+            if !result.records.is_empty() {
+                println!("\nRecords to {}:", if dry_run { "create" } else { "created" });
+                for record in &result.records {
+                    println!("  [{}] {} (confidence: {:.0}%)",
+                        record.record_type, record.name, record.confidence * 100.0);
+                    if let Some(desc) = &record.description {
+                        let truncated = if desc.len() > 60 {
+                            format!("{}...", &desc[..57])
+                        } else {
+                            desc.clone()
+                        };
+                        println!("      {}", truncated);
+                    }
+                }
+            }
+
+            if !result.links.is_empty() {
+                println!("\nLinks to {}:", if dry_run { "create" } else { "created" });
+                for link in &result.links {
+                    println!("  {} --{}-> {} (confidence: {:.0}%)",
+                        link.source, link.relation, link.target, link.confidence * 100.0);
+                }
+            }
+
+            if !result.questions.is_empty() {
+                println!("\nQuestions (need clarification):");
+                for q in &result.questions {
+                    println!("  ? {}", q.text);
+                    if let Some(ctx) = &q.context {
+                        println!("    Context: {}", ctx);
+                    }
+                    if !q.options.is_empty() {
+                        println!("    Options: {}", q.options.join(", "));
+                    }
+                }
+            }
+
+            if result.records.is_empty() && result.links.is_empty() && result.questions.is_empty() {
+                println!("  (no extractable content found)");
+            }
+
+            Ok(())
+        }
+
+        KnowledgeCommand::BackfillRecords {
+            batch_size,
+            threshold,
+            yes,
+        } => {
+            if !yes {
+                println!("This will extract records from {} memos.", batch_size);
+                println!("Confidence threshold: {:.0}%", threshold * 100.0);
+                println!();
+                print!("Continue? [y/N] ");
+                use std::io::{self, Write};
+                io::stdout().flush()?;
+
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+
+            println!("Backfilling records from memos...");
+            let result = client
+                .backfill_records(batch_size, threshold)
+                .await?;
+
+            println!("\nBackfill complete:");
+            println!("  Memos processed: {}", result.memos_processed);
+            println!("  Records created: {}", result.records_created);
+            println!("  Records updated: {}", result.records_updated);
+            println!("  Edges created: {}", result.edges_created);
+            println!("  Questions generated: {}", result.questions_generated);
+
+            if result.questions_generated > 0 {
+                println!();
+                println!("Note: {} clarification tasks were created.", result.questions_generated);
+                println!("      Run 'memex task list' to review them.");
+            }
+
+            Ok(())
+        }
     }
 }
 

@@ -1242,6 +1242,163 @@ impl Store {
         Ok(records.into_iter().next())
     }
 
+    /// Get extraction context with existing records for disambiguation
+    ///
+    /// Returns summaries of existing records grouped by type, which can be
+    /// injected into the extraction prompt to help the LLM link to existing
+    /// records rather than creating duplicates.
+    pub async fn get_extraction_context(&self) -> Result<crate::record_extraction::ExtractionContext> {
+        use crate::record_extraction::{ExtractionContext, RecordSummary};
+
+        // Helper to convert records to summaries
+        fn to_summaries(records: Vec<Record>) -> Vec<RecordSummary> {
+            records
+                .into_iter()
+                .map(|r| RecordSummary {
+                    id: r.id_str().unwrap_or_default(),
+                    name: r.name,
+                    description: r.description,
+                })
+                .collect()
+        }
+
+        // Fetch all record types in parallel would be nice, but sequential is fine for now
+        let repos = self.list_records(Some("repo"), false, None).await?;
+        let projects = self.list_records(Some("initiative"), false, None).await?;
+        let people = self.list_records(Some("person"), false, None).await?;
+        let teams = self.list_records(Some("team"), false, None).await?;
+        let rules = self.list_records(Some("rule"), false, None).await?;
+        let companies = self.list_records(Some("company"), false, None).await?;
+
+        Ok(ExtractionContext {
+            repos: to_summaries(repos),
+            projects: to_summaries(projects),
+            people: to_summaries(people),
+            teams: to_summaries(teams),
+            rules: to_summaries(rules),
+            companies: to_summaries(companies),
+        })
+    }
+
+    /// Process extraction results: create/update records and edges
+    ///
+    /// Returns a summary of what was created/updated plus any questions that
+    /// need human clarification.
+    pub async fn process_extraction_results(
+        &self,
+        results: &crate::record_extraction::RecordExtractionResult,
+        confidence_threshold: f32,
+    ) -> Result<crate::record_extraction::ExtractionProcessingResult> {
+        use crate::record_extraction::{RecordAction, ExtractionProcessingResult};
+        use std::collections::HashMap;
+
+        let mut created_records = Vec::new();
+        let mut updated_records = Vec::new();
+        let mut created_edges = Vec::new();
+        let mut skipped_low_confidence = Vec::new();
+
+        // Map from name -> record ID for linking
+        let mut name_to_id: HashMap<String, String> = HashMap::new();
+
+        // Process records
+        for extracted in &results.records {
+            if extracted.confidence < confidence_threshold {
+                skipped_low_confidence.push(extracted.name.clone());
+                continue;
+            }
+
+            match extracted.action {
+                RecordAction::Create => {
+                    let record_type: crate::record::RecordType = extracted
+                        .record_type
+                        .parse()
+                        .unwrap_or(crate::record::RecordType::Document);
+
+                    let mut record = Record::new(record_type, &extracted.name);
+                    if let Some(desc) = &extracted.description {
+                        record = record.with_description(desc);
+                    }
+                    if !extracted.content.is_null() {
+                        record = record.with_content(extracted.content.clone());
+                    }
+
+                    match self.create_record(record).await {
+                        Ok(created) => {
+                            if let Some(id) = created.id_str() {
+                                name_to_id.insert(extracted.name.clone(), id);
+                            }
+                            created_records.push(created.name);
+                        }
+                        Err(e) => {
+                            debug!("Failed to create record {}: {}", extracted.name, e);
+                        }
+                    }
+                }
+                RecordAction::Update => {
+                    if let Some(existing_id) = &extracted.existing_id {
+                        name_to_id.insert(extracted.name.clone(), existing_id.clone());
+
+                        if let Err(e) = self
+                            .update_record(
+                                existing_id,
+                                None, // Don't update name
+                                extracted.description.as_deref(),
+                                if extracted.content.is_null() {
+                                    None
+                                } else {
+                                    Some(extracted.content.clone())
+                                },
+                            )
+                            .await
+                        {
+                            debug!("Failed to update record {}: {}", existing_id, e);
+                        } else {
+                            updated_records.push(extracted.name.clone());
+                        }
+                    }
+                }
+                RecordAction::Reference => {
+                    if let Some(existing_id) = &extracted.existing_id {
+                        name_to_id.insert(extracted.name.clone(), existing_id.clone());
+                    }
+                }
+            }
+        }
+
+        // Process links
+        for link in &results.links {
+            if link.confidence < confidence_threshold {
+                continue;
+            }
+
+            // Resolve source and target to IDs
+            let source_id = name_to_id.get(&link.source).cloned().unwrap_or_else(|| link.source.clone());
+            let target_id = name_to_id.get(&link.target).cloned().unwrap_or_else(|| link.target.clone());
+
+            let relation: EdgeRelation = link
+                .relation
+                .parse()
+                .unwrap_or(EdgeRelation::RelatedTo);
+
+            match self.create_edge(&source_id, &target_id, relation, None).await {
+                Ok(_) => {
+                    created_edges.push(format!("{} --{}-> {}", link.source, link.relation, link.target));
+                }
+                Err(e) => {
+                    debug!("Failed to create edge {} -> {}: {}", source_id, target_id, e);
+                }
+            }
+        }
+
+        Ok(ExtractionProcessingResult {
+            created_records,
+            updated_records,
+            created_edges,
+            skipped_low_confidence,
+            questions: results.questions.clone(),
+        })
+    }
+
     // ========== Edge Operations ==========
 
     /// Create an edge between two records

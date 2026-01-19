@@ -150,6 +150,41 @@ pub enum KnowledgeCommand {
         #[arg(short, long)]
         project: Option<String>,
     },
+
+    /// Extract records from a specific memo (test command)
+    ///
+    /// Uses the new Records + Links extraction pipeline. This is useful
+    /// for testing extraction on individual memos before running backfill.
+    ExtractRecords {
+        /// Memo ID to extract from
+        memo_id: String,
+
+        /// Confidence threshold (0.0-1.0, default 0.5)
+        #[arg(short, long, default_value = "0.5")]
+        threshold: f32,
+
+        /// Dry run - show what would be extracted without creating records
+        #[arg(short, long)]
+        dry_run: bool,
+    },
+
+    /// Backfill records from all memos
+    ///
+    /// Processes all memos through the Records + Links extraction pipeline.
+    /// Creates records, links, and clarification tasks for questions.
+    BackfillRecords {
+        /// Maximum number of memos to process
+        #[arg(short, long, default_value = "50")]
+        batch_size: usize,
+
+        /// Confidence threshold (0.0-1.0, default 0.5)
+        #[arg(short = 't', long, default_value = "0.5")]
+        threshold: f32,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 /// Record type for CLI
