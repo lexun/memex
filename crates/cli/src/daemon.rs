@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 
 use anyhow::{Context, Result};
 use nix::unistd::{fork, setsid, ForkResult};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -2313,6 +2313,12 @@ fn default_threshold() -> f32 {
     0.5
 }
 
+#[derive(Serialize)]
+struct ExtractRecordsResponse {
+    extraction: atlas::RecordExtractionResult,
+    processing: Option<atlas::ExtractionProcessingResult>,
+}
+
 async fn handle_extract_records_from_memo(
     request: &Request,
     stores: &Stores,
@@ -2353,16 +2359,22 @@ async fn handle_extract_records_from_memo(
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
     // If not dry run, process the results (create records, edges, etc.)
-    if !params.dry_run {
-        let _processing_result = stores
+    let processing = if !params.dry_run {
+        Some(stores
             .atlas
             .process_extraction_results(&result, params.threshold)
             .await
-            .map_err(|e| IpcError::internal(e.to_string()))?;
-    }
+            .map_err(|e| IpcError::internal(e.to_string()))?)
+    } else {
+        None
+    };
 
-    // Return the extraction result (what was/would be created)
-    serde_json::to_value(&result).map_err(|e| IpcError::internal(e.to_string()))
+    // Return combined response
+    let response = ExtractRecordsResponse {
+        extraction: result,
+        processing,
+    };
+    serde_json::to_value(&response).map_err(|e| IpcError::internal(e.to_string()))
 }
 
 #[derive(Deserialize)]
@@ -2401,7 +2413,8 @@ async fn handle_backfill_records(
     let mut records_created = 0;
     let mut records_updated = 0;
     let mut edges_created = 0;
-    let mut questions_generated = 0;
+    let mut skipped_count = 0;
+    let mut all_questions: Vec<atlas::ExtractionQuestion> = Vec::new();
 
     // Get memos to process
     let memos = stores
@@ -2439,10 +2452,8 @@ async fn handle_backfill_records(
                         records_created += processing_result.created_records.len();
                         records_updated += processing_result.updated_records.len();
                         edges_created += processing_result.created_edges.len();
-                        questions_generated += processing_result.questions.len();
-
-                        // TODO: Create clarification tasks for questions
-                        // For now, just count them
+                        skipped_count += processing_result.skipped_low_confidence.len();
+                        all_questions.extend(processing_result.questions);
                     }
                     Err(e) => {
                         tracing::warn!("Failed to process extraction results for memo {}: {}", memo_id, e);
@@ -2460,7 +2471,8 @@ async fn handle_backfill_records(
         "records_created": records_created,
         "records_updated": records_updated,
         "edges_created": edges_created,
-        "questions_generated": questions_generated,
+        "skipped_count": skipped_count,
+        "questions": all_questions,
     }))
 }
 

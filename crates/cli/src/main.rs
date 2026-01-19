@@ -142,6 +142,35 @@ enum KnowledgeCommands {
         #[arg(short, long)]
         project: Option<String>,
     },
+    /// Extract records from a memo
+    #[command(display_order = 12)]
+    Extract {
+        /// Memo ID to extract from
+        memo_id: String,
+
+        /// Confidence threshold (0.0-1.0)
+        #[arg(short, long, default_value = "0.5")]
+        threshold: f32,
+
+        /// Show what would be extracted without creating records
+        #[arg(short, long)]
+        dry_run: bool,
+    },
+    /// Backfill records from all memos
+    #[command(name = "backfill-records", display_order = 13)]
+    BackfillRecords {
+        /// Number of memos to process per batch
+        #[arg(short, long, default_value = "50")]
+        batch_size: usize,
+
+        /// Confidence threshold for auto-creation (0.0-1.0)
+        #[arg(short = 't', long, default_value = "0.5")]
+        threshold: f32,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -514,6 +543,118 @@ async fn async_main(command: Commands) -> Result<()> {
                         println!("[{}] {}", fact.fact_type, fact.content);
                     }
                 }
+                Ok(())
+            }
+            KnowledgeCommands::Extract { memo_id, threshold, dry_run } => {
+                let client = atlas::KnowledgeClient::new(&socket_path);
+                let result = client.extract_records_from_memo(&memo_id, threshold, dry_run).await?;
+
+                if dry_run {
+                    println!("DRY RUN - Would extract from memo {}:", memo_id);
+                } else {
+                    println!("Extraction results for memo {}:", memo_id);
+                }
+                println!();
+
+                // Show extracted records
+                if result.extraction.records.is_empty() {
+                    println!("No records extracted.");
+                } else {
+                    println!("Records ({}):", result.extraction.records.len());
+                    for record in &result.extraction.records {
+                        let action = match record.action {
+                            atlas::RecordAction::Create => "CREATE",
+                            atlas::RecordAction::Update => "UPDATE",
+                            atlas::RecordAction::Reference => "REF",
+                        };
+                        println!("  [{:.0}%] {} {} \"{}\"",
+                            record.confidence * 100.0,
+                            action,
+                            record.record_type,
+                            record.name
+                        );
+                        if let Some(desc) = &record.description {
+                            println!("         {}", desc);
+                        }
+                    }
+                }
+                println!();
+
+                // Show extracted links
+                if result.extraction.links.is_empty() {
+                    println!("No links extracted.");
+                } else {
+                    println!("Links ({}):", result.extraction.links.len());
+                    for link in &result.extraction.links {
+                        println!("  [{:.0}%] {} --{}-> {}",
+                            link.confidence * 100.0,
+                            link.source,
+                            link.relation,
+                            link.target
+                        );
+                    }
+                }
+                println!();
+
+                // Show questions
+                if !result.extraction.questions.is_empty() {
+                    println!("Questions ({}):", result.extraction.questions.len());
+                    for q in &result.extraction.questions {
+                        println!("  ? {}", q.text);
+                        if let Some(ctx) = &q.context {
+                            println!("    Context: {}", ctx);
+                        }
+                    }
+                }
+
+                // Show processing results if not dry run
+                if !dry_run {
+                    if let Some(processing) = &result.processing {
+                        println!();
+                        println!("Processing results:");
+                        println!("  Created: {} records, {} edges",
+                            processing.created_records.len(),
+                            processing.created_edges.len()
+                        );
+                        if !processing.updated_records.is_empty() {
+                            println!("  Updated: {} records", processing.updated_records.len());
+                        }
+                        if !processing.skipped_low_confidence.is_empty() {
+                            println!("  Skipped (low confidence): {}", processing.skipped_low_confidence.len());
+                        }
+                    }
+                }
+
+                Ok(())
+            }
+            KnowledgeCommands::BackfillRecords { batch_size, threshold, yes } => {
+                if !yes {
+                    println!("This will extract records from all memos.");
+                    println!("Use -y/--yes to confirm, or run with --dry-run first.");
+                    return Ok(());
+                }
+
+                let client = atlas::KnowledgeClient::new(&socket_path);
+                println!("Starting record backfill (batch size: {}, threshold: {})...", batch_size, threshold);
+                println!();
+
+                let result = client.backfill_records(batch_size, threshold).await?;
+
+                println!("Backfill complete:");
+                println!("  Memos processed: {}", result.memos_processed);
+                println!("  Records created: {}", result.records_created);
+                println!("  Records updated: {}", result.records_updated);
+                println!("  Edges created: {}", result.edges_created);
+                println!("  Skipped (low confidence): {}", result.skipped_count);
+
+                if !result.questions.is_empty() {
+                    println!();
+                    println!("Questions for clarification ({}):", result.questions.len());
+                    for q in &result.questions {
+                        println!("  ? {}", q.text);
+                    }
+                }
+
                 Ok(())
             }
         },

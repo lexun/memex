@@ -17,9 +17,9 @@ pub mod store;
 
 pub use cli::{EdgeCommand, EdgeRelationCli, EventCommand, KnowledgeCommand, MemoCommand, RecordCommand, RecordTypeCli};
 pub use client::{
-    BackfillResult, EntityFactsResult, EventClient, FactStats, KnowledgeClient, KnowledgeStatus,
-    MemoClient, QueryResult, RebuildResult, RecordBackfillResult, RecordClient, RelatedFactsResult,
-    SearchResult,
+    BackfillResult, EntityFactsResult, EventClient, ExtractRecordsResponse, FactStats,
+    KnowledgeClient, KnowledgeStatus, MemoClient, QueryResult, RebuildResult, RecordBackfillResult,
+    RecordClient, RelatedFactsResult, SearchResult,
 };
 pub use event::{Event, EventAuthority, EventSource};
 pub use extraction::{ExtractedFact, ExtractionResult, Extractor};

@@ -487,7 +487,7 @@ impl KnowledgeClient {
         memo_id: &str,
         threshold: f32,
         dry_run: bool,
-    ) -> Result<crate::record_extraction::RecordExtractionResult> {
+    ) -> Result<ExtractRecordsResponse> {
         #[derive(Serialize)]
         struct Params<'a> {
             memo_id: &'a str,
@@ -533,6 +533,13 @@ impl KnowledgeClient {
     }
 }
 
+/// Response from extracting records from a memo
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExtractRecordsResponse {
+    pub extraction: crate::record_extraction::RecordExtractionResult,
+    pub processing: Option<crate::record_extraction::ExtractionProcessingResult>,
+}
+
 /// Result of backfilling records from memos
 #[derive(Debug, Clone, Deserialize)]
 pub struct RecordBackfillResult {
@@ -540,7 +547,8 @@ pub struct RecordBackfillResult {
     pub records_created: usize,
     pub records_updated: usize,
     pub edges_created: usize,
-    pub questions_generated: usize,
+    pub skipped_count: usize,
+    pub questions: Vec<crate::record_extraction::ExtractionQuestion>,
 }
 
 /// Result of getting facts for an entity
