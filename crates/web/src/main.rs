@@ -55,7 +55,7 @@ async fn main() {
 struct DaemonRecord {
     id: Option<serde_json::Value>,
     record_type: String,
-    title: String,
+    name: String,
     description: Option<String>,
     content: serde_json::Value,
     created_at: String,
@@ -80,7 +80,7 @@ impl From<DaemonRecord> for memex_web::app::Record {
         memex_web::app::Record {
             id,
             record_type: r.record_type,
-            title: r.title,
+            title: r.name,
             description: r.description,
             content: r.content,
             created_at: r.created_at,
