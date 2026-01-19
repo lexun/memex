@@ -3,7 +3,7 @@
 //! Provides a local web UI organized into three sections:
 //! - Work: Tasks, Workers (active operations)
 //! - Directory: People, Teams, Projects, Repos, Rules (entities)
-//! - Events: Memos, Threads, Activity (inputs/event sourcing)
+//! - Activity: Memos, Threads, Events (inputs/event sourcing)
 
 use std::sync::Arc;
 
@@ -41,10 +41,10 @@ pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
         .route("/repos", get(repos_page))
         .route("/rules", get(rules_page))
 
-        // Events section
+        // Activity section
         .route("/memos", get(memos_page))
         .route("/threads", get(threads_page))
-        .route("/activity", get(activity_page))
+        .route("/events", get(events_page))
 
         // API endpoints
         .route("/api/tasks", get(api_list_tasks))
@@ -136,10 +136,11 @@ struct ThreadsTemplate {
 }
 
 #[derive(askama::Template)]
-#[template(path = "activity.html")]
-struct ActivityTemplate {
+#[template(path = "events.html")]
+struct EventsTemplate {
     title: &'static str,
     active_section: &'static str,
+    events: Vec<EventView>,
 }
 
 // -----------------------------------------------------------------------------
@@ -181,6 +182,15 @@ struct MemoView {
     content: String,
     source: String,
     created_at: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct EventView {
+    id: String,
+    event_type: String,
+    source: String,
+    timestamp: String,
+    summary: Option<String>,
 }
 
 // -----------------------------------------------------------------------------
@@ -353,12 +363,72 @@ async fn threads_page() -> impl IntoResponse {
     Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
 }
 
-async fn activity_page() -> impl IntoResponse {
-    let template = ActivityTemplate {
-        title: "Activity",
-        active_section: "activity",
+async fn events_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    // Get task events (event_type starts with "task.")
+    let events_data = state.atlas.list_events(Some("task."), Some(50)).await.unwrap_or_default();
+
+    let events: Vec<EventView> = events_data
+        .into_iter()
+        .map(|e| {
+            // Extract a summary from the payload
+            let summary = extract_event_summary(&e.event_type, &e.payload);
+            EventView {
+                id: e.id.map(|t| t.id.to_string()).unwrap_or_default(),
+                event_type: e.event_type,
+                source: e.source.actor,
+                timestamp: e.timestamp.to_string(),
+                summary,
+            }
+        })
+        .collect();
+
+    let template = EventsTemplate {
+        title: "Events",
+        active_section: "events",
+        events,
     };
     Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+/// Extract a human-readable summary from an event payload
+fn extract_event_summary(event_type: &str, payload: &serde_json::Value) -> Option<String> {
+    match event_type {
+        "task.created" => {
+            payload.get("task")
+                .and_then(|t| t.get("title"))
+                .and_then(|t| t.as_str())
+                .map(|title| format!("Created task: {}", title))
+        }
+        "task.updated" => {
+            let task_id = payload.get("task_id").and_then(|t| t.as_str()).unwrap_or("unknown");
+            let changes = payload.get("changes")
+                .map(|c| {
+                    let keys: Vec<&str> = c.as_object()
+                        .map(|o| o.keys().map(|s| s.as_str()).collect())
+                        .unwrap_or_default();
+                    keys.join(", ")
+                })
+                .unwrap_or_default();
+            Some(format!("Updated task {}: {}", task_id, changes))
+        }
+        "task.closed" => {
+            let task_id = payload.get("task_id").and_then(|t| t.as_str()).unwrap_or("unknown");
+            let reason = payload.get("reason").and_then(|r| r.as_str());
+            match reason {
+                Some(r) => Some(format!("Closed task {}: {}", task_id, r)),
+                None => Some(format!("Closed task {}", task_id)),
+            }
+        }
+        "task.deleted" => {
+            let task_id = payload.get("task_id").and_then(|t| t.as_str()).unwrap_or("unknown");
+            Some(format!("Deleted task {}", task_id))
+        }
+        "task.note_added" => {
+            let task_id = payload.get("task_id").and_then(|t| t.as_str()).unwrap_or("unknown");
+            Some(format!("Note added to task {}", task_id))
+        }
+        _ => None,
+    }
 }
 
 // -----------------------------------------------------------------------------

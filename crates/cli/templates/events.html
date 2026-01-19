@@ -1,0 +1,24 @@
+{% extends "layout.html" %}
+
+{% block content %}
+{% if events.is_empty() %}
+<div class="empty-state">
+    <p>No events recorded yet.</p>
+    <p class="card-meta">Task events will appear here as work progresses.</p>
+</div>
+{% else %}
+{% for event in events %}
+<div class="card">
+    <div class="card-title">
+        <span class="badge badge-event">{{ event.event_type }}</span>
+    </div>
+    <div class="card-meta">
+        <span>{{ event.source }}</span> &middot; {{ event.timestamp }}
+    </div>
+    {% if let Some(summary) = event.summary %}
+    <p style="margin-top: 0.5rem;">{{ summary }}</p>
+    {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}
