@@ -8,12 +8,15 @@
         :root {
             --bg: #1a1b26;
             --bg-alt: #24283b;
+            --bg-sidebar: #16161e;
             --fg: #c0caf5;
             --fg-dim: #565f89;
             --accent: #7aa2f7;
             --green: #9ece6a;
             --yellow: #e0af68;
             --red: #f7768e;
+            --purple: #bb9af7;
+            --cyan: #7dcfff;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -21,67 +24,131 @@
             background: var(--bg);
             color: var(--fg);
             line-height: 1.6;
-        }
-        nav {
-            background: var(--bg-alt);
-            padding: 1rem 2rem;
             display: flex;
-            gap: 2rem;
-            align-items: center;
-            border-bottom: 1px solid var(--fg-dim);
+            min-height: 100vh;
         }
-        nav a {
-            color: var(--fg);
-            text-decoration: none;
-            font-weight: 500;
+
+        /* Sidebar */
+        .sidebar {
+            width: 220px;
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--bg-alt);
+            padding: 1rem 0;
+            flex-shrink: 0;
         }
-        nav a:hover { color: var(--accent); }
-        nav .logo {
+        .sidebar-logo {
+            padding: 0.5rem 1.25rem 1.5rem;
             font-size: 1.25rem;
             font-weight: 700;
             color: var(--accent);
+            text-decoration: none;
+            display: block;
+        }
+        .sidebar-section {
+            margin-bottom: 1.5rem;
+        }
+        .sidebar-section-title {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--fg-dim);
+            padding: 0 1.25rem;
+            margin-bottom: 0.5rem;
+        }
+        .sidebar-link {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1.25rem;
+            color: var(--fg);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: background 0.1s;
+        }
+        .sidebar-link:hover {
+            background: var(--bg-alt);
+        }
+        .sidebar-link.active {
+            background: var(--bg-alt);
+            color: var(--accent);
+            border-left: 2px solid var(--accent);
+            padding-left: calc(1.25rem - 2px);
+        }
+        .sidebar-icon {
+            width: 18px;
+            text-align: center;
+            opacity: 0.7;
+        }
+
+        /* Main content */
+        .main-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+        header {
+            background: var(--bg-alt);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--bg-sidebar);
+        }
+        header h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin: 0;
         }
         main {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 2rem;
+            flex: 1;
+            padding: 1.5rem 2rem;
+            overflow-y: auto;
         }
-        h1 { margin-bottom: 1.5rem; color: var(--fg); }
-        h2 { margin-bottom: 1rem; color: var(--fg); font-size: 1.25rem; }
+
+        /* Common components */
+        h2 { margin-bottom: 1rem; color: var(--fg); font-size: 1.1rem; }
         .card {
             background: var(--bg-alt);
             border-radius: 8px;
-            padding: 1.5rem;
+            padding: 1.25rem;
             margin-bottom: 1rem;
         }
         .card-title { font-weight: 600; margin-bottom: 0.5rem; }
-        .card-meta { color: var(--fg-dim); font-size: 0.875rem; }
+        .card-meta { color: var(--fg-dim); font-size: 0.85rem; }
         .badge {
             display: inline-block;
-            padding: 0.25rem 0.5rem;
+            padding: 0.2rem 0.5rem;
             border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 500;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
         }
-        .badge-type { background: var(--accent); color: var(--bg); }
+        .badge-work { background: var(--accent); color: var(--bg); }
+        .badge-directory { background: var(--purple); color: var(--bg); }
+        .badge-event { background: var(--cyan); color: var(--bg); }
         .badge-status { background: var(--green); color: var(--bg); }
         .badge-status.pending { background: var(--yellow); }
+        .badge-status.in-progress { background: var(--accent); }
         .badge-status.blocked { background: var(--red); }
+        .badge-status.done, .badge-status.completed { background: var(--green); }
+        .badge-priority { background: var(--fg-dim); color: var(--bg); }
+        .badge-priority.p1 { background: var(--red); }
+        .badge-priority.p2 { background: var(--yellow); }
         .stats {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 1rem;
-            margin-bottom: 2rem;
+            margin-bottom: 1.5rem;
         }
         .stat-card {
             background: var(--bg-alt);
             border-radius: 8px;
-            padding: 1.5rem;
+            padding: 1.25rem;
             text-align: center;
         }
-        .stat-value { font-size: 2.5rem; font-weight: 700; color: var(--accent); }
-        .stat-label { color: var(--fg-dim); }
-        a { color: var(--accent); }
+        .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-label { color: var(--fg-dim); font-size: 0.85rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
         table {
             width: 100%;
             border-collapse: collapse;
@@ -91,26 +158,81 @@
             padding: 0.75rem;
             border-bottom: 1px solid var(--bg-alt);
         }
-        th { color: var(--fg-dim); font-weight: 500; }
-        tr:hover { background: var(--bg-alt); }
+        th { color: var(--fg-dim); font-weight: 500; font-size: 0.85rem; }
+        tr:hover { background: rgba(255,255,255,0.02); }
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: var(--fg-dim);
+        }
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1rem;
+        }
         pre {
             background: var(--bg-alt);
             padding: 1rem;
             border-radius: 4px;
             overflow-x: auto;
-            font-size: 0.875rem;
+            font-size: 0.85rem;
         }
     </style>
 </head>
 <body>
-    <nav>
-        <a href="/" class="logo">Memex</a>
-        <a href="/records">Records</a>
-        <a href="/tasks">Tasks</a>
-        <a href="/memos">Memos</a>
-    </nav>
-    <main>
-        {% block content %}{{ content }}{% endblock %}
-    </main>
+    <aside class="sidebar">
+        <a href="/" class="sidebar-logo">Memex</a>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">Work</div>
+            <a href="/tasks" class="sidebar-link {% if active_section == "tasks" %}active{% endif %}">
+                <span class="sidebar-icon">&#9744;</span> Tasks
+            </a>
+            <a href="/workers" class="sidebar-link {% if active_section == "workers" %}active{% endif %}">
+                <span class="sidebar-icon">&#9881;</span> Workers
+            </a>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">Directory</div>
+            <a href="/people" class="sidebar-link {% if active_section == "people" %}active{% endif %}">
+                <span class="sidebar-icon">&#9786;</span> People
+            </a>
+            <a href="/teams" class="sidebar-link {% if active_section == "teams" %}active{% endif %}">
+                <span class="sidebar-icon">&#9784;</span> Teams
+            </a>
+            <a href="/projects" class="sidebar-link {% if active_section == "projects" %}active{% endif %}">
+                <span class="sidebar-icon">&#9635;</span> Projects
+            </a>
+            <a href="/repos" class="sidebar-link {% if active_section == "repos" %}active{% endif %}">
+                <span class="sidebar-icon">&#10094;&#10095;</span> Repos
+            </a>
+            <a href="/rules" class="sidebar-link {% if active_section == "rules" %}active{% endif %}">
+                <span class="sidebar-icon">&#9881;</span> Rules
+            </a>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">Events</div>
+            <a href="/memos" class="sidebar-link {% if active_section == "memos" %}active{% endif %}">
+                <span class="sidebar-icon">&#9998;</span> Memos
+            </a>
+            <a href="/threads" class="sidebar-link {% if active_section == "threads" %}active{% endif %}">
+                <span class="sidebar-icon">&#9993;</span> Threads
+            </a>
+            <a href="/activity" class="sidebar-link {% if active_section == "activity" %}active{% endif %}">
+                <span class="sidebar-icon">&#8635;</span> Activity
+            </a>
+        </div>
+    </aside>
+
+    <div class="main-wrapper">
+        <header>
+            <h1>{{ title }}</h1>
+        </header>
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+    </div>
 </body>
 </html>

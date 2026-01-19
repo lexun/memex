@@ -1,0 +1,28 @@
+{% extends "layout.html" %}
+
+{% block content %}
+{% if repos.is_empty() %}
+<div class="empty-state">
+    <p>No repositories in the directory yet.</p>
+</div>
+{% else %}
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Description</th>
+            <th>Added</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for repo in repos %}
+        <tr>
+            <td><strong>{{ repo.name }}</strong></td>
+            <td>{{ repo.description.as_deref().unwrap_or("-") }}</td>
+            <td class="card-meta">{{ repo.created_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

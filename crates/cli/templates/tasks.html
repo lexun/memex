@@ -1,11 +1,24 @@
 {% extends "layout.html" %}
 
 {% block content %}
-<h1>Tasks</h1>
+<div class="stats">
+    <div class="stat-card">
+        <div class="stat-value">{{ pending_count }}</div>
+        <div class="stat-label">Pending</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ in_progress_count }}</div>
+        <div class="stat-label">In Progress</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ done_count }}</div>
+        <div class="stat-label">Done</div>
+    </div>
+</div>
 
 {% if tasks.is_empty() %}
-<div class="card">
-    <p>No tasks found.</p>
+<div class="empty-state">
+    <p>No tasks yet.</p>
 </div>
 {% else %}
 <table>
@@ -22,12 +35,14 @@
         {% for task in tasks %}
         <tr>
             <td>{{ task.title }}</td>
+            <td><span class="badge badge-status {{ task.status_class }}">{{ task.status }}</span></td>
             <td>
-                <span class="badge badge-status {% if task.status == "pending" %}pending{% else if task.status == "blocked" %}blocked{% endif %}">
-                    {{ task.status }}
-                </span>
+                {% if task.priority <= 2 %}
+                <span class="badge badge-priority {{ task.priority_class }}">P{{ task.priority }}</span>
+                {% else %}
+                P{{ task.priority }}
+                {% endif %}
             </td>
-            <td>{{ task.priority }}</td>
             <td>{{ task.project.as_deref().unwrap_or("-") }}</td>
             <td class="card-meta">{{ task.created_at }}</td>
         </tr>

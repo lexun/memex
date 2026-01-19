@@ -1,13 +1,16 @@
 //! Web server integration for the daemon
 //!
-//! Provides a local web UI for browsing records, tasks, and memos.
+//! Provides a local web UI organized into three sections:
+//! - Work: Tasks, Workers (active operations)
+//! - Directory: People, Teams, Projects, Repos, Rules (entities)
+//! - Events: Memos, Threads, Activity (inputs/event sourcing)
 
 use std::sync::Arc;
 
 use askama::Template;
 use axum::{
     extract::{Path, State},
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Redirect},
     routing::get,
     Json, Router,
 };
@@ -24,83 +27,151 @@ pub struct WebState {
 /// Build the web router
 pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
     Router::new()
-        // Pages
-        .route("/", get(index_page))
-        .route("/records", get(records_page))
-        .route("/records/:id", get(record_detail_page))
+        // Home redirects to tasks (primary workspace)
+        .route("/", get(|| async { Redirect::to("/tasks") }))
+
+        // Work section
         .route("/tasks", get(tasks_page))
+        .route("/workers", get(workers_page))
+
+        // Directory section
+        .route("/people", get(people_page))
+        .route("/teams", get(teams_page))
+        .route("/projects", get(projects_page))
+        .route("/repos", get(repos_page))
+        .route("/rules", get(rules_page))
+
+        // Events section
         .route("/memos", get(memos_page))
+        .route("/threads", get(threads_page))
+        .route("/activity", get(activity_page))
+
         // API endpoints
-        .route("/api/records", get(api_list_records))
-        .route("/api/records/:id", get(api_get_record))
         .route("/api/tasks", get(api_list_tasks))
         .route("/api/memos", get(api_list_memos))
-        // Static assets (CSS)
+        .route("/api/records", get(api_list_records))
+        .route("/api/records/:record_type", get(api_list_records_by_type))
+
+        // Static assets
         .nest_service("/static", ServeDir::new("static"))
         .with_state(state)
 }
 
 // -----------------------------------------------------------------------------
-// Templates using Askama
+// Templates
 // -----------------------------------------------------------------------------
-
-#[derive(askama::Template)]
-#[template(path = "index.html")]
-struct IndexTemplate {
-    title: &'static str,
-    record_count: usize,
-    task_count: usize,
-    memo_count: usize,
-}
-
-#[derive(askama::Template)]
-#[template(path = "records.html")]
-struct RecordsTemplate {
-    title: &'static str,
-    records: Vec<RecordView>,
-}
-
-#[derive(askama::Template)]
-#[template(path = "record_detail.html")]
-struct RecordDetailTemplate {
-    title: String,
-    record: RecordView,
-}
 
 #[derive(askama::Template)]
 #[template(path = "tasks.html")]
 struct TasksTemplate {
     title: &'static str,
+    active_section: &'static str,
     tasks: Vec<TaskView>,
+    pending_count: usize,
+    in_progress_count: usize,
+    done_count: usize,
+}
+
+#[derive(askama::Template)]
+#[template(path = "workers.html")]
+struct WorkersTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    workers: Vec<WorkerView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "people.html")]
+struct PeopleTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    people: Vec<RecordView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "teams.html")]
+struct TeamsTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    teams: Vec<RecordView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "projects.html")]
+struct ProjectsTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    projects: Vec<RecordView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "repos.html")]
+struct ReposTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    repos: Vec<RecordView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "rules.html")]
+struct RulesTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    rules: Vec<RecordView>,
 }
 
 #[derive(askama::Template)]
 #[template(path = "memos.html")]
 struct MemosTemplate {
     title: &'static str,
+    active_section: &'static str,
     memos: Vec<MemoView>,
 }
 
-// -----------------------------------------------------------------------------
-// View models (simplified for templates)
-// -----------------------------------------------------------------------------
-
-#[derive(Clone, serde::Serialize)]
-struct RecordView {
-    id: String,
-    record_type: String,
-    title: String,
-    description: Option<String>,
-    created_at: String,
+#[derive(askama::Template)]
+#[template(path = "threads.html")]
+struct ThreadsTemplate {
+    title: &'static str,
+    active_section: &'static str,
 }
+
+#[derive(askama::Template)]
+#[template(path = "activity.html")]
+struct ActivityTemplate {
+    title: &'static str,
+    active_section: &'static str,
+}
+
+// -----------------------------------------------------------------------------
+// View models
+// -----------------------------------------------------------------------------
 
 #[derive(Clone, serde::Serialize)]
 struct TaskView {
     id: String,
     title: String,
     status: String,
+    status_class: String,
     priority: i32,
+    priority_class: String,
     project: Option<String>,
+    created_at: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct WorkerView {
+    id: String,
+    state: String,
+    current_task: Option<String>,
+    worktree: Option<String>,
+    messages_sent: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct RecordView {
+    id: String,
+    name: String,
+    description: Option<String>,
     created_at: String,
 }
 
@@ -113,166 +184,204 @@ struct MemoView {
 }
 
 // -----------------------------------------------------------------------------
-// Page handlers
+// Work section handlers
 // -----------------------------------------------------------------------------
 
-async fn index_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let records = state.atlas.list_records(None, false, None).await.unwrap_or_default();
-    let tasks = state.forge.list_tasks(None, None).await.unwrap_or_default();
-    let memos = state.atlas.list_memos(None).await.unwrap_or_default();
+async fn tasks_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let all_tasks = state.forge.list_tasks(None, None).await.unwrap_or_default();
 
-    let template = IndexTemplate {
-        title: "Dashboard",
-        record_count: records.len(),
-        task_count: tasks.len(),
-        memo_count: memos.len(),
-    };
+    let pending_count = all_tasks.iter().filter(|t| t.status.to_string() == "pending").count();
+    let in_progress_count = all_tasks.iter().filter(|t| t.status.to_string() == "in_progress").count();
+    let done_count = all_tasks.iter().filter(|t| t.status.to_string() == "done").count();
 
-    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
-}
-
-async fn records_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let records = state.atlas.list_records(None, false, None).await.unwrap_or_default();
-
-    let records: Vec<RecordView> = records
+    let tasks: Vec<TaskView> = all_tasks
         .into_iter()
-        .map(|r| RecordView {
-            id: r.id.map(|t| t.id.to_string()).unwrap_or_default(),
-            record_type: format!("{:?}", r.record_type),
-            title: r.name,
-            description: r.description,
-            created_at: r.created_at.to_string(),
+        .map(|t| {
+            let status = t.status.to_string();
+            let status_class = status.replace("_", "-");
+            let priority_class = if t.priority == 1 { "p1" } else if t.priority == 2 { "p2" } else { "" };
+            TaskView {
+                id: t.id.map(|id| id.id.to_string()).unwrap_or_default(),
+                title: t.title,
+                status,
+                status_class,
+                priority: t.priority,
+                priority_class: priority_class.to_string(),
+                project: t.project,
+                created_at: t.created_at.to_string(),
+            }
         })
         .collect();
 
-    let template = RecordsTemplate { title: "Records", records };
+    let template = TasksTemplate {
+        title: "Tasks",
+        active_section: "tasks",
+        tasks,
+        pending_count,
+        in_progress_count,
+        done_count,
+    };
     Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
 }
 
-async fn record_detail_page(
-    State(state): State<Arc<WebState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    match state.atlas.get_record(&id).await {
-        Ok(Some(r)) => {
-            let title = r.name.clone();
-            let record = RecordView {
-                id: r.id.map(|t| t.id.to_string()).unwrap_or_default(),
-                record_type: format!("{:?}", r.record_type),
-                title: r.name,
-                description: r.description,
-                created_at: r.created_at.to_string(),
-            };
-            let template = RecordDetailTemplate { title, record };
-            Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
-        }
-        _ => Html("Record not found".to_string()),
+async fn workers_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    // Get workers from forge store
+    let db_workers = state.forge.list_workers(None).await.unwrap_or_default();
+
+    let workers: Vec<WorkerView> = db_workers
+        .into_iter()
+        .map(|w| WorkerView {
+            id: w.worker_id,
+            state: w.state,
+            current_task: w.current_task,
+            worktree: w.worktree,
+            messages_sent: w.messages_sent as u64,
+        })
+        .collect();
+
+    let template = WorkersTemplate {
+        title: "Workers",
+        active_section: "workers",
+        workers,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+// -----------------------------------------------------------------------------
+// Directory section handlers
+// -----------------------------------------------------------------------------
+
+async fn people_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let records = state.atlas.list_records(Some("Person"), false, None).await.unwrap_or_default();
+    let people: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+
+    let template = PeopleTemplate {
+        title: "People",
+        active_section: "people",
+        people,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn teams_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let records = state.atlas.list_records(Some("Team"), false, None).await.unwrap_or_default();
+    let teams: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+
+    let template = TeamsTemplate {
+        title: "Teams",
+        active_section: "teams",
+        teams,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn projects_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let records = state.atlas.list_records(Some("Project"), false, None).await.unwrap_or_default();
+    let projects: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+
+    let template = ProjectsTemplate {
+        title: "Projects",
+        active_section: "projects",
+        projects,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn repos_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let records = state.atlas.list_records(Some("Repository"), false, None).await.unwrap_or_default();
+    let repos: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+
+    let template = ReposTemplate {
+        title: "Repositories",
+        active_section: "repos",
+        repos,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn rules_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let records = state.atlas.list_records(Some("Rule"), false, None).await.unwrap_or_default();
+    let rules: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+
+    let template = RulesTemplate {
+        title: "Rules",
+        active_section: "rules",
+        rules,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+fn record_to_view(r: atlas::Record) -> RecordView {
+    RecordView {
+        id: r.id.map(|t| t.id.to_string()).unwrap_or_default(),
+        name: r.name,
+        description: r.description,
+        created_at: r.created_at.to_string(),
     }
 }
 
-async fn tasks_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let tasks = state.forge.list_tasks(None, None).await.unwrap_or_default();
-
-    let tasks: Vec<TaskView> = tasks
-        .into_iter()
-        .map(|t| TaskView {
-            id: t.id.map(|id| id.id.to_string()).unwrap_or_default(),
-            title: t.title,
-            status: t.status.to_string(),
-            priority: t.priority,
-            project: t.project,
-            created_at: t.created_at.to_string(),
-        })
-        .collect();
-
-    let template = TasksTemplate { title: "Tasks", tasks };
-    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
-}
+// -----------------------------------------------------------------------------
+// Events section handlers
+// -----------------------------------------------------------------------------
 
 async fn memos_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let memos = state.atlas.list_memos(None).await.unwrap_or_default();
+    let memos_data = state.atlas.list_memos(Some(50)).await.unwrap_or_default();
 
-    let memos: Vec<MemoView> = memos
+    let memos: Vec<MemoView> = memos_data
         .into_iter()
         .map(|m| MemoView {
             id: m.id.map(|t| t.id.to_string()).unwrap_or_default(),
-            content: if m.content.len() > 200 {
-                format!("{}...", &m.content[..200])
-            } else {
-                m.content
-            },
+            content: m.content,
             source: m.source.actor.clone(),
             created_at: m.created_at.to_string(),
         })
         .collect();
 
-    let template = MemosTemplate { title: "Memos", memos };
+    let template = MemosTemplate {
+        title: "Memos",
+        active_section: "memos",
+        memos,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn threads_page() -> impl IntoResponse {
+    let template = ThreadsTemplate {
+        title: "Threads",
+        active_section: "threads",
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn activity_page() -> impl IntoResponse {
+    let template = ActivityTemplate {
+        title: "Activity",
+        active_section: "activity",
+    };
     Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
 }
 
 // -----------------------------------------------------------------------------
-// API handlers (JSON)
+// API handlers
 // -----------------------------------------------------------------------------
-
-async fn api_list_records(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    match state.atlas.list_records(None, false, None).await {
-        Ok(records) => {
-            let records: Vec<RecordView> = records
-                .into_iter()
-                .map(|r| RecordView {
-                    id: r.id.map(|t| t.id.to_string()).unwrap_or_default(),
-                    record_type: format!("{:?}", r.record_type),
-                    title: r.name,
-                    description: r.description,
-                    created_at: r.created_at.to_string(),
-                })
-                .collect();
-            Json(records).into_response()
-        }
-        Err(e) => {
-            tracing::error!("Failed to list records: {}", e);
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to list records").into_response()
-        }
-    }
-}
-
-async fn api_get_record(
-    State(state): State<Arc<WebState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    match state.atlas.get_record(&id).await {
-        Ok(Some(r)) => {
-            let record = RecordView {
-                id: r.id.map(|t| t.id.to_string()).unwrap_or_default(),
-                record_type: format!("{:?}", r.record_type),
-                title: r.name,
-                description: r.description,
-                created_at: r.created_at.to_string(),
-            };
-            Json(record).into_response()
-        }
-        Ok(None) => {
-            (axum::http::StatusCode::NOT_FOUND, "Record not found").into_response()
-        }
-        Err(e) => {
-            tracing::error!("Failed to get record: {}", e);
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to get record").into_response()
-        }
-    }
-}
 
 async fn api_list_tasks(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     match state.forge.list_tasks(None, None).await {
         Ok(tasks) => {
             let tasks: Vec<TaskView> = tasks
                 .into_iter()
-                .map(|t| TaskView {
-                    id: t.id.map(|id| id.id.to_string()).unwrap_or_default(),
-                    title: t.title,
-                    status: t.status.to_string(),
-                    priority: t.priority,
-                    project: t.project,
-                    created_at: t.created_at.to_string(),
+                .map(|t| {
+                    let status = t.status.to_string();
+                    TaskView {
+                        id: t.id.map(|id| id.id.to_string()).unwrap_or_default(),
+                        title: t.title,
+                        status: status.clone(),
+                        status_class: status.replace("_", "-"),
+                        priority: t.priority,
+                        priority_class: String::new(),
+                        project: t.project,
+                        created_at: t.created_at.to_string(),
+                    }
                 })
                 .collect();
             Json(tasks).into_response()
@@ -301,6 +410,35 @@ async fn api_list_memos(State(state): State<Arc<WebState>>) -> impl IntoResponse
         Err(e) => {
             tracing::error!("Failed to list memos: {}", e);
             (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to list memos").into_response()
+        }
+    }
+}
+
+async fn api_list_records(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    match state.atlas.list_records(None, false, None).await {
+        Ok(records) => {
+            let records: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+            Json(records).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to list records: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to list records").into_response()
+        }
+    }
+}
+
+async fn api_list_records_by_type(
+    State(state): State<Arc<WebState>>,
+    Path(record_type): Path<String>,
+) -> impl IntoResponse {
+    match state.atlas.list_records(Some(&record_type), false, None).await {
+        Ok(records) => {
+            let records: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+            Json(records).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to list records: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to list records").into_response()
         }
     }
 }

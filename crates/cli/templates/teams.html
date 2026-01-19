@@ -1,0 +1,21 @@
+{% extends "layout.html" %}
+
+{% block content %}
+{% if teams.is_empty() %}
+<div class="empty-state">
+    <p>No teams in the directory yet.</p>
+</div>
+{% else %}
+<div class="card-grid">
+    {% for team in teams %}
+    <div class="card">
+        <div class="card-title">{{ team.name }}</div>
+        {% if let Some(desc) = team.description %}
+        <p>{{ desc }}</p>
+        {% endif %}
+        <div class="card-meta">Added {{ team.created_at }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

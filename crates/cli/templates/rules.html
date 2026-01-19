@@ -1,0 +1,21 @@
+{% extends "layout.html" %}
+
+{% block content %}
+{% if rules.is_empty() %}
+<div class="empty-state">
+    <p>No rules defined yet.</p>
+</div>
+{% else %}
+<div class="card-grid">
+    {% for rule in rules %}
+    <div class="card">
+        <div class="card-title">{{ rule.name }}</div>
+        {% if let Some(desc) = rule.description %}
+        <p>{{ desc }}</p>
+        {% endif %}
+        <div class="card-meta">Added {{ rule.created_at }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

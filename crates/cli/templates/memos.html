@@ -1,20 +1,18 @@
 {% extends "layout.html" %}
 
 {% block content %}
-<h1>Memos</h1>
-
 {% if memos.is_empty() %}
-<div class="card">
-    <p>No memos found.</p>
+<div class="empty-state">
+    <p>No memos recorded yet.</p>
 </div>
 {% else %}
 {% for memo in memos %}
 <div class="card">
-    <div class="card-meta" style="margin-bottom: 0.5rem;">
-        <span class="badge badge-type">{{ memo.source }}</span>
+    <p>{{ memo.content }}</p>
+    <div class="card-meta">
+        <span class="badge badge-event">{{ memo.source }}</span>
         {{ memo.created_at }}
     </div>
-    <p>{{ memo.content }}</p>
 </div>
 {% endfor %}
 {% endif %}

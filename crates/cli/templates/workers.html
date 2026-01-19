@@ -1,0 +1,32 @@
+{% extends "layout.html" %}
+
+{% block content %}
+{% if workers.is_empty() %}
+<div class="empty-state">
+    <p>No active workers.</p>
+</div>
+{% else %}
+<table>
+    <thead>
+        <tr>
+            <th>Worker ID</th>
+            <th>State</th>
+            <th>Current Task</th>
+            <th>Worktree</th>
+            <th>Messages</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for worker in workers %}
+        <tr>
+            <td><code>{{ worker.id }}</code></td>
+            <td><span class="badge badge-status">{{ worker.state }}</span></td>
+            <td>{{ worker.current_task.as_deref().unwrap_or("-") }}</td>
+            <td>{{ worker.worktree.as_deref().unwrap_or("-") }}</td>
+            <td>{{ worker.messages_sent }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}
