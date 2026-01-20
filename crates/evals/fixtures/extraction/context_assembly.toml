@@ -1,0 +1,116 @@
+# Extraction Test: Context Assembly
+#
+# Tests that extraction creates complete connected context:
+# company → team → people, repos, rules, skills
+#
+# Simplified to focus on core relationships.
+
+[meta]
+name = "context_assembly"
+description = "Verifies complete context assembly from company to all related records"
+
+# =============================================================================
+# EXPECTED RECORDS
+# Using naming patterns the LLM naturally produces
+# =============================================================================
+
+[[expected.records]]
+type = "company"
+name = "DataFlow Inc"
+
+[[expected.records]]
+type = "team"
+name = "Pipeline Team"
+
+[[expected.records]]
+type = "person"
+name = "Elena Rodriguez"
+
+[[expected.records]]
+type = "person"
+name = "James Park"
+
+[[expected.records]]
+type = "repo"
+name = "dataflow-core"
+
+[[expected.records]]
+type = "repo"
+name = "dataflow-ui"
+
+[[expected.records]]
+type = "rule"
+name = "All code must have tests"
+
+[[expected.records]]
+type = "skill"
+name = "Rust development"
+
+[[expected.records]]
+type = "skill"
+name = "React development"
+
+# =============================================================================
+# EXPECTED EDGES
+# Core relationships only
+# =============================================================================
+
+[[expected.edges]]
+from = "Pipeline Team"
+relation = "belongs_to"
+to = "DataFlow Inc"
+
+[[expected.edges]]
+from = "Elena Rodriguez"
+relation = "member_of"
+to = "Pipeline Team"
+
+[[expected.edges]]
+from = "James Park"
+relation = "member_of"
+to = "Pipeline Team"
+
+[[expected.edges]]
+from = "Pipeline Team"
+relation = "owns"
+to = "dataflow-core"
+
+[[expected.edges]]
+from = "Pipeline Team"
+relation = "owns"
+to = "dataflow-ui"
+
+[[expected.edges]]
+from = "All code must have tests"
+relation = "applies_to"
+to = "dataflow-core"
+
+# =============================================================================
+# TEST MEMOS
+# Clearer, more explicit memos
+# =============================================================================
+
+[[memos]]
+content = """
+DataFlow Inc is a data pipeline company. The Pipeline Team is led by
+Elena Rodriguez, with James Park as senior engineer.
+"""
+
+[[memos]]
+content = """
+The Pipeline Team owns two repositories:
+- dataflow-core: Core pipeline engine
+- dataflow-ui: Dashboard UI
+"""
+
+[[memos]]
+content = """
+Engineering rule: All code must have tests. This applies to dataflow-core.
+"""
+
+[[memos]]
+content = """
+Pipeline Team skills:
+- Rust development (Elena's expertise)
+- React development (for the UI)
+"""

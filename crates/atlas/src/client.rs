@@ -482,17 +482,20 @@ impl KnowledgeClient {
     /// Extract records from a specific memo using the new Records + Links pipeline
     ///
     /// If dry_run is true, returns what would be extracted without creating records.
+    /// If multi_step is true, uses the multi-step extraction pipeline for better updates.
     pub async fn extract_records_from_memo(
         &self,
         memo_id: &str,
         threshold: f32,
         dry_run: bool,
+        multi_step: bool,
     ) -> Result<ExtractRecordsResponse> {
         #[derive(Serialize)]
         struct Params<'a> {
             memo_id: &'a str,
             threshold: f32,
             dry_run: bool,
+            multi_step: bool,
         }
 
         let result = self
@@ -503,6 +506,7 @@ impl KnowledgeClient {
                     memo_id,
                     threshold,
                     dry_run,
+                    multi_step,
                 },
             )
             .await

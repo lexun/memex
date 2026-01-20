@@ -166,6 +166,10 @@ pub enum KnowledgeCommand {
         /// Dry run - show what would be extracted without creating records
         #[arg(short, long)]
         dry_run: bool,
+
+        /// Use multi-step extraction (entity → match → decide) for better updates
+        #[arg(short, long)]
+        multi_step: bool,
     },
 
     /// Backfill records from all memos
@@ -199,6 +203,7 @@ pub enum RecordTypeCli {
     Skill,
     Document,
     Task,
+    Technology,
 }
 
 impl std::fmt::Display for RecordTypeCli {
@@ -213,6 +218,7 @@ impl std::fmt::Display for RecordTypeCli {
             RecordTypeCli::Skill => write!(f, "skill"),
             RecordTypeCli::Document => write!(f, "document"),
             RecordTypeCli::Task => write!(f, "task"),
+            RecordTypeCli::Technology => write!(f, "technology"),
         }
     }
 }

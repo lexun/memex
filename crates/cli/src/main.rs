@@ -155,6 +155,10 @@ enum KnowledgeCommands {
         /// Show what would be extracted without creating records
         #[arg(short, long)]
         dry_run: bool,
+
+        /// Use multi-step extraction for better updates
+        #[arg(short, long)]
+        multi_step: bool,
     },
     /// Backfill records from all memos
     #[command(name = "backfill-records", display_order = 13)]
@@ -545,9 +549,9 @@ async fn async_main(command: Commands) -> Result<()> {
                 }
                 Ok(())
             }
-            KnowledgeCommands::Extract { memo_id, threshold, dry_run } => {
+            KnowledgeCommands::Extract { memo_id, threshold, dry_run, multi_step } => {
                 let client = atlas::KnowledgeClient::new(&socket_path);
-                let result = client.extract_records_from_memo(&memo_id, threshold, dry_run).await?;
+                let result = client.extract_records_from_memo(&memo_id, threshold, dry_run, multi_step).await?;
 
                 if dry_run {
                     println!("DRY RUN - Would extract from memo {}:", memo_id);

@@ -265,16 +265,29 @@ fn build_extraction_prompt(context: &ExtractionContext) -> String {
 Extract knowledge from the episode below and output structured JSON.
 
 **RECORDS**: Create records for ALL significant entities mentioned.
-- Record types: repo, person, team, company, rule, skill, document, initiative
+- Record types: repo, person, team, company, rule, skill, document, initiative, technology
 - If an entity clearly matches an existing record above, use action="reference" with existing_id
 - If updating info about an existing record, use action="update" with existing_id
 - Only use action="create" for genuinely new entities not in the list above
+
+**CRITICAL - Handling Updates:**
+When a memo describes a CHANGE to something that already exists, use action="update":
+- "Switching from PostgreSQL to SurrealDB" → UPDATE the technology record, don't create two records
+- "Alice promoted to CTO" → UPDATE Alice's record with new role
+- "Relaxing PR policy from 2 reviews to 1" → UPDATE the existing rule record
+- "Moving repo from team A to team B" → UPDATE the ownership edge
+
+The goal is ONE record per real-world entity, updated over time - NOT a history of separate records.
 
 **IMPORTANT - Always create records for:**
 - REPOS: Any code repository mentioned (e.g., "acme-api", "frontend-app"). Create even if only mentioned in passing.
 - PEOPLE: Any person mentioned by name
 - TEAMS: Any team or group mentioned
 - COMPANIES: Any organization mentioned
+- SKILLS: Any capability or competency that a person or team has. Create as separate records.
+  Examples: "Rust development", "React expertise", "distributed systems", "machine learning"
+  If text says "team has X skills" or "expert in X" → create Skill record for X
+- TECHNOLOGY: Any technology, database, framework, or tool being used (e.g., "PostgreSQL", "SurrealDB", "React")
 
 **RULES**: When you identify a preference, guideline, or convention, create a Rule record.
 - PRESERVE EXACT WORDING: Use the original phrasing from the source as the rule name
@@ -288,6 +301,7 @@ Extract knowledge from the episode below and output structured JSON.
 - belongs_to: Team belongs to a Company; Repo belongs to an Organization
 - owns: Team owns a Repo
 - applies_to: Rule applies to a Repo or Team. "applies to all repos" means create applies_to link for EACH repo.
+- available_to: Skill is available to a Team (e.g., "Team has Rust expertise" → Rust available_to Team)
 - related_to: General relationship
 - depends_on: Technical dependency
 

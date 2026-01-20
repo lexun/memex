@@ -61,6 +61,10 @@ enum Commands {
         /// Show detailed output
         #[arg(short, long)]
         verbose: bool,
+
+        /// Use multi-step extraction pipeline for better updates
+        #[arg(short, long)]
+        multi_step: bool,
     },
 }
 
@@ -123,8 +127,8 @@ async fn main() -> Result<()> {
             list_scenarios(scenarios_dir)?;
             Ok(())
         }
-        Commands::Extraction { fixture, clean, verbose } => {
-            run_extraction_test(&socket_path, &fixture, clean, verbose).await
+        Commands::Extraction { fixture, clean, verbose, multi_step } => {
+            run_extraction_test(&socket_path, &fixture, clean, verbose, multi_step).await
         }
     }
 }
@@ -234,12 +238,14 @@ async fn run_extraction_test(
     fixture_path: &PathBuf,
     clean: bool,
     verbose: bool,
+    multi_step: bool,
 ) -> Result<()> {
     use atlas::{KnowledgeClient, MemoClient, RecordClient};
 
     println!("=== Extraction Test ===");
     println!("Fixture: {}", fixture_path.display());
     println!("Socket: {}", socket_path.display());
+    println!("Mode: {}", if multi_step { "multi-step" } else { "single-shot" });
     println!();
 
     // Load the test fixture
@@ -297,7 +303,7 @@ async fn run_extraction_test(
             println!("  [{}] Extracting from memo {}...", i + 1, memo_id);
         }
         // Use the extract command via client
-        let result = knowledge_client.extract_records_from_memo(memo_id, 0.5, false).await;
+        let result = knowledge_client.extract_records_from_memo(memo_id, 0.5, false, multi_step).await;
         match result {
             Ok(r) => {
                 if verbose {

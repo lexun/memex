@@ -77,6 +77,8 @@ pub enum RecordType {
     Document,
     /// A task or work item
     Task,
+    /// A technology, tool, framework, or service (databases, cloud services, etc.)
+    Technology,
 }
 
 impl Default for RecordType {
@@ -97,6 +99,7 @@ impl std::fmt::Display for RecordType {
             RecordType::Skill => write!(f, "skill"),
             RecordType::Document => write!(f, "document"),
             RecordType::Task => write!(f, "task"),
+            RecordType::Technology => write!(f, "technology"),
         }
     }
 }
@@ -115,6 +118,7 @@ impl std::str::FromStr for RecordType {
             "skill" => Ok(RecordType::Skill),
             "document" => Ok(RecordType::Document),
             "task" => Ok(RecordType::Task),
+            "technology" => Ok(RecordType::Technology),
             _ => Err(format!("Unknown record type: {}", s)),
         }
     }

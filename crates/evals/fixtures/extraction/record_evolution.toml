@@ -1,0 +1,119 @@
+# Extraction Test: Record Evolution
+#
+# Tests that extraction correctly handles updates to existing records.
+#
+# CURRENT STATUS: This test documents ASPIRATIONAL behavior.
+# The extraction currently creates duplicates instead of updates.
+# As we improve the system, this test should start passing.
+#
+# Key behaviors being tested:
+# 1. When a memo updates existing information, use action="update"
+# 2. Final record set should reflect current state, not accumulate history
+# 3. No duplicate records for the same entity
+
+[meta]
+name = "record_evolution"
+description = "Records evolve correctly when new memos update existing information"
+
+# =============================================================================
+# EXPECTED RECORDS (Final State)
+# This is what we SHOULD have after all memos - reflecting current truth.
+# =============================================================================
+
+[[expected.records]]
+type = "company"
+name = "TechFlow"
+description = "AI-powered workflow automation startup"
+
+[[expected.records]]
+type = "team"
+name = "Engineering Team"
+
+[[expected.records]]
+type = "person"
+name = "Sarah Kim"
+
+[[expected.records]]
+type = "person"
+name = "Marcus Johnson"
+
+[[expected.records]]
+type = "repo"
+name = "flowcore"
+
+# EVOLUTION TEST: This should be ONE updated rule, not two separate rules.
+# Currently extraction creates "Two code reviews required" AND "One approval for small PRs"
+# We want it to UPDATE the existing rule to reflect the new policy.
+[[expected.records]]
+type = "rule"
+name = "Two code reviews required"
+description = "PRs require 2 reviews, but small PRs only need 1"
+
+# EVOLUTION TEST: Should only have SurrealDB, not both PostgreSQL and SurrealDB
+[[expected.records]]
+type = "technology"
+name = "SurrealDB"
+
+# =============================================================================
+# EXPECTED EDGES
+# =============================================================================
+
+[[expected.edges]]
+from = "Engineering Team"
+relation = "belongs_to"
+to = "TechFlow"
+
+[[expected.edges]]
+from = "Sarah Kim"
+relation = "member_of"
+to = "Engineering Team"
+
+[[expected.edges]]
+from = "Marcus Johnson"
+relation = "member_of"
+to = "Engineering Team"
+
+[[expected.edges]]
+from = "Engineering Team"
+relation = "owns"
+to = "flowcore"
+
+[[expected.edges]]
+from = "Two code reviews required"
+relation = "applies_to"
+to = "flowcore"
+
+# =============================================================================
+# TEST MEMOS
+# These are recorded sequentially. Later memos update earlier information.
+# =============================================================================
+
+[[memos]]
+content = """
+TechFlow is an AI-powered workflow automation startup. Our Engineering Team
+is led by Sarah Kim. We're building flowcore, our core workflow engine.
+"""
+
+[[memos]]
+content = """
+Tech stack decisions for TechFlow:
+- Database: PostgreSQL (hosted on AWS RDS)
+- All PRs on flowcore require two code reviews before merge
+"""
+
+[[memos]]
+content = """
+Team update: Sarah Kim has been promoted to CTO! Marcus Johnson is joining
+as the new Engineering Lead.
+"""
+
+[[memos]]
+content = """
+We're switching from PostgreSQL to SurrealDB. Migration is complete.
+"""
+
+[[memos]]
+content = """
+Updated PR policy: Small PRs now only need 1 approval instead of 2.
+Large PRs still require 2 reviews.
+"""

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use atlas::{Event, EventSource, Extractor, MemoSource, QueryDecomposer, Record, RecordType, Store as AtlasStore};
+use atlas::{Event, EventSource, Extractor, MemoSource, MultiStepExtractor, QueryDecomposer, Record, RecordType, Store as AtlasStore};
 use cortex::{WorkerConfig, WorkerId, WorkerManager, WorkerState, WorkerStatus};
 use db::Database;
 use forge::{DbWorker, Store as ForgeStore, Task, TaskStatus};
@@ -2307,6 +2307,8 @@ struct ExtractRecordsFromMemoParams {
     threshold: f32,
     #[serde(default)]
     dry_run: bool,
+    #[serde(default)]
+    multi_step: bool,
 }
 
 fn default_threshold() -> f32 {
@@ -2344,19 +2346,28 @@ async fn handle_extract_records_from_memo(
         .map_err(|e| IpcError::internal(e.to_string()))?
         .ok_or_else(|| IpcError::internal(format!("Memo not found: {}", params.memo_id)))?;
 
-    // Get extraction context (existing records)
-    let context = stores
-        .atlas
-        .get_extraction_context()
-        .await
-        .map_err(|e| IpcError::internal(e.to_string()))?;
+    // Extract using single-shot or multi-step extractor
+    let result = if params.multi_step {
+        // Multi-step: entity extraction → record matching → action decision
+        let extractor = MultiStepExtractor::new(llm, &stores.atlas);
+        extractor
+            .extract(&memo.content, &params.memo_id)
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?
+    } else {
+        // Single-shot: one LLM call with context
+        let context = stores
+            .atlas
+            .get_extraction_context()
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Create record extractor and extract
-    let extractor = atlas::RecordExtractor::new(llm);
-    let result = extractor
-        .extract_from_memo(&memo.content, &params.memo_id, &context)
-        .await
-        .map_err(|e| IpcError::internal(e.to_string()))?;
+        let extractor = atlas::RecordExtractor::new(llm);
+        extractor
+            .extract_from_memo(&memo.content, &params.memo_id, &context)
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?
+    };
 
     // If not dry run, process the results (create records, edges, etc.)
     let processing = if !params.dry_run {

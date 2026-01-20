@@ -10,6 +10,7 @@ pub mod extraction;
 pub mod fact;
 pub mod handler;
 pub mod memo;
+pub mod multi_step_extraction;
 pub mod query;
 pub mod record;
 pub mod record_extraction;
@@ -33,4 +34,5 @@ pub use record_extraction::{
     ExtractedLink, ExtractedRecord, RecordAction, RecordExtractionResult,
     RecordExtractor, RecordSummary,
 };
+pub use multi_step_extraction::MultiStepExtractor;
 pub use store::Store;

@@ -299,10 +299,14 @@ pub async fn handle_knowledge_command(cmd: KnowledgeCommand, socket_path: &Path)
             memo_id,
             threshold,
             dry_run,
+            multi_step,
         } => {
             println!("Extracting records from memo: {}", memo_id);
+            if multi_step {
+                println!("Using multi-step extraction pipeline");
+            }
             let result = client
-                .extract_records_from_memo(&memo_id, threshold, dry_run)
+                .extract_records_from_memo(&memo_id, threshold, dry_run, multi_step)
                 .await?;
 
             if dry_run {
