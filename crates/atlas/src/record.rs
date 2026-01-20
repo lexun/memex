@@ -71,7 +71,8 @@ pub enum RecordType {
     Initiative,
     /// A rule or guideline (coding standards, preferences)
     Rule,
-    /// A skill or capability (like Claude skills)
+    /// An agent-executable skill (like Claude skills from github.com/anthropics/skills)
+    /// NOT personal expertise - that's an attribute of Person records
     Skill,
     /// A wiki-like document
     Document,

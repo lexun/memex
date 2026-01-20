@@ -2307,8 +2307,12 @@ struct ExtractRecordsFromMemoParams {
     threshold: f32,
     #[serde(default)]
     dry_run: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     multi_step: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_threshold() -> f32 {
@@ -2434,24 +2438,15 @@ async fn handle_backfill_records(
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Create record extractor
-    let extractor = atlas::RecordExtractor::new(llm);
+    // Use multi-step extractor (better accuracy via entity matching)
+    let extractor = MultiStepExtractor::new(llm, &stores.atlas);
 
     for memo in memos {
         memos_processed += 1;
         let memo_id = memo.id_str().unwrap_or_default();
 
-        // Get fresh context for each memo (to include newly created records)
-        let context = match stores.atlas.get_extraction_context().await {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                tracing::warn!("Failed to get extraction context: {}", e);
-                continue;
-            }
-        };
-
-        // Extract records from this memo
-        match extractor.extract_from_memo(&memo.content, &memo_id, &context).await {
+        // Extract records from this memo using multi-step pipeline
+        match extractor.extract(&memo.content, &memo_id).await {
             Ok(result) => {
                 // Process the results
                 match stores

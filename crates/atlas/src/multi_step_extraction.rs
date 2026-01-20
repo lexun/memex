@@ -122,22 +122,25 @@ impl<'a> MultiStepExtractor<'a> {
     async fn extract_entities(&self, content: &str) -> Result<EntityExtractionResult> {
         let prompt = r#"Analyze this memo and extract ALL entity mentions and relationships.
 
-ENTITY TYPES (ONLY use these seven types):
+ENTITY TYPES (ONLY use these six types):
 - company: Organizations, businesses (e.g., "DataFlow Inc", "TechFlow")
 - team: Groups within companies (e.g., "Engineering Team", "Pipeline Team")
 - person: Individual people by name (e.g., "Sarah Kim", "Marcus Johnson")
+  Note: Personal expertise like "Rust development" is an ATTRIBUTE of Person, not a separate entity
 - repo: Code repositories (e.g., "flowcore", "dataflow-core") - NEVER use "document" for repos
 - technology: Databases, frameworks, tools, cloud services - NEVER use "document"!
   Examples: PostgreSQL, SurrealDB, MySQL, MongoDB, AWS RDS, React, Python, Rust
 - rule: Policies and guidelines - use the rule CONTENT as the name
   Example: "PRs require two reviews" → name: "Two code reviews required"
-- skill: Capabilities - include the full phrase like "Rust development", "React expertise"
-  Example: "Elena's Rust expertise" → skill: "Rust development" (NOT just "Rust")
+
+IMPORTANT - Do NOT create "skill" entities for personal expertise:
+- "Elena has Rust expertise" → Person record for Elena (expertise noted in context)
+- "Team knows React" → NOT a skill entity, just context about the team
 
 CRITICAL:
 1. Extract EVERY item from lists separately
 2. PostgreSQL, SurrealDB, AWS RDS → type: "technology" (NEVER "document")
-3. "Rust development" = skill, "React" when used as a tool = technology
+3. "Rust" when used as a programming language/tool = technology
 4. For UPDATE detection: "switching from X to Y" → is_update=true, previous_value=X
 
 RELATIONSHIPS - extract ALL mentioned:

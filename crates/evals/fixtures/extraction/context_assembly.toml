@@ -42,13 +42,10 @@ name = "dataflow-ui"
 type = "rule"
 name = "All code must have tests"
 
-[[expected.records]]
-type = "skill"
-name = "Rust development"
-
-[[expected.records]]
-type = "skill"
-name = "React development"
+# Note: "Rust development" and "React development" are personal expertise,
+# NOT agent Skills. Personal expertise is captured as attributes of Person
+# records or as Facts, not as separate Skill records.
+# See memo wrepk3jgiwqezzgcac1w for terminology clarification.
 
 # =============================================================================
 # EXPECTED EDGES
@@ -110,7 +107,7 @@ Engineering rule: All code must have tests. This applies to dataflow-core.
 
 [[memos]]
 content = """
-Pipeline Team skills:
-- Rust development (Elena's expertise)
-- React development (for the UI)
+Pipeline Team expertise:
+- Elena specializes in Rust development
+- James focuses on React for the UI
 """
