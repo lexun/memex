@@ -252,6 +252,6 @@ pub struct DispatchTaskResult {
     pub task_id: String,
     /// Record ID that context was assembled from (if any)
     pub context_from: Option<String>,
-    /// Initial response from the worker
-    pub initial_response: String,
+    /// Whether the worker is ready to receive messages
+    pub ready: bool,
 }
