@@ -233,6 +233,8 @@ pub enum EdgeRelationCli {
     Owns,
     AvailableTo,
     DependsOn,
+    PartOf,
+    AssignedTo,
     RelatedTo,
 }
 
@@ -245,6 +247,8 @@ impl std::fmt::Display for EdgeRelationCli {
             EdgeRelationCli::Owns => write!(f, "owns"),
             EdgeRelationCli::AvailableTo => write!(f, "available_to"),
             EdgeRelationCli::DependsOn => write!(f, "depends_on"),
+            EdgeRelationCli::PartOf => write!(f, "part_of"),
+            EdgeRelationCli::AssignedTo => write!(f, "assigned_to"),
             EdgeRelationCli::RelatedTo => write!(f, "related_to"),
         }
     }

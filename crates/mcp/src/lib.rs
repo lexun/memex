@@ -1752,7 +1752,7 @@ impl McpServer for MemexMcpServer {
     /// Create an edge between two records
     ///
     /// Edges define relationships like "rule applies_to repo" or "person member_of team".
-    /// Valid relations: applies_to, belongs_to, member_of, owns, available_to, depends_on, related_to
+    /// Valid relations: applies_to, belongs_to, member_of, owns, available_to, depends_on, part_of, assigned_to, related_to
     #[tool]
     async fn create_edge(
         &self,
@@ -1760,7 +1760,7 @@ impl McpServer for MemexMcpServer {
         source: String,
         /// Target record ID
         target: String,
-        /// Relationship type (applies_to, belongs_to, member_of, owns, available_to, depends_on, related_to)
+        /// Relationship type (applies_to, belongs_to, member_of, owns, available_to, depends_on, part_of, assigned_to, related_to)
         relation: String,
         /// Optional JSON metadata for the edge
         metadata: Option<String>,

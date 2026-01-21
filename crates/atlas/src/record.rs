@@ -195,8 +195,15 @@ pub enum EdgeRelation {
     Owns,
     /// Skill available to person/team/repo
     AvailableTo,
-    /// Task depends on task
+    /// Task depends on task (blocking relationship)
     DependsOn,
+    /// Task is part of larger task (decomposition without blocking)
+    /// Used for yak-map style task breakdown where subtasks contribute
+    /// to parent completion but don't strictly block it
+    PartOf,
+    /// Task/work assigned to worker or person
+    /// Links agents or people to tasks they're actively working on
+    AssignedTo,
     /// Generic association
     RelatedTo,
 }
@@ -216,6 +223,8 @@ impl std::fmt::Display for EdgeRelation {
             EdgeRelation::Owns => write!(f, "owns"),
             EdgeRelation::AvailableTo => write!(f, "available_to"),
             EdgeRelation::DependsOn => write!(f, "depends_on"),
+            EdgeRelation::PartOf => write!(f, "part_of"),
+            EdgeRelation::AssignedTo => write!(f, "assigned_to"),
             EdgeRelation::RelatedTo => write!(f, "related_to"),
         }
     }
@@ -232,6 +241,8 @@ impl std::str::FromStr for EdgeRelation {
             "owns" => Ok(EdgeRelation::Owns),
             "available_to" => Ok(EdgeRelation::AvailableTo),
             "depends_on" => Ok(EdgeRelation::DependsOn),
+            "part_of" => Ok(EdgeRelation::PartOf),
+            "assigned_to" => Ok(EdgeRelation::AssignedTo),
             "related_to" => Ok(EdgeRelation::RelatedTo),
             _ => Err(format!("Unknown edge relation: {}", s)),
         }

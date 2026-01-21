@@ -336,7 +336,7 @@ Output JSON only (no markdown code blocks, no explanation):
     {{
       "source": "record name or existing_id",
       "target": "record name or existing_id",
-      "relation": "applies_to|belongs_to|member_of|owns|available_to|depends_on|related_to",
+      "relation": "applies_to|belongs_to|member_of|owns|available_to|depends_on|part_of|assigned_to|related_to",
       "confidence": 0.0-1.0
     }}
   ],
