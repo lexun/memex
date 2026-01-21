@@ -3481,30 +3481,20 @@ async fn handle_cortex_dispatch_task(
         tracing::warn!("Failed to persist worker to DB: {}", e);
     }
 
-    // 8. Send initial message to start work
-    let initial_message = format!(
-        "Begin working on the task: {}\n\n\
-         Your working directory is: {}\n\n\
-         Review the task description and any context provided, then start implementation.",
-        task_title, worktree_path
-    );
-
-    let response = stores.workers
-        .send_message(&worker_id, &initial_message)
-        .await
-        .map_err(|e| IpcError::internal(format!("Failed to send initial message: {}", e)))?;
-
-    // Update task status to in_progress
+    // 8. Update task status to in_progress
     if let Err(e) = stores.atlas.update_task_status(&params.task_id, "in_progress").await {
         tracing::warn!("Failed to update task status: {}", e);
     }
+
+    // Note: We don't send an initial message here - that would block waiting for Claude.
+    // The caller should use cortex_send_message or cortex_send_message_async to start the worker.
 
     Ok(json!({
         "worker_id": worker_id.0,
         "worktree": worktree_path,
         "task_id": params.task_id,
         "context_from": context_record_id,
-        "initial_response": response.result,
+        "ready": true,
     }))
 }
 
