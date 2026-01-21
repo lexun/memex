@@ -1631,6 +1631,49 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Get environment variables for a worktree
+    ///
+    /// Returns the allocated environment variables for a specific worktree,
+    /// formatted for shell export. If no branch is specified, uses the current
+    /// working directory to determine the worktree.
+    ///
+    /// Output formats:
+    /// - "export" (default): `export VAR=value` lines for bash/zsh
+    /// - "json": JSON object of key-value pairs
+    /// - "dotenv": `VAR=value` lines for .env files
+    #[tool]
+    async fn vibetree_env(
+        &self,
+        /// Path to the git repository root or worktree directory
+        cwd: String,
+        /// Branch/worktree name (optional, detected from cwd if not provided)
+        branch: Option<String>,
+        /// Output format: "export" (default), "json", or "dotenv"
+        format: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        let params = serde_json::json!({
+            "cwd": cwd,
+            "branch": branch,
+            "format": format.unwrap_or_else(|| "export".to_string()),
+        });
+
+        match self.ipc_client.request("vibetree_env", params).await {
+            Ok(result) => {
+                // Result is already the formatted string
+                let output = result.as_str().unwrap_or("");
+                if output.is_empty() {
+                    Ok("No environment variables found for this worktree".to_string())
+                } else {
+                    Ok(output.to_string())
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to get worktree env: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Agent messaging tools (inter-agent communication)
     // -------------------------------------------------------------------------

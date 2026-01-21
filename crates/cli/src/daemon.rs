@@ -638,6 +638,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "vibetree_create" => handle_vibetree_create(request).await,
         "vibetree_remove" => handle_vibetree_remove(request).await,
         "vibetree_merge" => handle_vibetree_merge(request).await,
+        "vibetree_env" => handle_vibetree_env(request).await,
 
         // Agent messaging operations (inter-agent communication)
         "send_agent_message" => handle_send_agent_message(request, stores).await,
@@ -3997,6 +3998,87 @@ async fn handle_vibetree_merge(request: &Request) -> Result<serde_json::Value, I
         "squashed": squash,
         "removed": removed,
     }))
+}
+
+#[derive(Deserialize)]
+struct VibetreeEnvParams {
+    cwd: String,
+    branch: Option<String>,
+    format: Option<String>,
+}
+
+async fn handle_vibetree_env(request: &Request) -> Result<serde_json::Value, IpcError> {
+    let params: VibetreeEnvParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let path = std::path::PathBuf::from(&params.cwd);
+    let format = params.format.as_deref().unwrap_or("export");
+
+    // Load vibetree config
+    let app = vibetree::VibeTreeApp::load_existing_with_parent(path.clone())
+        .map_err(|e| IpcError::internal(format!("Failed to load vibetree config: {}", e)))?;
+
+    let worktrees = app
+        .collect_worktree_data()
+        .map_err(|e| IpcError::internal(format!("Failed to list worktrees: {}", e)))?;
+
+    // Determine which worktree to get env for
+    let branch_name = if let Some(ref branch) = params.branch {
+        branch.clone()
+    } else {
+        // Try to detect branch from cwd path
+        // The cwd might be inside a worktree like .vibetree/branches/<branch-name>/...
+        let cwd_str = path.to_string_lossy();
+        let mut detected_branch: Option<String> = None;
+
+        // Check if we're in a worktree directory
+        for wt in &worktrees {
+            // Worktree paths are typically .vibetree/branches/<name>
+            if cwd_str.contains(&format!("/{}/", wt.name)) || cwd_str.ends_with(&format!("/{}", wt.name)) {
+                detected_branch = Some(wt.name.clone());
+                break;
+            }
+        }
+
+        detected_branch.ok_or_else(|| {
+            IpcError::invalid_params(
+                "Could not detect worktree from cwd. Please specify a branch name.".to_string()
+            )
+        })?
+    };
+
+    // Find the worktree
+    let worktree = worktrees
+        .into_iter()
+        .find(|wt| wt.name == branch_name)
+        .ok_or_else(|| {
+            IpcError::invalid_params(format!("Worktree '{}' not found", branch_name))
+        })?;
+
+    // Format the output based on requested format
+    let output = match format {
+        "json" => {
+            serde_json::to_string_pretty(&worktree.values)
+                .unwrap_or_else(|_| "{}".to_string())
+        }
+        "dotenv" => {
+            worktree.values
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        _ => {
+            // Default "export" format for bash/zsh
+            worktree.values
+                .iter()
+                .map(|(k, v)| format!("export {}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    };
+
+    Ok(json!(output))
 }
 
 // ========== Agent Messaging Handlers ==========
