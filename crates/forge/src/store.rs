@@ -273,6 +273,19 @@ impl Store {
         created.context("Note creation returned no result")
     }
 
+    /// Create a note with all fields (for migration/testing)
+    pub async fn create_note(&self, note: TaskNote) -> Result<TaskNote> {
+        let created: Option<TaskNote> = self
+            .db
+            .client()
+            .create("task_note")
+            .content(note)
+            .await
+            .context("Failed to create note")?;
+
+        created.context("Note creation returned no result")
+    }
+
     /// Get notes for a task
     pub async fn get_notes(&self, task_id: &TaskId) -> Result<Vec<TaskNote>> {
         let mut response = self
@@ -345,6 +358,19 @@ impl Store {
             created_at: Datetime::default(),
         };
 
+        let created: Option<TaskDependency> = self
+            .db
+            .client()
+            .create("task_dependency")
+            .content(dep)
+            .await
+            .context("Failed to create dependency")?;
+
+        created.context("Dependency creation returned no result")
+    }
+
+    /// Create a dependency with all fields (for migration/testing)
+    pub async fn create_dependency(&self, dep: TaskDependency) -> Result<TaskDependency> {
         let created: Option<TaskDependency> = self
             .db
             .client()

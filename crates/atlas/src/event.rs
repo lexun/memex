@@ -252,3 +252,113 @@ pub mod task {
         )
     }
 }
+
+// ============ Record Event Helpers ============
+
+/// Helper for creating record change events with proper structure
+///
+/// These events capture changes to Atlas records (repos, teams, persons,
+/// rules, skills, etc.) for provenance tracking.
+pub mod record {
+    use super::*;
+    use serde_json::json;
+
+    /// Create a record.created event
+    pub fn created(record: &Value, source: EventSource) -> Event {
+        Event::new(
+            "record.created",
+            source,
+            json!({ "record": record }),
+        )
+    }
+
+    /// Create a record.updated event with diff
+    ///
+    /// The changes object captures what was modified:
+    /// - For simple fields: { "field": { "old": ..., "new": ... } }
+    /// - For content updates: { "content": { "old": {...}, "new": {...} } }
+    pub fn updated(
+        record_id: &str,
+        record_type: &str,
+        changes: Value,
+        snapshot: &Value,
+        source: EventSource,
+    ) -> Event {
+        Event::new(
+            "record.updated",
+            source,
+            json!({
+                "record_id": record_id,
+                "record_type": record_type,
+                "changes": changes,
+                "snapshot": snapshot
+            }),
+        )
+    }
+
+    /// Create a record.deleted event (soft delete)
+    pub fn deleted(record_id: &str, record_type: &str, snapshot: &Value, source: EventSource) -> Event {
+        Event::new(
+            "record.deleted",
+            source,
+            json!({
+                "record_id": record_id,
+                "record_type": record_type,
+                "snapshot": snapshot
+            }),
+        )
+    }
+
+    /// Create a record.edge_created event
+    pub fn edge_created(
+        source_id: &str,
+        target_id: &str,
+        relation: &str,
+        edge_id: &str,
+        source: EventSource,
+    ) -> Event {
+        Event::new(
+            "record.edge_created",
+            source,
+            json!({
+                "source_record_id": source_id,
+                "target_record_id": target_id,
+                "relation": relation,
+                "edge_id": edge_id
+            }),
+        )
+    }
+
+    /// Create a record.edge_superseded event
+    ///
+    /// Emitted when an edge is marked as superseded (relationship changed)
+    pub fn edge_superseded(
+        old_edge_id: &str,
+        new_edge_id: &str,
+        old_target_id: &str,
+        new_target_id: &str,
+        relation: &str,
+        source: EventSource,
+    ) -> Event {
+        Event::new(
+            "record.edge_superseded",
+            source,
+            json!({
+                "old_edge_id": old_edge_id,
+                "new_edge_id": new_edge_id,
+                "old_target_id": old_target_id,
+                "new_target_id": new_target_id,
+                "relation": relation
+            }),
+        )
+    }
+
+    /// Create a record.edge_deleted event
+    pub fn edge_deleted(edge_id: &str, source: EventSource) -> Event {
+        Event::new(
+            "record.edge_deleted",
+            source,
+            json!({ "edge_id": edge_id }),
+        )
+    }
+}

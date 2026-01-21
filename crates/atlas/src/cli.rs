@@ -192,6 +192,9 @@ pub enum KnowledgeCommand {
 }
 
 /// Record type for CLI
+///
+/// Note: Task is intentionally excluded here - tasks have dedicated
+/// CLI commands (`memex task`) with workflow-specific semantics.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum RecordTypeCli {
     Repo,
@@ -202,7 +205,6 @@ pub enum RecordTypeCli {
     Rule,
     Skill,
     Document,
-    Task,
     Technology,
 }
 
@@ -217,7 +219,6 @@ impl std::fmt::Display for RecordTypeCli {
             RecordTypeCli::Rule => write!(f, "rule"),
             RecordTypeCli::Skill => write!(f, "skill"),
             RecordTypeCli::Document => write!(f, "document"),
-            RecordTypeCli::Task => write!(f, "task"),
             RecordTypeCli::Technology => write!(f, "technology"),
         }
     }

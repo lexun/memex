@@ -11,7 +11,7 @@ use surrealdb::sql::Thing;
 use tracing::debug;
 
 use crate::event::Event;
-use crate::fact::{Entity, Fact};
+use crate::fact::{Entity, Fact, FactType};
 use crate::memo::{Memo, MemoSource};
 use crate::record::{ContextAssembly, EdgeRelation, Record, RecordEdge};
 
@@ -193,6 +193,8 @@ impl Store {
     }
 
     /// Search facts using full-text search with optional temporal filtering
+    ///
+    /// By default, only returns current (non-superseded) facts.
     pub async fn search_facts_temporal(
         &self,
         query: &str,
@@ -201,8 +203,9 @@ impl Store {
         date_start: Option<chrono::DateTime<chrono::Utc>>,
         date_end: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Vec<FactSearchResult>> {
+        // Only return current facts (not superseded)
         let mut sql = String::from(
-            "SELECT *, search::score(1) AS score FROM fact WHERE content @1@ $query",
+            "SELECT *, search::score(1) AS score FROM fact WHERE content @1@ $query AND superseded_by IS NONE",
         );
 
         if project.is_some() {
@@ -258,6 +261,59 @@ impl Store {
             .context("Failed to get fact")?;
 
         Ok(fact)
+    }
+
+    /// Supersede a fact with a new one
+    ///
+    /// This marks the old fact as superseded (sets valid_until and superseded_by)
+    /// and creates a new fact with the updated content. Used when knowledge changes over time.
+    ///
+    /// Example: "TechFlow uses PostgreSQL" → "TechFlow uses SurrealDB"
+    pub async fn supersede_fact(
+        &self,
+        old_fact_id: &str,
+        new_content: &str,
+        via_event: Option<&str>,
+    ) -> Result<Fact> {
+        // Get the old fact
+        let old_fact = self
+            .get_fact(old_fact_id)
+            .await?
+            .context("Old fact not found")?;
+
+        // Create the new fact with same metadata but new content
+        let fact_type: FactType = old_fact.fact_type.parse().unwrap_or_default();
+        let new_fact = Fact::new(new_content, fact_type, old_fact.confidence)
+            .with_project(old_fact.project.as_deref().unwrap_or(""));
+
+        // Add source episodes from the old fact
+        let mut new_fact = new_fact;
+        new_fact.source_episodes = old_fact.source_episodes.clone();
+
+        // Create the new fact
+        let created_fact = self.create_fact(new_fact).await?;
+        let new_fact_id = created_fact.id.clone();
+
+        // Update the old fact to mark it as superseded
+        let now = surrealdb::sql::Datetime::default();
+        let sql = r#"
+            UPDATE type::thing('fact', $old_id) SET
+                valid_until = $now,
+                superseded_by = $new_id,
+                superseded_via = $via_event
+        "#;
+
+        self.db
+            .client()
+            .query(sql)
+            .bind(("old_id", old_fact_id.to_string()))
+            .bind(("now", now))
+            .bind(("new_id", new_fact_id))
+            .bind(("via_event", via_event.map(|s| s.to_string())))
+            .await
+            .context("Failed to update old fact")?;
+
+        Ok(created_fact)
     }
 
     /// List facts with optional project filter
@@ -695,6 +751,8 @@ impl Store {
     }
 
     /// Search facts using vector similarity with temporal filtering
+    ///
+    /// By default, only returns current (non-superseded) facts.
     pub async fn vector_search_facts_temporal(
         &self,
         query_embedding: &[f32],
@@ -707,9 +765,10 @@ impl Store {
         // K = number of results, D = distance (optional, defaults to index distance)
         let k = limit.unwrap_or(10);
 
+        // Only return current facts (not superseded)
         let mut sql = format!(
             "SELECT *, vector::similarity::cosine(embedding, $embedding) AS score \
-             FROM fact WHERE embedding <|{k}|> $embedding"
+             FROM fact WHERE embedding <|{k}|> $embedding AND superseded_by IS NONE"
         );
 
         if project.is_some() {
@@ -1430,6 +1489,45 @@ impl Store {
         created.context("Edge creation returned no result")
     }
 
+    /// Create an edge from a pre-built RecordEdge (for migrations)
+    pub async fn create_edge_raw(&self, edge: RecordEdge) -> Result<RecordEdge> {
+        let created: Option<RecordEdge> = self
+            .db
+            .client()
+            .create("record_edge")
+            .content(edge)
+            .await
+            .context("Failed to create edge")?;
+
+        created.context("Edge creation returned no result")
+    }
+
+    /// Create an edge with custom relation string and timestamp (for migrations)
+    pub async fn create_edge_with_details(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        relation: &str,
+        created_at: surrealdb::sql::Datetime,
+    ) -> Result<RecordEdge> {
+        let source = Thing::from(("record", source_id));
+        let target = Thing::from(("record", target_id));
+
+        let mut edge = RecordEdge::new(source, target, EdgeRelation::RelatedTo)
+            .with_created_at(created_at);
+        edge.relation = relation.to_string();
+
+        let created: Option<RecordEdge> = self
+            .db
+            .client()
+            .create("record_edge")
+            .content(edge)
+            .await
+            .context("Failed to create edge")?;
+
+        created.context("Edge creation returned no result")
+    }
+
     /// Delete an edge by ID
     pub async fn delete_edge(&self, id: &str) -> Result<Option<RecordEdge>> {
         let deleted: Option<RecordEdge> = self
@@ -1442,11 +1540,67 @@ impl Store {
         Ok(deleted)
     }
 
+    /// Supersede an edge with a new one
+    ///
+    /// This marks the old edge as superseded (sets valid_until and superseded_by)
+    /// and creates a new edge. Used when relationships change over time.
+    ///
+    /// Example: "TechFlow uses PostgreSQL" → "TechFlow uses SurrealDB"
+    pub async fn supersede_edge(
+        &self,
+        old_edge_id: &str,
+        new_target_id: &str,
+        via_event: Option<&str>,
+    ) -> Result<RecordEdge> {
+        // Get the old edge
+        let old_edge: Option<RecordEdge> = self
+            .db
+            .client()
+            .select(("record_edge", old_edge_id))
+            .await
+            .context("Failed to fetch old edge")?;
+
+        let old_edge = old_edge.context("Old edge not found")?;
+
+        // Create the new edge with the same source and relation but new target
+        let source_id = old_edge.source.id.to_raw();
+        let relation: EdgeRelation = old_edge.relation.parse()
+            .map_err(|e: String| anyhow::anyhow!(e))?;
+
+        let new_edge = self.create_edge(&source_id, new_target_id, relation, None).await?;
+        let new_edge_id = new_edge.id.clone();
+
+        // Update the old edge to mark it as superseded
+        let now = surrealdb::sql::Datetime::default();
+        let sql = r#"
+            UPDATE type::thing('record_edge', $old_id) SET
+                valid_until = $now,
+                superseded_by = $new_id,
+                superseded_via = $via_event
+        "#;
+
+        self.db
+            .client()
+            .query(sql)
+            .bind(("old_id", old_edge_id.to_string()))
+            .bind(("now", now))
+            .bind(("new_id", new_edge_id))
+            .bind(("via_event", via_event.map(|s| s.to_string())))
+            .await
+            .context("Failed to update old edge")?;
+
+        Ok(new_edge)
+    }
+
     /// Get all edges from a source record
+    ///
+    /// If `current_only` is true, only returns edges that haven't been superseded
+    /// (no valid_until set). This is typically what you want for context assembly.
     pub async fn get_edges_from(
         &self,
         source_id: &str,
         relation: Option<EdgeRelation>,
+        current_only: bool,
     ) -> Result<Vec<RecordEdge>> {
         let mut sql = String::from(
             "SELECT * FROM record_edge WHERE source = type::thing('record', $source_id)"
@@ -1454,6 +1608,10 @@ impl Store {
 
         if relation.is_some() {
             sql.push_str(" AND relation = $relation");
+        }
+
+        if current_only {
+            sql.push_str(" AND superseded_by IS NONE");
         }
 
         let mut response = self
@@ -1470,10 +1628,13 @@ impl Store {
     }
 
     /// Get all edges to a target record
+    ///
+    /// If `current_only` is true, only returns edges that haven't been superseded.
     pub async fn get_edges_to(
         &self,
         target_id: &str,
         relation: Option<EdgeRelation>,
+        current_only: bool,
     ) -> Result<Vec<RecordEdge>> {
         let mut sql = String::from(
             "SELECT * FROM record_edge WHERE target = type::thing('record', $target_id)"
@@ -1481,6 +1642,10 @@ impl Store {
 
         if relation.is_some() {
             sql.push_str(" AND relation = $relation");
+        }
+
+        if current_only {
+            sql.push_str(" AND superseded_by IS NONE");
         }
 
         let mut response = self
@@ -1536,7 +1701,8 @@ impl Store {
             }
 
             // Get outgoing edges (this record -> targets)
-            let edges_out = self.get_edges_from(&record_id, None).await?;
+            // Only traverse current edges (not superseded ones)
+            let edges_out = self.get_edges_from(&record_id, None, true).await?;
             for edge in edges_out {
                 let target_id = edge.target.id.to_raw();
                 if !visited.contains(&target_id) {
@@ -1548,7 +1714,8 @@ impl Store {
             }
 
             // Get incoming edges (sources -> this record)
-            let edges_in = self.get_edges_to(&record_id, None).await?;
+            // Only traverse current edges (not superseded ones)
+            let edges_in = self.get_edges_to(&record_id, None, true).await?;
             for edge in edges_in {
                 let source_id = edge.source.id.to_raw();
                 if !visited.contains(&source_id) {
@@ -1565,6 +1732,548 @@ impl Store {
         }
 
         Ok(assembly)
+    }
+
+    // ========== Task Operations ==========
+
+    /// Create a new task record
+    ///
+    /// This is a convenience method that creates a Record with record_type = "task"
+    /// and the appropriate content structure.
+    pub async fn create_task(
+        &self,
+        title: &str,
+        description: Option<&str>,
+        project: Option<&str>,
+        priority: i32,
+    ) -> Result<Record> {
+        use crate::record::{RecordType, TaskContent, TaskStatus};
+
+        let content = TaskContent {
+            status: TaskStatus::Pending,
+            priority,
+            project: project.map(|s| s.to_string()),
+            completed_at: None,
+        };
+
+        let mut record = Record::new(RecordType::Task, title)
+            .with_content(content.to_json());
+
+        if let Some(desc) = description {
+            record = record.with_description(desc);
+        }
+
+        self.create_record(record).await
+    }
+
+    /// List tasks with optional project and status filters
+    pub async fn list_tasks(
+        &self,
+        project: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Vec<Record>> {
+        let mut query = String::from(
+            "SELECT * FROM record WHERE record_type = 'task' AND deleted_at IS NONE"
+        );
+
+        if project.is_some() {
+            query.push_str(" AND content.project = $project");
+        }
+        if status.is_some() {
+            query.push_str(" AND content.status = $status");
+        }
+
+        query.push_str(" ORDER BY content.priority ASC, created_at DESC");
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("project", project.map(|s| s.to_string())))
+            .bind(("status", status.map(|s| s.to_string())))
+            .await
+            .context("Failed to query tasks")?;
+
+        let tasks: Vec<Record> = response.take(0).context("Failed to parse tasks")?;
+        Ok(tasks)
+    }
+
+    /// Get tasks that are ready to work on (pending with no blocking dependencies)
+    pub async fn ready_tasks(&self, project: Option<&str>) -> Result<Vec<Record>> {
+        use crate::record::task_relations;
+
+        // Find tasks that are pending and not blocked by any incomplete task
+        let query = if project.is_some() {
+            format!(
+                r#"
+                SELECT * FROM record
+                WHERE record_type = 'task'
+                AND deleted_at IS NONE
+                AND content.status = 'pending'
+                AND content.project = $project
+                AND id NOT IN (
+                    SELECT source FROM record_edge
+                    WHERE relation = '{}'
+                    AND (SELECT content.status FROM record WHERE id = target)[0] NOT IN ['completed', 'cancelled']
+                )
+                ORDER BY content.priority ASC, created_at ASC
+                "#,
+                task_relations::BLOCKED_BY
+            )
+        } else {
+            format!(
+                r#"
+                SELECT * FROM record
+                WHERE record_type = 'task'
+                AND deleted_at IS NONE
+                AND content.status = 'pending'
+                AND id NOT IN (
+                    SELECT source FROM record_edge
+                    WHERE relation = '{}'
+                    AND (SELECT content.status FROM record WHERE id = target)[0] NOT IN ['completed', 'cancelled']
+                )
+                ORDER BY content.priority ASC, created_at ASC
+                "#,
+                task_relations::BLOCKED_BY
+            )
+        };
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("project", project.map(|s| s.to_string())))
+            .await
+            .context("Failed to query ready tasks")?;
+
+        let tasks: Vec<Record> = response.take(0).context("Failed to parse ready tasks")?;
+        Ok(tasks)
+    }
+
+    /// Update a task's fields
+    ///
+    /// For status and priority, pass the new values.
+    /// For description and project, use `Some(Some("value"))` to set,
+    /// `Some(None)` to clear, and `None` to leave unchanged.
+    pub async fn update_task(
+        &self,
+        id: &str,
+        status: Option<&str>,
+        priority: Option<i32>,
+        title: Option<&str>,
+        description: Option<Option<&str>>,
+        project: Option<Option<&str>>,
+    ) -> Result<Option<Record>> {
+        use surrealdb::sql::Datetime;
+
+        // Get existing record
+        let existing = self.get_record(id).await?;
+        let Some(record) = existing else {
+            return Ok(None);
+        };
+
+        // Parse current content
+        let mut content: serde_json::Value = record.content.clone();
+
+        // Update status
+        if let Some(s) = status {
+            content["status"] = serde_json::json!(s);
+            // Set completed_at when completing
+            if s == "completed" || s == "cancelled" {
+                content["completed_at"] = serde_json::json!(Datetime::default().to_string());
+            }
+        }
+
+        // Update priority
+        if let Some(p) = priority {
+            content["priority"] = serde_json::json!(p);
+        }
+
+        // Update project
+        if let Some(proj_opt) = project {
+            match proj_opt {
+                Some(p) => content["project"] = serde_json::json!(p),
+                None => {
+                    if let Some(obj) = content.as_object_mut() {
+                        obj.remove("project");
+                    }
+                }
+            }
+        }
+
+        // Update name (title)
+        let new_name = title.map(|s| s.to_string());
+
+        // Update description
+        let new_desc = match description {
+            Some(Some(d)) => Some(d.to_string()),
+            Some(None) => None, // Clear
+            None => record.description.clone(), // Keep
+        };
+        let desc_update = match description {
+            Some(_) => new_desc.as_deref(),
+            None => None, // No change to description
+        };
+
+        // Build update
+        let mut updates = vec!["updated_at = time::now()".to_string()];
+        updates.push("content = $content".to_string());
+
+        if let Some(ref name) = new_name {
+            updates.push(format!("name = '{}'", name.replace('\'', "\\'")));
+        }
+
+        // Handle description specially
+        if let Some(_) = description {
+            if let Some(d) = desc_update {
+                updates.push(format!("description = '{}'", d.replace('\'', "\\'")));
+            } else {
+                updates.push("description = NONE".to_string());
+            }
+        }
+
+        let sql = format!(
+            "UPDATE record:{} SET {}",
+            id,
+            updates.join(", ")
+        );
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("content", content))
+            .await
+            .context("Failed to update task")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
+    /// Close a task (mark as completed or cancelled)
+    pub async fn close_task(
+        &self,
+        id: &str,
+        status: Option<&str>,
+        _reason: Option<&str>,
+    ) -> Result<Option<Record>> {
+        let final_status = status.unwrap_or("completed");
+
+        // Validate status
+        let final_status = match final_status {
+            "completed" | "cancelled" => final_status,
+            _ => "completed",
+        };
+
+        self.update_task(id, Some(final_status), None, None, None, None)
+            .await
+    }
+
+    /// Permanently delete a task and its notes/dependencies
+    pub async fn delete_task(&self, id: &str) -> Result<Option<Record>> {
+        use crate::record::TASK_NOTE_RELATION;
+
+        // First, delete task notes (records linked via has_note edge)
+        let note_query = format!(
+            "SELECT target FROM record_edge WHERE source = type::thing('record', $id) AND relation = '{}'",
+            TASK_NOTE_RELATION
+        );
+
+        let mut response = self
+            .db
+            .client()
+            .query(&note_query)
+            .bind(("id", id.to_string()))
+            .await
+            .context("Failed to find task notes")?;
+
+        #[derive(Deserialize)]
+        struct EdgeTarget {
+            target: Thing,
+        }
+
+        let targets: Vec<EdgeTarget> = response.take(0).unwrap_or_default();
+        for target in targets {
+            // Delete the note record
+            let note_id = target.target.id.to_raw();
+            let _: Option<Record> = self
+                .db
+                .client()
+                .delete(("record", note_id.as_str()))
+                .await
+                .context("Failed to delete task note")?;
+        }
+
+        // Delete all edges from/to this task
+        self.db
+            .client()
+            .query("DELETE FROM record_edge WHERE source = type::thing('record', $id) OR target = type::thing('record', $id)")
+            .bind(("id", id.to_string()))
+            .await
+            .context("Failed to delete task edges")?;
+
+        // Hard delete the task record (not soft delete)
+        let deleted: Option<Record> = self
+            .db
+            .client()
+            .delete(("record", id))
+            .await
+            .context("Failed to delete task")?;
+
+        Ok(deleted)
+    }
+
+    // ========== Task Note Operations ==========
+
+    /// Add a note to a task
+    ///
+    /// Task notes are Document records linked to the task via a "has_note" edge.
+    pub async fn add_task_note(&self, task_id: &str, content: &str) -> Result<Record> {
+        use crate::record::{RecordType, TASK_NOTE_RELATION};
+
+        // Create a document record for the note
+        let note = Record::new(RecordType::Document, "task_note")
+            .with_content(serde_json::json!({
+                "content": content,
+                "task_id": task_id
+            }));
+
+        let note = self.create_record(note).await?;
+        let note_id = note.id_str().expect("note should have id");
+
+        // Create edge from task to note
+        self.create_edge(task_id, &note_id, EdgeRelation::RelatedTo, None).await?;
+
+        // Also create the has_note edge for easier querying
+        let edge = RecordEdge::new(
+            Thing::from(("record", task_id)),
+            Thing::from(("record", note_id.as_str())),
+            EdgeRelation::RelatedTo, // Using RelatedTo but with custom relation string
+        );
+        let mut edge_with_relation = edge;
+        edge_with_relation.relation = TASK_NOTE_RELATION.to_string();
+
+        let _: Option<RecordEdge> = self
+            .db
+            .client()
+            .create("record_edge")
+            .content(edge_with_relation)
+            .await
+            .context("Failed to create task note edge")?;
+
+        Ok(note)
+    }
+
+    /// Add a note to a task with preserved timestamps (for migrations)
+    pub async fn add_task_note_with_timestamps(
+        &self,
+        task_id: &str,
+        content: &str,
+        created_at: surrealdb::sql::Datetime,
+        updated_at: surrealdb::sql::Datetime,
+    ) -> Result<Record> {
+        use crate::record::{RecordType, TASK_NOTE_RELATION};
+
+        // Create a document record for the note with preserved timestamps
+        let note = Record::new(RecordType::Document, "task_note")
+            .with_content(serde_json::json!({
+                "content": content,
+                "task_id": task_id
+            }))
+            .with_timestamps(created_at.clone(), updated_at);
+
+        let note = self.create_record(note).await?;
+        let note_id = note.id_str().expect("note should have id");
+
+        // Create edge from task to note with original timestamp
+        let edge = RecordEdge::new(
+            Thing::from(("record", task_id)),
+            Thing::from(("record", note_id.as_str())),
+            EdgeRelation::RelatedTo,
+        )
+        .with_created_at(created_at);
+
+        let mut edge_with_relation = edge;
+        edge_with_relation.relation = TASK_NOTE_RELATION.to_string();
+
+        let _: Option<RecordEdge> = self
+            .db
+            .client()
+            .create("record_edge")
+            .content(edge_with_relation)
+            .await
+            .context("Failed to create task note edge")?;
+
+        Ok(note)
+    }
+
+    /// Get notes for a task
+    pub async fn get_task_notes(&self, task_id: &str) -> Result<Vec<Record>> {
+        use crate::record::TASK_NOTE_RELATION;
+
+        // First, get the target IDs from edges
+        let edge_query = format!(
+            "SELECT target FROM record_edge WHERE source = type::thing('record', $task_id) AND relation = '{}'",
+            TASK_NOTE_RELATION
+        );
+
+        let mut response = self
+            .db
+            .client()
+            .query(&edge_query)
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .context("Failed to query task note edges")?;
+
+        #[derive(serde::Deserialize)]
+        struct EdgeTarget {
+            target: surrealdb::sql::Thing,
+        }
+
+        let targets: Vec<EdgeTarget> = response.take(0).unwrap_or_default();
+
+        // Then fetch each note record
+        let mut notes = Vec::new();
+        for target in targets {
+            let note_id = target.target.id.to_raw();
+            if let Some(record) = self.get_record(&note_id).await? {
+                notes.push(record);
+            }
+        }
+
+        // Sort by created_at
+        notes.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+        Ok(notes)
+    }
+
+    /// Edit a task note
+    pub async fn edit_task_note(&self, note_id: &str, content: &str) -> Result<Option<Record>> {
+        let content_json = serde_json::json!({
+            "content": content
+        });
+
+        // Merge the new content while preserving task_id
+        let sql = r#"
+            UPDATE type::thing('record', $id) SET
+                content = object::merge(content, $new_content),
+                updated_at = time::now()
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("id", note_id.to_string()))
+            .bind(("new_content", content_json))
+            .await
+            .context("Failed to update task note")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
+    /// Delete a task note
+    pub async fn delete_task_note(&self, note_id: &str) -> Result<Option<Record>> {
+        // Delete the edge first
+        self.db
+            .client()
+            .query("DELETE FROM record_edge WHERE target = type::thing('record', $id)")
+            .bind(("id", note_id.to_string()))
+            .await
+            .context("Failed to delete note edges")?;
+
+        // Then delete the note record
+        let deleted: Option<Record> = self
+            .db
+            .client()
+            .delete(("record", note_id))
+            .await
+            .context("Failed to delete note")?;
+
+        Ok(deleted)
+    }
+
+    // ========== Task Dependency Operations ==========
+
+    /// Add a dependency between tasks
+    ///
+    /// Valid relation types: "blocks", "blocked_by", "relates_to"
+    pub async fn add_task_dependency(
+        &self,
+        from_task_id: &str,
+        to_task_id: &str,
+        relation: &str,
+    ) -> Result<RecordEdge> {
+        let edge = RecordEdge::new(
+            Thing::from(("record", from_task_id)),
+            Thing::from(("record", to_task_id)),
+            EdgeRelation::DependsOn, // Use DependsOn as base, but customize relation
+        );
+
+        let mut edge_with_relation = edge;
+        edge_with_relation.relation = relation.to_string();
+
+        let created: Option<RecordEdge> = self
+            .db
+            .client()
+            .create("record_edge")
+            .content(edge_with_relation)
+            .await
+            .context("Failed to create task dependency")?;
+
+        created.context("Dependency creation returned no result")
+    }
+
+    /// Remove a dependency between tasks
+    pub async fn remove_task_dependency(
+        &self,
+        from_task_id: &str,
+        to_task_id: &str,
+        relation: &str,
+    ) -> Result<bool> {
+        self.db
+            .client()
+            .query(
+                "DELETE FROM record_edge WHERE \
+                 source = type::thing('record', $from) AND \
+                 target = type::thing('record', $to) AND \
+                 relation = $rel"
+            )
+            .bind(("from", from_task_id.to_string()))
+            .bind(("to", to_task_id.to_string()))
+            .bind(("rel", relation.to_string()))
+            .await
+            .context("Failed to delete task dependency")?;
+
+        Ok(true)
+    }
+
+    /// Get dependencies for a task
+    pub async fn get_task_dependencies(&self, task_id: &str) -> Result<Vec<RecordEdge>> {
+        use crate::record::task_relations;
+
+        let query = format!(
+            r#"
+            SELECT * FROM record_edge
+            WHERE (source = type::thing('record', $task_id) OR target = type::thing('record', $task_id))
+            AND relation IN ['{}', '{}', '{}']
+            "#,
+            task_relations::BLOCKS,
+            task_relations::BLOCKED_BY,
+            task_relations::RELATES_TO,
+        );
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .context("Failed to query task dependencies")?;
+
+        let deps: Vec<RecordEdge> = response.take(0).context("Failed to parse dependencies")?;
+        Ok(deps)
     }
 }
 

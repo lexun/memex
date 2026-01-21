@@ -52,6 +52,26 @@ pub struct Fact {
     /// Vector embedding for semantic search
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub embedding: Vec<f32>,
+
+    // === Temporal Validity ===
+
+    /// When this fact became valid (event time)
+    /// None means "from the beginning" or "unknown start"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<Datetime>,
+
+    /// When this fact ceased to be valid (event time)
+    /// None means "still valid" or "ongoing"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<Datetime>,
+
+    /// If this fact was superseded, points to the replacing fact
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<Thing>,
+
+    /// Event that caused this fact to be superseded (for provenance)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_via: Option<String>,
 }
 
 /// Reference to a source episode
@@ -93,6 +113,21 @@ impl std::fmt::Display for FactType {
             FactType::Preference => write!(f, "preference"),
             FactType::Question => write!(f, "question"),
             FactType::Specification => write!(f, "specification"),
+        }
+    }
+}
+
+impl std::str::FromStr for FactType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "statement" => Ok(FactType::Statement),
+            "decision" => Ok(FactType::Decision),
+            "preference" => Ok(FactType::Preference),
+            "question" => Ok(FactType::Question),
+            "specification" => Ok(FactType::Specification),
+            _ => Err(format!("Unknown fact type: {}", s)),
         }
     }
 }
@@ -190,6 +225,10 @@ impl Fact {
             access_count: 0,
             last_accessed: None,
             embedding: Vec::new(),
+            valid_from: None,
+            valid_until: None,
+            superseded_by: None,
+            superseded_via: None,
         }
     }
 
@@ -211,6 +250,23 @@ impl Fact {
     /// Get the fact ID as a string
     pub fn id_str(&self) -> Option<String> {
         self.id.as_ref().map(|t| t.id.to_raw())
+    }
+
+    /// Set when this fact became valid
+    pub fn with_valid_from(mut self, valid_from: Datetime) -> Self {
+        self.valid_from = Some(valid_from);
+        self
+    }
+
+    /// Set when this fact ceased to be valid
+    pub fn with_valid_until(mut self, valid_until: Datetime) -> Self {
+        self.valid_until = Some(valid_until);
+        self
+    }
+
+    /// Check if this fact is currently valid (not superseded, no valid_until in past)
+    pub fn is_current(&self) -> bool {
+        self.superseded_by.is_none() && self.valid_until.is_none()
     }
 }
 

@@ -13,6 +13,7 @@ use crate::scenario::{Action, AnswerType, ExpectedOutcome, Query, Scenario};
 
 /// External TOML scenario format (human-friendly)
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct TomlScenario {
     scenario: ScenarioMeta,
     setup: Vec<TomlAction>,
@@ -22,6 +23,7 @@ struct TomlScenario {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ScenarioMeta {
     name: String,
     description: String,
@@ -47,6 +49,7 @@ struct TomlAction {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct TomlQuery {
     query: String,
     #[serde(default)]
@@ -64,6 +67,7 @@ struct TomlQuery {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct EvaluationConfig {
     #[serde(default)]
     relevance_weight: Option<f32>,

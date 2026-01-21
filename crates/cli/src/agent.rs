@@ -17,6 +17,7 @@ pub fn in_zellij() -> bool {
 }
 
 /// Get the current zellij session name if we're in one
+#[allow(dead_code)]
 pub fn current_session() -> Option<String> {
     env::var("ZELLIJ_SESSION_NAME").ok()
 }
@@ -95,8 +96,8 @@ pub fn restart() -> Result<()> {
     // The action "close-pane" closes current pane, but we need to restart
     // Instead, we'll use write-chars to send a command that restarts
 
-    // Get the memex binary path
-    let memex_binary = env::current_exe()
+    // Get the memex binary path (kept for potential future use)
+    let _memex_binary = env::current_exe()
         .context("Failed to get current executable path")?;
 
     // Write exit command followed by restart command

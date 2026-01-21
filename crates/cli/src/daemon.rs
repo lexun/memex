@@ -19,10 +19,14 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use atlas::{Event, EventSource, Extractor, MemoSource, MultiStepExtractor, QueryDecomposer, Record, RecordType, Store as AtlasStore};
+use atlas::{
+    Event, EventSource, Extractor, MemoSource, MultiStepExtractor, QueryDecomposer,
+    Record, RecordType, Store as AtlasStore,
+    TaskView, TaskNoteView, TaskDependencyView,
+};
 use cortex::{WorkerConfig, WorkerId, WorkerManager, WorkerState, WorkerStatus};
 use db::Database;
-use forge::{DbWorker, Store as ForgeStore, Task, TaskStatus};
+use forge::{DbWorker, Store as ForgeStore, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
 use llm::LlmClient;
 use serde_json::json;
@@ -32,10 +36,11 @@ use crate::pid::{check_daemon, remove_pid_file, write_pid_file, PidInfo};
 use crate::web;
 
 /// State for a pending async response
+#[allow(dead_code)]
 struct AsyncResponseState {
     /// The response value (None = still processing, Some = complete)
     response: Option<serde_json::Value>,
-    /// When this entry was created
+    /// When this entry was created (for cleanup of stale entries)
     created_at: chrono::DateTime<chrono::Utc>,
     /// When the response completed (for cleanup timing)
     completed_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -454,26 +459,25 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
             "pid": process::id()
         })),
 
-        // Task operations (forge) - these also emit events to atlas
+        // Task operations (atlas) - Tasks are Records with workflow semantics
         "create_task" => handle_create_task(request, stores).await,
-        "list_tasks" => handle_list_tasks(request, &stores.forge).await,
-        "list_tasks_records" => handle_list_tasks_records(request, &stores.atlas).await,
-        "ready_tasks" => handle_ready_tasks(request, &stores.forge).await,
-        "get_task" => handle_get_task(request, &stores.forge).await,
+        "list_tasks" => handle_list_tasks(request, &stores.atlas).await,
+        "ready_tasks" => handle_ready_tasks(request, &stores.atlas).await,
+        "get_task" => handle_get_task(request, &stores.atlas).await,
         "update_task" => handle_update_task(request, stores).await,
         "close_task" => handle_close_task(request, stores).await,
         "delete_task" => handle_delete_task(request, stores).await,
 
-        // Note operations (forge) - these also emit events to atlas
+        // Note operations (atlas)
         "add_note" => handle_add_note(request, stores).await,
-        "get_notes" => handle_get_notes(request, &stores.forge).await,
+        "get_notes" => handle_get_notes(request, &stores.atlas).await,
         "edit_note" => handle_edit_note(request, stores).await,
         "delete_note" => handle_delete_note(request, stores).await,
 
-        // Dependency operations (forge) - these also emit events to atlas
+        // Dependency operations (atlas)
         "add_dependency" => handle_add_dependency(request, stores).await,
         "remove_dependency" => handle_remove_dependency(request, stores).await,
-        "get_dependencies" => handle_get_dependencies(request, &stores.forge).await,
+        "get_dependencies" => handle_get_dependencies(request, &stores.atlas).await,
 
         // Memo operations (atlas) - record_memo also triggers extraction
         "record_memo" => handle_record_memo(request, stores).await,
@@ -493,6 +497,13 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "backfill_embeddings" => handle_backfill_embeddings(request, stores).await,
         "knowledge_status" => handle_knowledge_status(stores).await,
 
+        // Migration operations (Forge to Atlas)
+        "migrate_tasks_to_records" => handle_migrate_tasks_to_records(stores).await,
+        // Test-only: Import into Forge (for migration testing)
+        "test_import_forge_task" => handle_test_import_forge_task(request, stores).await,
+        "test_import_forge_note" => handle_test_import_forge_note(request, stores).await,
+        "test_import_forge_dependency" => handle_test_import_forge_dependency(request, stores).await,
+
         // Entity operations
         "list_entities" => handle_list_entities(request, &stores.atlas).await,
         "get_entity_facts" => handle_get_entity_facts(request, &stores.atlas).await,
@@ -505,12 +516,12 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         // Record/Graph operations (atlas)
         "list_records" => handle_list_records(request, &stores.atlas).await,
         "get_record" => handle_get_record(request, &stores.atlas).await,
-        "create_record" => handle_create_record(request, &stores.atlas).await,
-        "update_record" => handle_update_record(request, &stores.atlas).await,
-        "delete_record" => handle_delete_record(request, &stores.atlas).await,
-        "create_edge" => handle_create_edge(request, &stores.atlas).await,
+        "create_record" => handle_create_record(request, stores).await,
+        "update_record" => handle_update_record(request, stores).await,
+        "delete_record" => handle_delete_record(request, stores).await,
+        "create_edge" => handle_create_edge(request, stores).await,
         "list_edges" => handle_list_edges(request, &stores.atlas).await,
-        "delete_edge" => handle_delete_edge(request, &stores.atlas).await,
+        "delete_edge" => handle_delete_edge(request, stores).await,
         "assemble_context" => handle_assemble_context(request, &stores.atlas).await,
 
         // Cortex operations (worker management)
@@ -536,105 +547,49 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
 }
 
 // ========== Task Handlers ==========
-
-/// Convert a Forge Task to a Record for dual-write
-fn task_to_record(task: &Task) -> Record {
-    let forge_id = task.id_str().unwrap_or_default();
-    let content = json!({
-        "forge_id": forge_id,
-        "status": task.status.to_string(),
-        "priority": task.priority,
-        "project": task.project,
-        "completed_at": task.completed_at,
-    });
-
-    Record::new(RecordType::Task, &task.title)
-        .with_description(task.description.clone().unwrap_or_default())
-        .with_content(content)
-}
-
-/// Dual-write: create or update a Record shadow of a Forge Task
-async fn sync_task_to_record(task: &Task, stores: &Stores) {
-    let forge_id = task.id_str().unwrap_or_default();
-
-    // Check if a record already exists for this forge task
-    // We search by forge_id in content
-    let existing = stores.atlas.get_record_by_forge_id(&forge_id).await;
-
-    match existing {
-        Ok(Some(record)) => {
-            // Update existing record
-            let record_id = record.id_str().unwrap_or_default();
-            let content = json!({
-                "forge_id": forge_id,
-                "status": task.status.to_string(),
-                "priority": task.priority,
-                "project": task.project,
-                "completed_at": task.completed_at,
-            });
-            if let Err(e) = stores.atlas.update_record(
-                &record_id,
-                Some(&task.title),
-                task.description.as_deref(),
-                Some(content),
-            ).await {
-                tracing::warn!("Failed to sync task to record (update): {}", e);
-            } else {
-                tracing::debug!("Synced task {} to record {}", forge_id, record_id);
-            }
-        }
-        Ok(None) => {
-            // Create new record
-            let record = task_to_record(task);
-            match stores.atlas.create_record(record).await {
-                Ok(created) => {
-                    tracing::debug!("Created record {} for task {}", created.id_str().unwrap_or_default(), forge_id);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to sync task to record (create): {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!("Failed to check for existing record: {}", e);
-        }
-    }
-}
+// Note: Tasks are Records in Atlas with workflow semantics stored in content.
+// The TaskView adapter provides API compatibility with the old Forge format.
 
 async fn handle_create_task(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
-    let task: Task = serde_json::from_value(request.params.clone())
+    // Accept TaskView format (backwards compatible with old Task format)
+    let task_view: TaskView = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid task: {}", e)))?;
 
-    let created = stores
-        .forge
-        .create_task(task)
+    // Create task in Atlas
+    let record = stores
+        .atlas
+        .create_task(
+            &task_view.title,
+            task_view.description.as_deref(),
+            task_view.project.as_deref(),
+            task_view.priority,
+        )
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.created event to Atlas
+    // Convert to TaskView for API response
+    let created = TaskView::from_record(&record)
+        .ok_or_else(|| IpcError::internal("Failed to convert record to task view".to_string()))?;
+
+    // Emit task.created event
     let task_json = serde_json::to_value(&created).unwrap();
     let event = Event::new(
         "task.created",
-        EventSource::system("forge").with_via("daemon"),
+        EventSource::system("atlas").with_via("daemon"),
         json!({ "task": task_json }),
     );
     if let Err(e) = stores.atlas.record_event(event).await {
         tracing::warn!("Failed to record task.created event: {}", e);
     }
 
-    // Dual-write: sync task to Records
-    sync_task_to_record(&created, stores).await;
-
     // Extract knowledge from task content if extractor is available
     if let Some(ref extractor) = stores.extractor {
-        // Build content from title and description
         let content = if let Some(ref desc) = created.description {
             format!("{}\n\n{}", created.title, desc)
         } else {
             created.title.clone()
         };
 
-        // Only extract if there's meaningful content (not just a short title)
         if content.len() > 20 {
             let task_id = created.id_str().unwrap_or_default();
             let project = created.project.as_deref();
@@ -659,59 +614,22 @@ struct ListTasksParams {
     status: Option<String>,
 }
 
-async fn handle_list_tasks(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_list_tasks(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
     let params: ListTasksParams = serde_json::from_value(request.params.clone())
         .unwrap_or(ListTasksParams { project: None, status: None });
 
-    let status = params.status.and_then(|s| s.parse::<TaskStatus>().ok());
-
-    store
-        .list_tasks(params.project.as_deref(), status)
-        .await
-        .map(|tasks| serde_json::to_value(tasks).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
-}
-
-/// Experimental: List tasks from the Records backend
-/// This queries tasks stored as Records (dual-write shadow copies)
-/// Used to compare query quality between Forge and Records
-async fn handle_list_tasks_records(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
-    let params: ListTasksParams = serde_json::from_value(request.params.clone())
-        .unwrap_or(ListTasksParams { project: None, status: None });
-
-    // Get all task records
     let records = store
-        .list_records(Some("task"), false, None)
+        .list_tasks(params.project.as_deref(), params.status.as_deref())
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Filter by status and project if specified
-    let filtered: Vec<_> = records
-        .into_iter()
-        .filter(|r| {
-            // Filter by status
-            if let Some(ref status_filter) = params.status {
-                if let Some(status) = r.content.get("status").and_then(|v| v.as_str()) {
-                    if status != status_filter {
-                        return false;
-                    }
-                }
-            }
-            // Filter by project
-            if let Some(ref project_filter) = params.project {
-                if let Some(project) = r.content.get("project").and_then(|v| v.as_str()) {
-                    if project != project_filter {
-                        return false;
-                    }
-                } else {
-                    return false; // No project set but filter requires one
-                }
-            }
-            true
-        })
+    // Convert to TaskView for API compatibility
+    let tasks: Vec<TaskView> = records
+        .iter()
+        .filter_map(TaskView::from_record)
         .collect();
 
-    Ok(serde_json::to_value(filtered).unwrap())
+    Ok(serde_json::to_value(tasks).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -719,15 +637,22 @@ struct ReadyTasksParams {
     project: Option<String>,
 }
 
-async fn handle_ready_tasks(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_ready_tasks(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
     let params: ReadyTasksParams = serde_json::from_value(request.params.clone())
         .unwrap_or(ReadyTasksParams { project: None });
 
-    store
+    let records = store
         .ready_tasks(params.project.as_deref())
         .await
-        .map(|tasks| serde_json::to_value(tasks).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Convert to TaskView for API compatibility
+    let tasks: Vec<TaskView> = records
+        .iter()
+        .filter_map(TaskView::from_record)
+        .collect();
+
+    Ok(serde_json::to_value(tasks).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -735,15 +660,19 @@ struct GetTaskParams {
     id: String,
 }
 
-async fn handle_get_task(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_get_task(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
     let params: GetTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Missing id: {}", e)))?;
 
-    store
-        .get_task(&params.id)
+    let record = store
+        .get_record(&params.id)
         .await
-        .map(|task| serde_json::to_value(task).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Convert to TaskView for API compatibility
+    let task = record.and_then(|r| TaskView::from_record(&r));
+
+    Ok(serde_json::to_value(task).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -762,16 +691,11 @@ async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_
     let params: UpdateTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let status = match &params.status {
-        Some(s) => Some(s.parse::<TaskStatus>().map_err(|e| IpcError::invalid_params(e.to_string()))?),
-        None => None,
-    };
-
-    let updated = stores
-        .forge
+    let record = stores
+        .atlas
         .update_task(
             &params.id,
-            status,
+            params.status.as_deref(),
             params.priority,
             params.title.as_deref(),
             params.description.as_ref().map(|d| d.as_deref()),
@@ -780,7 +704,10 @@ async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.updated event to Atlas
+    // Convert to TaskView for API compatibility
+    let updated = record.as_ref().and_then(|r| TaskView::from_record(r));
+
+    // Emit task.updated event
     if let Some(ref task) = updated {
         let task_json = serde_json::to_value(task).unwrap();
         let mut changes = serde_json::Map::new();
@@ -801,7 +728,7 @@ async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_
         }
         let event = Event::new(
             "task.updated",
-            EventSource::system("forge").with_via("daemon"),
+            EventSource::system("atlas").with_via("daemon"),
             json!({
                 "task_id": params.id,
                 "changes": changes,
@@ -811,9 +738,6 @@ async fn handle_update_task(request: &Request, stores: &Stores) -> Result<serde_
         if let Err(e) = stores.atlas.record_event(event).await {
             tracing::warn!("Failed to record task.updated event: {}", e);
         }
-
-        // Dual-write: sync task to Records
-        sync_task_to_record(task, stores).await;
     }
 
     Ok(serde_json::to_value(updated).unwrap())
@@ -831,23 +755,21 @@ async fn handle_close_task(request: &Request, stores: &Stores) -> Result<serde_j
     let params: CloseTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    // Parse status if provided
-    let status = params.status.as_ref().map(|s| {
-        s.parse::<TaskStatus>().unwrap_or(TaskStatus::Completed)
-    });
-
-    let closed = stores
-        .forge
-        .close_task(&params.id, status, params.reason.as_deref())
+    let record = stores
+        .atlas
+        .close_task(&params.id, params.status.as_deref(), params.reason.as_deref())
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.closed event to Atlas
+    // Convert to TaskView for API compatibility
+    let closed = record.as_ref().and_then(|r| TaskView::from_record(r));
+
+    // Emit task.closed event
     if let Some(ref task) = closed {
         let task_json = serde_json::to_value(task).unwrap();
         let event = Event::new(
             "task.closed",
-            EventSource::system("forge").with_via("daemon"),
+            EventSource::system("atlas").with_via("daemon"),
             json!({
                 "task_id": params.id,
                 "status": task.status.to_string(),
@@ -858,9 +780,6 @@ async fn handle_close_task(request: &Request, stores: &Stores) -> Result<serde_j
         if let Err(e) = stores.atlas.record_event(event).await {
             tracing::warn!("Failed to record task.closed event: {}", e);
         }
-
-        // Dual-write: sync task to Records (updates status to completed/cancelled)
-        sync_task_to_record(task, stores).await;
     }
 
     Ok(serde_json::to_value(closed).unwrap())
@@ -877,18 +796,27 @@ async fn handle_delete_task(request: &Request, stores: &Stores) -> Result<serde_
     let params: DeleteTaskParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
+    // Get the task before deletion for the event
+    let task_before = stores.atlas.get_record(&params.id).await
+        .ok()
+        .flatten()
+        .and_then(|r| TaskView::from_record(&r));
+
     let deleted = stores
-        .forge
+        .atlas
         .delete_task(&params.id)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.deleted event to Atlas (includes reason for context)
-    if let Some(ref task) = deleted {
+    // Convert to TaskView for API compatibility
+    let deleted_view = deleted.as_ref().and_then(|r| TaskView::from_record(r));
+
+    // Emit task.deleted event (using task_before since delete returns the deleted record)
+    if let Some(ref task) = task_before.or(deleted_view.clone()) {
         let task_json = serde_json::to_value(task).unwrap();
         let event = Event::new(
             "task.deleted",
-            EventSource::system("forge").with_via("daemon"),
+            EventSource::system("atlas").with_via("daemon"),
             json!({
                 "task_id": params.id,
                 "reason": params.reason,
@@ -898,21 +826,9 @@ async fn handle_delete_task(request: &Request, stores: &Stores) -> Result<serde_
         if let Err(e) = stores.atlas.record_event(event).await {
             tracing::warn!("Failed to record task.deleted event: {}", e);
         }
-
-        // Dual-write: soft-delete the corresponding Record
-        let forge_id = task.id_str().unwrap_or_default();
-        if let Ok(Some(record)) = stores.atlas.get_record_by_forge_id(&forge_id).await {
-            if let Some(record_id) = record.id_str() {
-                if let Err(e) = stores.atlas.delete_record(&record_id).await {
-                    tracing::warn!("Failed to soft-delete record for task {}: {}", forge_id, e);
-                } else {
-                    tracing::debug!("Soft-deleted record {} for task {}", record_id, forge_id);
-                }
-            }
-        }
     }
 
-    Ok(serde_json::to_value(deleted).unwrap())
+    Ok(serde_json::to_value(deleted_view).unwrap())
 }
 
 // ========== Note Handlers ==========
@@ -927,17 +843,20 @@ async fn handle_add_note(request: &Request, stores: &Stores) -> Result<serde_jso
     let params: AddNoteParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let note = stores
-        .forge
-        .add_note(&params.task_id, &params.content)
+    let note_record = stores
+        .atlas
+        .add_task_note(&params.task_id, &params.content)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.note_added event to Atlas
+    // Convert to TaskNoteView for API compatibility
+    let note = TaskNoteView::from_record(&note_record);
+
+    // Emit task.note_added event
     let note_json = serde_json::to_value(&note).unwrap();
     let event = Event::new(
         "task.note_added",
-        EventSource::system("forge").with_via("daemon"),
+        EventSource::system("atlas").with_via("daemon"),
         json!({
             "task_id": params.task_id,
             "note": note_json
@@ -949,15 +868,14 @@ async fn handle_add_note(request: &Request, stores: &Stores) -> Result<serde_jso
 
     // Extract knowledge from note content if extractor is available
     if let Some(ref extractor) = stores.extractor {
-        // Only extract if there's meaningful content
         if params.content.len() > 20 {
             // Get task to determine project context
-            let project = stores.forge.get_task(&params.task_id).await
+            let project = stores.atlas.get_record(&params.task_id).await
                 .ok()
                 .flatten()
-                .and_then(|t| t.project);
+                .and_then(|r| r.content.get("project").and_then(|v| v.as_str()).map(|s| s.to_string()));
 
-            let note_id = note.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+            let note_id = note.as_ref().and_then(|n| n.id_str()).unwrap_or_default();
 
             match extractor.extract_from_task_content(
                 &params.content,
@@ -983,15 +901,22 @@ struct GetNotesParams {
     task_id: String,
 }
 
-async fn handle_get_notes(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_get_notes(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
     let params: GetNotesParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    store
-        .get_notes(&params.task_id)
+    let note_records = store
+        .get_task_notes(&params.task_id)
         .await
-        .map(|notes| serde_json::to_value(notes).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Convert to TaskNoteView for API compatibility
+    let notes: Vec<TaskNoteView> = note_records
+        .iter()
+        .filter_map(TaskNoteView::from_record)
+        .collect();
+
+    Ok(serde_json::to_value(notes).unwrap())
 }
 
 #[derive(Deserialize)]
@@ -1004,18 +929,21 @@ async fn handle_edit_note(request: &Request, stores: &Stores) -> Result<serde_js
     let params: EditNoteParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let updated = stores
-        .forge
-        .edit_note(&params.note_id, &params.content)
+    let record = stores
+        .atlas
+        .edit_task_note(&params.note_id, &params.content)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.note_updated event to Atlas
+    // Convert to TaskNoteView for API compatibility
+    let updated = record.as_ref().and_then(TaskNoteView::from_record);
+
+    // Emit task.note_updated event
     if let Some(ref note) = updated {
         let note_json = serde_json::to_value(note).unwrap();
         let event = Event::new(
             "task.note_updated",
-            EventSource::system("forge").with_via("daemon"),
+            EventSource::system("atlas").with_via("daemon"),
             json!({
                 "note_id": params.note_id,
                 "new_content": params.content,
@@ -1039,18 +967,27 @@ async fn handle_delete_note(request: &Request, stores: &Stores) -> Result<serde_
     let params: DeleteNoteParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let deleted = stores
-        .forge
-        .delete_note(&params.note_id)
+    // Get note before deletion for the event
+    let note_before = stores.atlas.get_record(&params.note_id).await
+        .ok()
+        .flatten()
+        .and_then(|r| TaskNoteView::from_record(&r));
+
+    let record = stores
+        .atlas
+        .delete_task_note(&params.note_id)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.note_deleted event to Atlas
-    if let Some(ref note) = deleted {
+    // Convert to TaskNoteView for API compatibility
+    let deleted = record.as_ref().and_then(TaskNoteView::from_record);
+
+    // Emit task.note_deleted event
+    if let Some(ref note) = note_before.or(deleted.clone()) {
         let note_json = serde_json::to_value(note).unwrap();
         let event = Event::new(
             "task.note_deleted",
-            EventSource::system("forge").with_via("daemon"),
+            EventSource::system("atlas").with_via("daemon"),
             json!({
                 "note_id": params.note_id,
                 "note": note_json
@@ -1077,16 +1014,19 @@ async fn handle_add_dependency(request: &Request, stores: &Stores) -> Result<ser
     let params: AddDependencyParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let dep = stores
-        .forge
-        .add_dependency(&params.from_id, &params.to_id, &params.relation)
+    let edge = stores
+        .atlas
+        .add_task_dependency(&params.from_id, &params.to_id, &params.relation)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.dependency_added event to Atlas
+    // Convert to TaskDependencyView for API compatibility
+    let dep = TaskDependencyView::from_edge(&edge);
+
+    // Emit task.dependency_added event
     let event = Event::new(
         "task.dependency_added",
-        EventSource::system("forge").with_via("daemon"),
+        EventSource::system("atlas").with_via("daemon"),
         json!({
             "from_task_id": params.from_id,
             "to_task_id": params.to_id,
@@ -1112,16 +1052,16 @@ async fn handle_remove_dependency(request: &Request, stores: &Stores) -> Result<
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
     let removed = stores
-        .forge
-        .remove_dependency(&params.from_id, &params.to_id, &params.relation)
+        .atlas
+        .remove_task_dependency(&params.from_id, &params.to_id, &params.relation)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    // Emit task.dependency_removed event to Atlas
+    // Emit task.dependency_removed event
     if removed {
         let event = Event::new(
             "task.dependency_removed",
-            EventSource::system("forge").with_via("daemon"),
+            EventSource::system("atlas").with_via("daemon"),
             json!({
                 "from_task_id": params.from_id,
                 "to_task_id": params.to_id,
@@ -1141,15 +1081,22 @@ struct GetDependenciesParams {
     task_id: String,
 }
 
-async fn handle_get_dependencies(request: &Request, store: &ForgeStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_get_dependencies(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
     let params: GetDependenciesParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    store
-        .get_dependencies(&params.task_id)
+    let edges = store
+        .get_task_dependencies(&params.task_id)
         .await
-        .map(|deps| serde_json::to_value(deps).unwrap())
-        .map_err(|e| IpcError::internal(e.to_string()))
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Convert to TaskDependencyView for API compatibility
+    let deps: Vec<TaskDependencyView> = edges
+        .iter()
+        .map(TaskDependencyView::from_edge)
+        .collect();
+
+    Ok(serde_json::to_value(deps).unwrap())
 }
 
 // ========== Memo Handlers ==========
@@ -2026,7 +1973,7 @@ struct CreateRecordParams {
     content: Option<serde_json::Value>,
 }
 
-async fn handle_create_record(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_create_record(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: CreateRecordParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -2042,10 +1989,21 @@ async fn handle_create_record(request: &Request, store: &AtlasStore) -> Result<s
         record = record.with_content(content);
     }
 
-    let created = store
+    let created = stores.atlas
         .create_record(record)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit record.created event
+    let record_json = serde_json::to_value(&created).unwrap();
+    let event = Event::new(
+        "record.created",
+        EventSource::system("atlas").with_via("daemon"),
+        json!({ "record": record_json }),
+    );
+    if let Err(e) = stores.atlas.record_event(event).await {
+        tracing::warn!("Failed to record record.created event: {}", e);
+    }
 
     Ok(serde_json::to_value(created).unwrap())
 }
@@ -2061,19 +2019,65 @@ struct UpdateRecordParams {
     content: Option<serde_json::Value>,
 }
 
-async fn handle_update_record(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_update_record(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: UpdateRecordParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let record = store
+    // Get the old record for diffing
+    let old_record = stores.atlas
+        .get_record(&params.id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    let record = stores.atlas
         .update_record(
             &params.id,
             params.name.as_deref(),
             params.description.as_deref(),
-            params.content,
+            params.content.clone(),
         )
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit record.updated event with diff
+    if let (Some(ref old), Some(ref new)) = (old_record, &record) {
+        let mut changes = serde_json::Map::new();
+        if params.name.is_some() && params.name.as_deref() != Some(&old.name) {
+            changes.insert("name".to_string(), json!({
+                "old": old.name,
+                "new": new.name
+            }));
+        }
+        if params.description.is_some() && params.description != old.description {
+            changes.insert("description".to_string(), json!({
+                "old": old.description,
+                "new": new.description
+            }));
+        }
+        if params.content.is_some() {
+            changes.insert("content".to_string(), json!({
+                "old": old.content,
+                "new": new.content
+            }));
+        }
+
+        if !changes.is_empty() {
+            let record_json = serde_json::to_value(new).unwrap();
+            let event = Event::new(
+                "record.updated",
+                EventSource::system("atlas").with_via("daemon"),
+                json!({
+                    "record_id": params.id,
+                    "record_type": new.record_type,
+                    "changes": changes,
+                    "snapshot": record_json
+                }),
+            );
+            if let Err(e) = stores.atlas.record_event(event).await {
+                tracing::warn!("Failed to record record.updated event: {}", e);
+            }
+        }
+    }
 
     Ok(serde_json::to_value(record).unwrap())
 }
@@ -2083,14 +2087,31 @@ struct DeleteRecordParams {
     id: String,
 }
 
-async fn handle_delete_record(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_delete_record(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: DeleteRecordParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let record = store
+    let record = stores.atlas
         .delete_record(&params.id)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit record.deleted event
+    if let Some(ref deleted) = record {
+        let record_json = serde_json::to_value(deleted).unwrap();
+        let event = Event::new(
+            "record.deleted",
+            EventSource::system("atlas").with_via("daemon"),
+            json!({
+                "record_id": params.id,
+                "record_type": deleted.record_type,
+                "snapshot": record_json
+            }),
+        );
+        if let Err(e) = stores.atlas.record_event(event).await {
+            tracing::warn!("Failed to record record.deleted event: {}", e);
+        }
+    }
 
     Ok(serde_json::to_value(record).unwrap())
 }
@@ -2104,7 +2125,7 @@ struct CreateEdgeParams {
     metadata: Option<serde_json::Value>,
 }
 
-async fn handle_create_edge(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_create_edge(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: CreateEdgeParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
@@ -2112,10 +2133,26 @@ async fn handle_create_edge(request: &Request, store: &AtlasStore) -> Result<ser
     let relation: EdgeRelation = params.relation.parse()
         .map_err(|e: String| IpcError::invalid_params(e))?;
 
-    let edge = store
+    let edge = stores.atlas
         .create_edge(&params.source, &params.target, relation, params.metadata)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit record.edge_created event
+    let edge_id = edge.id_str().unwrap_or_default();
+    let event = Event::new(
+        "record.edge_created",
+        EventSource::system("atlas").with_via("daemon"),
+        json!({
+            "source_record_id": params.source,
+            "target_record_id": params.target,
+            "relation": params.relation,
+            "edge_id": edge_id
+        }),
+    );
+    if let Err(e) = stores.atlas.record_event(event).await {
+        tracing::warn!("Failed to record record.edge_created event: {}", e);
+    }
 
     Ok(serde_json::to_value(edge).unwrap())
 }
@@ -2135,15 +2172,16 @@ async fn handle_list_edges(request: &Request, store: &AtlasStore) -> Result<serd
     let params: ListEdgesParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
+    // Default to showing only current edges (not superseded)
     let edges = match params.direction.as_str() {
-        "from" => store.get_edges_from(&params.id, None).await
+        "from" => store.get_edges_from(&params.id, None, true).await
             .map_err(|e| IpcError::internal(e.to_string()))?,
-        "to" => store.get_edges_to(&params.id, None).await
+        "to" => store.get_edges_to(&params.id, None, true).await
             .map_err(|e| IpcError::internal(e.to_string()))?,
         "both" | _ => {
-            let from = store.get_edges_from(&params.id, None).await
+            let from = store.get_edges_from(&params.id, None, true).await
                 .map_err(|e| IpcError::internal(e.to_string()))?;
-            let to = store.get_edges_to(&params.id, None).await
+            let to = store.get_edges_to(&params.id, None, true).await
                 .map_err(|e| IpcError::internal(e.to_string()))?;
             let mut all = from;
             all.extend(to);
@@ -2159,14 +2197,26 @@ struct DeleteEdgeParams {
     id: String,
 }
 
-async fn handle_delete_edge(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+async fn handle_delete_edge(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
     let params: DeleteEdgeParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let edge = store
+    let edge = stores.atlas
         .delete_edge(&params.id)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit record.edge_deleted event
+    if edge.is_some() {
+        let event = Event::new(
+            "record.edge_deleted",
+            EventSource::system("atlas").with_via("daemon"),
+            json!({ "edge_id": params.id }),
+        );
+        if let Err(e) = stores.atlas.record_event(event).await {
+            tracing::warn!("Failed to record record.edge_deleted event: {}", e);
+        }
+    }
 
     Ok(serde_json::to_value(edge).unwrap())
 }
@@ -2665,6 +2715,238 @@ async fn handle_rebuild_knowledge(request: &Request, stores: &Stores) -> Result<
         "entities_created": entities_created,
         "links_created": links_created,
     }))
+}
+
+// ========== Migration Handlers (Forge to Atlas) ==========
+
+/// Migrate tasks from Forge to Atlas records
+///
+/// This is a one-time migration that:
+/// 1. Reads all tasks from Forge
+/// 2. Creates corresponding records in Atlas with record_type = "task"
+/// 3. Migrates task notes as linked document records
+/// 4. Migrates task dependencies as edges
+async fn handle_migrate_tasks_to_records(stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    use atlas::{TaskContent, RecordType, Record, task_relations};
+    use std::collections::HashMap;
+
+    let mut tasks_migrated = 0;
+    let mut notes_migrated = 0;
+    let mut deps_migrated = 0;
+    let mut skipped = 0;
+    let mut errors: Vec<String> = Vec::new();
+
+    // Build ID mapping: forge_id -> atlas_record_id
+    let mut id_map: HashMap<String, String> = HashMap::new();
+
+    // Get all tasks from Forge
+    let forge_tasks = stores
+        .forge
+        .list_tasks(None, None)
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to list Forge tasks: {}", e)))?;
+
+    // === PASS 1: Migrate tasks and notes, build ID mapping ===
+    for forge_task in &forge_tasks {
+        let forge_id = forge_task.id_str().unwrap_or_default();
+
+        // Check if already migrated (record with same name exists)
+        if let Ok(Some(existing)) = stores.atlas.get_record_by_type_name("task", &forge_task.title).await {
+            tracing::debug!("Task already migrated: {} ({})", forge_task.title, forge_id);
+            // Still record the mapping for dependency resolution
+            if let Some(record_id) = existing.id_str() {
+                id_map.insert(forge_id.clone(), record_id);
+            }
+            skipped += 1;
+            continue;
+        }
+
+        // Create task content
+        let status = match forge_task.status {
+            TaskStatus::Pending => atlas::TaskStatus::Pending,
+            TaskStatus::InProgress => atlas::TaskStatus::InProgress,
+            TaskStatus::Blocked => atlas::TaskStatus::Blocked,
+            TaskStatus::Completed => atlas::TaskStatus::Completed,
+            TaskStatus::Cancelled => atlas::TaskStatus::Cancelled,
+        };
+
+        let content = TaskContent {
+            status,
+            priority: forge_task.priority,
+            project: forge_task.project.clone(),
+            completed_at: forge_task.completed_at.clone(),
+        };
+
+        // Create the record with preserved timestamps
+        let mut record = Record::new(RecordType::Task, &forge_task.title)
+            .with_content(content.to_json())
+            .with_timestamps(forge_task.created_at.clone(), forge_task.updated_at.clone());
+
+        if let Some(ref desc) = forge_task.description {
+            record = record.with_description(desc);
+        }
+
+        let created = match stores.atlas.create_record(record).await {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(format!("Failed to create task {}: {}", forge_id, e));
+                continue;
+            }
+        };
+
+        let record_id = created.id_str().unwrap_or_default();
+        id_map.insert(forge_id.clone(), record_id.clone());
+        tasks_migrated += 1;
+
+        // Migrate notes for this task with preserved timestamps
+        if let Ok(notes) = stores.forge.get_notes(&forge_id).await {
+            for note in notes {
+                match stores.atlas.add_task_note_with_timestamps(
+                    &record_id,
+                    &note.content,
+                    note.created_at.clone(),
+                    note.updated_at.clone(),
+                ).await {
+                    Ok(_) => notes_migrated += 1,
+                    Err(e) => {
+                        errors.push(format!("Failed to migrate note for task {}: {}", forge_id, e));
+                    }
+                }
+            }
+        }
+    }
+
+    // === PASS 2: Migrate dependencies using ID mapping ===
+    for forge_task in &forge_tasks {
+        let forge_id = forge_task.id_str().unwrap_or_default();
+
+        if let Ok(deps) = stores.forge.get_dependencies(&forge_id).await {
+            for dep in deps {
+                let from_forge_id = dep.from_task.id.to_raw();
+                let to_forge_id = dep.to_task.id.to_raw();
+
+                // Only migrate if this is the "from" task to avoid duplicates
+                if from_forge_id != forge_id {
+                    continue;
+                }
+
+                // Look up both IDs in our mapping
+                let from_record_id = match id_map.get(&from_forge_id) {
+                    Some(id) => id.clone(),
+                    None => {
+                        errors.push(format!("Dependency source not found: {}", from_forge_id));
+                        continue;
+                    }
+                };
+
+                let to_record_id = match id_map.get(&to_forge_id) {
+                    Some(id) => id.clone(),
+                    None => {
+                        errors.push(format!("Dependency target not found: {}", to_forge_id));
+                        continue;
+                    }
+                };
+
+                let relation = match dep.relation.as_str() {
+                    "blocks" => task_relations::BLOCKS,
+                    "blocked_by" => task_relations::BLOCKED_BY,
+                    _ => task_relations::RELATES_TO,
+                };
+
+                // Create the dependency edge with preserved timestamp
+                match stores.atlas.create_edge_with_details(
+                    &from_record_id,
+                    &to_record_id,
+                    relation,
+                    dep.created_at.clone(),
+                ).await {
+                    Ok(_) => deps_migrated += 1,
+                    Err(e) => {
+                        errors.push(format!("Failed to create dependency edge {} -> {}: {}",
+                            from_forge_id, to_forge_id, e));
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        "Migration complete: {} tasks, {} notes, {} dependencies (skipped {} already migrated, {} errors)",
+        tasks_migrated, notes_migrated, deps_migrated, skipped, errors.len()
+    );
+
+    if !errors.is_empty() {
+        tracing::warn!("Migration errors: {:?}", errors);
+    }
+
+    Ok(json!({
+        "tasks_migrated": tasks_migrated,
+        "notes_migrated": notes_migrated,
+        "dependencies_migrated": deps_migrated,
+        "skipped_already_migrated": skipped,
+        "errors": errors
+    }))
+}
+
+// ========== Test Import Handler (for migration testing) ==========
+
+/// Import a task directly into Forge with preserved timestamps.
+/// This is for testing the migration - NOT for production use.
+async fn handle_test_import_forge_task(
+    request: &Request,
+    stores: &Stores,
+) -> Result<serde_json::Value, IpcError> {
+    use forge::Task;
+
+    // Accept raw Forge Task format with timestamps
+    let task: Task = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid task: {}", e)))?;
+
+    let created = stores
+        .forge
+        .create_task(task)
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to create Forge task: {}", e)))?;
+
+    Ok(serde_json::to_value(&created).unwrap())
+}
+
+/// Import a task note directly into Forge with preserved timestamps.
+async fn handle_test_import_forge_note(
+    request: &Request,
+    stores: &Stores,
+) -> Result<serde_json::Value, IpcError> {
+    use forge::TaskNote;
+
+    let note: TaskNote = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid note: {}", e)))?;
+
+    let created = stores
+        .forge
+        .create_note(note)
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to create Forge note: {}", e)))?;
+
+    Ok(serde_json::to_value(&created).unwrap())
+}
+
+/// Import a task dependency directly into Forge with preserved timestamps.
+async fn handle_test_import_forge_dependency(
+    request: &Request,
+    stores: &Stores,
+) -> Result<serde_json::Value, IpcError> {
+    use forge::TaskDependency;
+
+    let dep: TaskDependency = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid dependency: {}", e)))?;
+
+    let created = stores
+        .forge
+        .create_dependency(dep)
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to create Forge dependency: {}", e)))?;
+
+    Ok(serde_json::to_value(&created).unwrap())
 }
 
 // ========== Cortex Handlers ==========

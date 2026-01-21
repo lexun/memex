@@ -162,8 +162,23 @@ pub fn command_registry() -> Vec<CommandInfo> {
             category: Category::Maintain,
         },
         CommandInfo {
+            name: "backfill-records",
+            description: "Backfill records from memos",
+            category: Category::Maintain,
+        },
+        CommandInfo {
+            name: "extract",
+            description: "Extract records from memo",
+            category: Category::Maintain,
+        },
+        CommandInfo {
             name: "upgrade",
             description: "Upgrade memex via nix",
+            category: Category::Maintain,
+        },
+        CommandInfo {
+            name: "migrate",
+            description: "Run data migrations",
             category: Category::Maintain,
         },
     ]

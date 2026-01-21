@@ -28,7 +28,11 @@ pub use fact::{Entity, EntityType, EpisodeRef, Fact, FactType};
 pub use query::{DecomposedQuery, HypotheticalGenerator, QueryDecomposer, QueryIntent, TemporalFilter, TemporalParser};
 pub use handler::{handle_event_command, handle_knowledge_command, handle_memo_command, handle_record_command};
 pub use memo::{Memo, MemoAuthority, MemoSource};
-pub use record::{ContextAssembly, EdgeRelation, Record, RecordEdge, RecordType};
+pub use record::{
+    ContextAssembly, EdgeRelation, Record, RecordEdge, RecordType,
+    TaskContent, TaskStatus, TaskView, TaskNoteView, TaskDependencyView,
+    TASK_NOTE_RELATION, task_relations,
+};
 pub use record_extraction::{
     ExtractionContext, ExtractionProcessingResult, ExtractionQuestion,
     ExtractedLink, ExtractedRecord, RecordAction, RecordExtractionResult,

@@ -248,7 +248,7 @@ Be thorough - extract EVERY entity and EVERY relationship mentioned!"#;
     async fn decide_actions(
         &self,
         memo_content: &str,
-        entities: &EntityExtractionResult,
+        _entities: &EntityExtractionResult,
         matches: &[(EntityMention, Vec<RecordCandidate>)],
     ) -> Result<Vec<ActionDecision>> {
         // Build context for the LLM

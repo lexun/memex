@@ -231,6 +231,18 @@ enum SystemCommands {
     /// Upgrade memex via nix and restart daemon if needed
     #[command(display_order = 27)]
     Upgrade,
+    /// Data migration commands
+    #[command(display_order = 28)]
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrateAction {
+    /// Migrate tasks from Forge to Atlas records
+    TasksToRecords,
 }
 
 #[derive(Subcommand)]
@@ -680,6 +692,7 @@ async fn async_main(command: Commands) -> Result<()> {
             SystemCommands::Agent { action } => handle_agent(action),
             SystemCommands::Completions { .. } => unreachable!("Handled in main()"),
             SystemCommands::Upgrade => handle_upgrade().await,
+            SystemCommands::Migrate { action } => handle_migrate(action, &socket_path).await,
         },
     }
 }
@@ -843,6 +856,31 @@ async fn handle_upgrade() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn handle_migrate(action: MigrateAction, socket_path: &std::path::Path) -> Result<()> {
+    let client = ipc::Client::new(socket_path);
+
+    match action {
+        MigrateAction::TasksToRecords => {
+            println!("Migrating tasks from Forge to Atlas records...");
+            let result: serde_json::Value = client.request("migrate_tasks_to_records", &()).await?;
+
+            let tasks = result["tasks_migrated"].as_u64().unwrap_or(0);
+            let notes = result["notes_migrated"].as_u64().unwrap_or(0);
+            let deps = result["dependencies_migrated"].as_u64().unwrap_or(0);
+            let skipped = result["skipped_already_migrated"].as_u64().unwrap_or(0);
+
+            println!("Migration complete:");
+            println!("  Tasks migrated: {}", tasks);
+            println!("  Notes migrated: {}", notes);
+            println!("  Dependencies migrated: {}", deps);
+            if skipped > 0 {
+                println!("  Skipped (already migrated): {}", skipped);
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn handle_cortex(action: CortexAction, socket_path: &std::path::Path) -> Result<()> {
