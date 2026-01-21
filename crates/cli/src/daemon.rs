@@ -3334,9 +3334,9 @@ async fn handle_cortex_get_coordinator(
     config = config.with_system_prompt(COORDINATOR_SYSTEM_PROMPT);
     config = config.with_model("sonnet"); // Use a capable model for coordination
 
-    // Don't inherit user MCP servers - Coordinator gets its own set
+    // Inherit user MCP servers so Coordinator has access to Memex tools
     let mcp_config = cortex::WorkerMcpConfig {
-        strict: true,
+        strict: false, // Allow inheritance of user's MCP config
         servers: vec![],
     };
     config = config.with_mcp_config(mcp_config);
