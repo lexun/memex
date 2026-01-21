@@ -207,6 +207,29 @@ impl CortexClient {
         let validation: ShellValidation = serde_json::from_value(result)?;
         Ok(validation)
     }
+
+    /// Dispatch a task to a worker with automatic context assembly
+    ///
+    /// This is the key orchestration abstraction - one command to go from
+    /// task ID to a worker executing with full context.
+    pub async fn dispatch_task(
+        &self,
+        task_id: &str,
+        worktree: Option<&str>,
+        model: Option<&str>,
+        repo_path: Option<&str>,
+    ) -> Result<DispatchTaskResult> {
+        let params = json!({
+            "task_id": task_id,
+            "worktree": worktree,
+            "model": model,
+            "repo_path": repo_path,
+        });
+
+        let result = self.client.request("cortex_dispatch_task", params).await?;
+        let dispatch_result: DispatchTaskResult = serde_json::from_value(result)?;
+        Ok(dispatch_result)
+    }
 }
 
 /// DTO for worker response (matches what daemon returns)
@@ -216,4 +239,19 @@ struct WorkerResponseDto {
     is_error: bool,
     session_id: Option<String>,
     duration_ms: u64,
+}
+
+/// Result of dispatching a task to a worker
+#[derive(Debug, Deserialize)]
+pub struct DispatchTaskResult {
+    /// Worker ID that was created
+    pub worker_id: String,
+    /// Worktree path where the worker is operating
+    pub worktree: String,
+    /// Task ID that was dispatched
+    pub task_id: String,
+    /// Record ID that context was assembled from (if any)
+    pub context_from: Option<String>,
+    /// Initial response from the worker
+    pub initial_response: String,
 }

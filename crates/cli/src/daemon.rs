@@ -529,6 +529,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
 
         // Cortex operations (worker management)
         "cortex_create_worker" => handle_cortex_create_worker(request, stores).await,
+        "cortex_dispatch_task" => handle_cortex_dispatch_task(request, stores).await,
         "cortex_send_message" => handle_cortex_send_message(request, stores).await,
         "cortex_send_message_async" => handle_cortex_send_message_async(request, stores).await,
         "cortex_get_response" => handle_cortex_get_response(request, stores).await,
@@ -3300,6 +3301,211 @@ async fn handle_cortex_get_response(
             )))
         }
     }
+}
+
+// ========== Dispatch Task Handler ==========
+
+#[derive(Deserialize)]
+struct DispatchTaskParams {
+    /// Task ID to dispatch
+    task_id: String,
+    /// Optional: specific worktree path. Auto-creates if not provided.
+    worktree: Option<String>,
+    /// Optional: model override (defaults to sonnet)
+    model: Option<String>,
+    /// Optional: repo path for worktree creation (defaults to cwd)
+    repo_path: Option<String>,
+}
+
+/// Dispatch a task to a worker with automatic context assembly
+///
+/// This is the key orchestration abstraction:
+/// 1. Get task record
+/// 2. Find project from task (if any)
+/// 3. Find repo record for the project
+/// 4. Assemble context from repo (rules, skills, etc.)
+/// 5. Create/find worktree for the work
+/// 6. Create worker with context + task in prompt
+/// 7. Create assigned_to edge
+/// 8. Send initial message to start work
+async fn handle_cortex_dispatch_task(
+    request: &Request,
+    stores: &Arc<Stores>,
+) -> Result<serde_json::Value, IpcError> {
+    let params: DispatchTaskParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    // 1. Get task record
+    let task_record = stores.atlas
+        .get_record(&params.task_id)
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to get task: {}", e)))?
+        .ok_or_else(|| IpcError::invalid_params(format!("Task not found: {}", params.task_id)))?;
+
+    // Ensure it's a task
+    if task_record.record_type != "task" {
+        return Err(IpcError::invalid_params(format!(
+            "Record {} is not a task (type: {})",
+            params.task_id, task_record.record_type
+        )));
+    }
+
+    // Extract task info
+    let task_title = &task_record.name;
+    let task_description = task_record.description.as_deref().unwrap_or("");
+    let task_project = task_record.content.get("project")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // 2. Find context source (repo or project record)
+    // Try to find a repo record that matches the project name
+    let context_record_id = if let Some(ref project) = task_project {
+        // Try to find a repo with this name
+        match stores.atlas.get_record_by_type_name("repo", project).await {
+            Ok(Some(repo)) => repo.id.map(|t| t.id.to_raw()),
+            _ => {
+                // Try to find a project record
+                match stores.atlas.get_record_by_type_name("initiative", project).await {
+                    Ok(Some(proj)) => proj.id.map(|t| t.id.to_raw()),
+                    _ => None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // 3. Assemble context if we have a record ID
+    let context_prompt = if let Some(ref record_id) = context_record_id {
+        match stores.atlas.assemble_context(record_id, 3).await {
+            Ok(assembly) => {
+                let prompt = assembly.to_system_prompt();
+                if prompt.is_empty() { None } else { Some(prompt) }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to assemble context from {}: {}", record_id, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // 4. Determine worktree path
+    let worktree_path = if let Some(path) = params.worktree {
+        // Use specified path
+        path
+    } else {
+        // Auto-create worktree using vibetree
+        let repo_path = std::path::PathBuf::from(params.repo_path.as_deref().unwrap_or("."));
+
+        // Generate a branch name from task ID
+        let branch_name = format!("task-{}", &params.task_id[..8.min(params.task_id.len())]);
+
+        // Create vibetree app and worktree
+        let mut app = vibetree::VibeTreeApp::with_parent(repo_path.clone())
+            .map_err(|e| IpcError::internal(format!("Failed to load vibetree config: {}", e)))?;
+
+        app.add_worktree(
+            branch_name.clone(),
+            None, // from_branch - use current HEAD
+            None, // custom_values
+            false, // dry_run
+            false, // switch (don't spawn shell)
+        )
+        .map_err(|e| IpcError::internal(format!(
+            "Failed to create worktree: {}. Specify worktree path manually.",
+            e
+        )))?;
+
+        // Compute the worktree path (branches_dir/branch_name)
+        let branches_dir = app.get_config_mut().project_config.branches_dir.clone();
+        repo_path.join(&branches_dir).join(&branch_name).to_string_lossy().to_string()
+    };
+
+    // 5. Build system prompt with task and context
+    let mut system_parts = Vec::new();
+
+    // Add task context
+    system_parts.push(format!(
+        "# Your Task\n\n\
+         **Title:** {}\n\n\
+         **Description:**\n{}\n\n\
+         Work on this task. When you complete it, report your results.",
+        task_title, task_description
+    ));
+
+    // Add assembled context
+    if let Some(context) = context_prompt {
+        system_parts.push(context);
+    }
+
+    let system_prompt = system_parts.join("\n\n---\n\n");
+
+    // 6. Create worker
+    let mut config = WorkerConfig::new(&worktree_path);
+    config = config.with_system_prompt(&system_prompt);
+    if let Some(ref model) = params.model {
+        config = config.with_model(model);
+    }
+
+    // Configure MCP - include memex for task updates
+    let mcp_config = cortex::WorkerMcpConfig {
+        strict: false, // Inherit user MCP config for now
+        servers: vec![],
+    };
+    config = config.with_mcp_config(mcp_config);
+
+    let worker_id = stores.workers
+        .create(config)
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to create worker: {}", e)))?;
+
+    // 7. Create assigned_to edge (worker -> task)
+    // For now we'll record this in the worker status since workers aren't records
+    // In the future, workers could be records and we'd create a proper edge
+    {
+        let mut status = stores.workers.status(&worker_id).await
+            .map_err(|e| IpcError::internal(format!("Failed to get worker status: {}", e)))?;
+        status.current_task = Some(params.task_id.clone());
+        // Note: We can't update status directly, but the worker already has current_task set
+    }
+
+    // Persist worker to database with task reference
+    let db_worker = DbWorker::new(&worker_id.0, &worktree_path)
+        .with_model(params.model.unwrap_or_default())
+        .with_system_prompt(system_prompt)
+        .with_current_task(Some(params.task_id.clone()));
+
+    if let Err(e) = stores.forge.create_worker(db_worker).await {
+        tracing::warn!("Failed to persist worker to DB: {}", e);
+    }
+
+    // 8. Send initial message to start work
+    let initial_message = format!(
+        "Begin working on the task: {}\n\n\
+         Your working directory is: {}\n\n\
+         Review the task description and any context provided, then start implementation.",
+        task_title, worktree_path
+    );
+
+    let response = stores.workers
+        .send_message(&worker_id, &initial_message)
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to send initial message: {}", e)))?;
+
+    // Update task status to in_progress
+    if let Err(e) = stores.atlas.update_task_status(&params.task_id, "in_progress").await {
+        tracing::warn!("Failed to update task status: {}", e);
+    }
+
+    Ok(json!({
+        "worker_id": worker_id.0,
+        "worktree": worktree_path,
+        "task_id": params.task_id,
+        "context_from": context_record_id,
+        "initial_response": response.result,
+    }))
 }
 
 // ========== Vibetree Handlers ==========

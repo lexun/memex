@@ -1045,6 +1045,49 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Dispatch a task to a new worker with automatic context assembly
+    ///
+    /// This is the key orchestration abstraction - one command to go from
+    /// "here's a task" to "worker is executing it with full context".
+    ///
+    /// The tool:
+    /// 1. Gets the task record
+    /// 2. Finds associated project/repo and assembles context (rules, skills, etc.)
+    /// 3. Creates a worktree for the work (or uses specified path)
+    /// 4. Creates a worker with context + task description in system prompt
+    /// 5. Sends initial message to start work
+    /// 6. Updates task status to in_progress
+    #[tool]
+    async fn cortex_dispatch_task(
+        &self,
+        /// Task ID to dispatch
+        task_id: String,
+        /// Optional: specific worktree path. If not provided, auto-creates using vibetree.
+        worktree: Option<String>,
+        /// Optional: model override (defaults to sonnet)
+        model: Option<String>,
+        /// Optional: repo path for worktree creation (defaults to current directory)
+        repo_path: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        match self
+            .cortex_client
+            .dispatch_task(&task_id, worktree.as_deref(), model.as_deref(), repo_path.as_deref())
+            .await
+        {
+            Ok(result) => Ok(format!(
+                "Dispatched task {} to worker {}\n  Worktree: {}\n  Context from: {}",
+                task_id,
+                result.worker_id,
+                result.worktree,
+                result.context_from.unwrap_or_else(|| "none".to_string())
+            )),
+            Err(e) => {
+                let msg = format!("Failed to dispatch task: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     /// Send a message to a worker and get the response
     ///
     /// The message is sent to the Claude worker, which processes it

@@ -1969,6 +1969,12 @@ impl Store {
             .await
     }
 
+    /// Convenience method to update just the task status
+    pub async fn update_task_status(&self, id: &str, status: &str) -> Result<Option<Record>> {
+        self.update_task(id, Some(status), None, None, None, None)
+            .await
+    }
+
     /// Permanently delete a task and its notes/dependencies
     pub async fn delete_task(&self, id: &str) -> Result<Option<Record>> {
         use crate::record::TASK_NOTE_RELATION;

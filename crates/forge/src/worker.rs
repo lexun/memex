@@ -87,6 +87,11 @@ impl DbWorker {
         self.worktree = Some(worktree.into());
         self
     }
+
+    pub fn with_current_task(mut self, task_id: Option<String>) -> Self {
+        self.current_task = task_id;
+        self
+    }
 }
 
 /// Convert chrono DateTime to SurrealDB Datetime
