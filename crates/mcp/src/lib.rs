@@ -1602,6 +1602,144 @@ impl McpServer for MemexMcpServer {
     }
 
     // -------------------------------------------------------------------------
+    // Agent messaging tools (inter-agent communication)
+    // -------------------------------------------------------------------------
+
+    /// Send a message to the agent message queue
+    ///
+    /// Enables async communication between the primary Claude session and
+    /// background workers/coordinators. Messages are queued and can be retrieved
+    /// by the intended recipient using check_messages.
+    ///
+    /// Use cases:
+    /// - Primary session sending instructions to coordinator
+    /// - Workers reporting status/completion to coordinator
+    /// - Workers requesting guidance from primary session
+    #[tool]
+    async fn send_agent_message(
+        &self,
+        /// Sender identifier (e.g., worker ID like "worker_abc123", or "primary" for main session)
+        sender: String,
+        /// Message content to send
+        content: String,
+        /// Optional recipient (e.g., "coordinator", worker ID, or "primary").
+        /// If None, message goes to the general queue (for coordinator to process).
+        recipient: Option<String>,
+        /// Message type for categorization (default: "message").
+        /// Common types: "status", "request", "response", "completion", "error"
+        message_type: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        let params = serde_json::json!({
+            "sender": sender,
+            "content": content,
+            "recipient": recipient,
+            "message_type": message_type.unwrap_or_else(|| "message".to_string()),
+        });
+
+        match self.ipc_client.request("send_agent_message", params).await {
+            Ok(result) => {
+                let message_id = result.get("message_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                Ok(format!("Message sent successfully.\n  Message ID: {}", message_id))
+            }
+            Err(e) => {
+                let msg = format!("Failed to send message: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Check for messages in the agent message queue
+    ///
+    /// Retrieves unread messages, optionally filtering by recipient.
+    /// This is typically called by the coordinator to check for messages
+    /// from workers or the primary session.
+    ///
+    /// Messages are marked as read by default after retrieval.
+    #[tool]
+    async fn check_messages(
+        &self,
+        /// Filter messages for this recipient (e.g., "coordinator", worker ID).
+        /// If None, returns all unread messages.
+        recipient: Option<String>,
+        /// Include broadcast messages (messages with no specific recipient). Default: true
+        include_broadcast: Option<bool>,
+        /// Mark retrieved messages as read. Default: true
+        mark_read: Option<bool>,
+        /// Maximum number of messages to return
+        limit: Option<i32>,
+    ) -> mcp_attr::Result<String> {
+        let params = serde_json::json!({
+            "recipient": recipient,
+            "include_broadcast": include_broadcast.unwrap_or(true),
+            "mark_read": mark_read.unwrap_or(true),
+            "limit": limit,
+        });
+
+        match self.ipc_client.request("check_messages", params).await {
+            Ok(result) => {
+                let count = result.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+                let messages = result.get("messages").and_then(|v| v.as_array());
+
+                if count == 0 {
+                    Ok("No new messages".to_string())
+                } else {
+                    let mut output = format!("Messages ({}):\n", count);
+
+                    if let Some(msgs) = messages {
+                        for msg in msgs {
+                            let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                            let sender = msg.get("sender").and_then(|v| v.as_str()).unwrap_or("?");
+                            let msg_type = msg.get("message_type").and_then(|v| v.as_str()).unwrap_or("message");
+                            let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                            let timestamp = msg.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?");
+
+                            output.push_str(&format!("\n--- [{}] from {} ({}) ---\n", msg_type, sender, timestamp));
+                            output.push_str(&format!("ID: {}\n", id));
+                            output.push_str(content);
+                            output.push('\n');
+                        }
+                    }
+
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to check messages: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Clear old/read messages from the queue
+    ///
+    /// Housekeeping operation to remove messages that have been read
+    /// or are older than a specified age.
+    #[tool]
+    async fn clear_agent_messages(
+        &self,
+        /// Only clear messages that have been read. Default: true
+        only_read: Option<bool>,
+        /// Clear messages older than this many seconds
+        older_than_secs: Option<i64>,
+    ) -> mcp_attr::Result<String> {
+        let params = serde_json::json!({
+            "only_read": only_read.unwrap_or(true),
+            "older_than_secs": older_than_secs,
+        });
+
+        match self.ipc_client.request("clear_agent_messages", params).await {
+            Ok(result) => {
+                let cleared = result.get("cleared").and_then(|v| v.as_i64()).unwrap_or(0);
+                Ok(format!("Cleared {} message(s) from queue", cleared))
+            }
+            Err(e) => {
+                let msg = format!("Failed to clear messages: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Graph tools (records and edges)
     // -------------------------------------------------------------------------
 

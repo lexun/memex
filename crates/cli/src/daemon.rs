@@ -46,6 +46,25 @@ struct AsyncResponseState {
     completed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// An inter-agent message for async communication
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentMessage {
+    /// Unique message ID
+    id: String,
+    /// Sender identifier (e.g., worker ID or "primary" for main session)
+    sender: String,
+    /// Optional recipient identifier (None = broadcast/coordinator)
+    recipient: Option<String>,
+    /// Message content
+    content: String,
+    /// Message type for categorization (e.g., "status", "request", "response")
+    message_type: String,
+    /// When the message was sent
+    timestamp: chrono::DateTime<chrono::Utc>,
+    /// Whether this message has been read
+    read: bool,
+}
+
 /// Container for stores and services
 struct Stores {
     forge: ForgeStore,
@@ -54,6 +73,8 @@ struct Stores {
     workers: WorkerManager,
     /// Storage for async message responses
     async_responses: RwLock<HashMap<String, AsyncResponseState>>,
+    /// Message queue for inter-agent communication
+    agent_messages: RwLock<Vec<AgentMessage>>,
 }
 
 /// Load persisted workers from database on startup
@@ -284,6 +305,7 @@ impl Daemon {
             extractor,
             workers: WorkerManager::new(),
             async_responses: RwLock::new(HashMap::new()),
+            agent_messages: RwLock::new(Vec::new()),
         });
 
         // Load persisted workers from database
@@ -544,6 +566,11 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "vibetree_create" => handle_vibetree_create(request).await,
         "vibetree_remove" => handle_vibetree_remove(request).await,
         "vibetree_merge" => handle_vibetree_merge(request).await,
+
+        // Agent messaging operations (inter-agent communication)
+        "send_agent_message" => handle_send_agent_message(request, stores).await,
+        "check_messages" => handle_check_messages(request, stores).await,
+        "clear_agent_messages" => handle_clear_agent_messages(request, stores).await,
 
         // Unknown method
         _ => Err(IpcError::method_not_found(&request.method)),
@@ -3816,6 +3843,208 @@ async fn handle_vibetree_merge(request: &Request) -> Result<serde_json::Value, I
         "into": into_branch,
         "squashed": squash,
         "removed": removed,
+    }))
+}
+
+// ========== Agent Messaging Handlers ==========
+
+/// Send a message to the inter-agent message queue
+async fn handle_send_agent_message(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    #[derive(Deserialize)]
+    struct SendMessageParams {
+        /// Sender identifier (e.g., worker ID or "primary")
+        sender: String,
+        /// Optional recipient (None = coordinator/broadcast)
+        recipient: Option<String>,
+        /// Message content
+        content: String,
+        /// Message type (e.g., "status", "request", "response")
+        #[serde(default = "default_message_type")]
+        message_type: String,
+    }
+
+    fn default_message_type() -> String {
+        "message".to_string()
+    }
+
+    let params: SendMessageParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    // Generate unique message ID
+    let message_id = format!("msg_{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string());
+
+    let message = AgentMessage {
+        id: message_id.clone(),
+        sender: params.sender.clone(),
+        recipient: params.recipient.clone(),
+        content: params.content,
+        message_type: params.message_type,
+        timestamp: chrono::Utc::now(),
+        read: false,
+    };
+
+    // Add to message queue
+    {
+        let mut messages = stores.agent_messages.write().await;
+        messages.push(message);
+    }
+
+    tracing::debug!(
+        "Agent message queued: {} from {} to {:?}",
+        message_id,
+        params.sender,
+        params.recipient
+    );
+
+    Ok(json!({
+        "message_id": message_id,
+        "status": "queued"
+    }))
+}
+
+/// Check for messages in the queue, optionally filtering by recipient
+async fn handle_check_messages(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    #[derive(Deserialize, Default)]
+    struct CheckMessagesParams {
+        /// Filter messages for this recipient (None = all unread)
+        recipient: Option<String>,
+        /// Include messages with no specific recipient (broadcast/coordinator messages)
+        #[serde(default = "default_include_broadcast")]
+        include_broadcast: bool,
+        /// Mark retrieved messages as read
+        #[serde(default = "default_mark_read")]
+        mark_read: bool,
+        /// Maximum number of messages to return
+        limit: Option<usize>,
+    }
+
+    fn default_include_broadcast() -> bool {
+        true
+    }
+
+    fn default_mark_read() -> bool {
+        true
+    }
+
+    let params: CheckMessagesParams = if request.params.is_null() {
+        CheckMessagesParams::default()
+    } else {
+        serde_json::from_value(request.params.clone())
+            .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?
+    };
+
+    let mut messages_to_return = Vec::new();
+    let mut message_ids_to_mark = Vec::new();
+
+    {
+        let messages = stores.agent_messages.read().await;
+
+        for msg in messages.iter() {
+            // Skip already-read messages
+            if msg.read {
+                continue;
+            }
+
+            // Filter by recipient
+            let matches = match (&params.recipient, &msg.recipient) {
+                // If no recipient filter, include all unread messages
+                (None, _) => true,
+                // If filtering for a specific recipient
+                (Some(filter), Some(msg_recipient)) => filter == msg_recipient,
+                // Include broadcast messages if requested
+                (Some(_), None) => params.include_broadcast,
+            };
+
+            if matches {
+                messages_to_return.push(json!({
+                    "id": msg.id,
+                    "sender": msg.sender,
+                    "recipient": msg.recipient,
+                    "content": msg.content,
+                    "message_type": msg.message_type,
+                    "timestamp": msg.timestamp.to_rfc3339(),
+                }));
+                message_ids_to_mark.push(msg.id.clone());
+
+                // Check limit
+                if let Some(limit) = params.limit {
+                    if messages_to_return.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Mark messages as read if requested
+    if params.mark_read && !message_ids_to_mark.is_empty() {
+        let mut messages = stores.agent_messages.write().await;
+        for msg in messages.iter_mut() {
+            if message_ids_to_mark.contains(&msg.id) {
+                msg.read = true;
+            }
+        }
+    }
+
+    Ok(json!({
+        "messages": messages_to_return,
+        "count": messages_to_return.len(),
+    }))
+}
+
+/// Clear old/read messages from the queue (housekeeping)
+async fn handle_clear_agent_messages(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    #[derive(Deserialize, Default)]
+    struct ClearParams {
+        /// Clear only read messages (default: true)
+        #[serde(default = "default_only_read")]
+        only_read: bool,
+        /// Clear messages older than N seconds
+        older_than_secs: Option<i64>,
+    }
+
+    fn default_only_read() -> bool {
+        true
+    }
+
+    let params: ClearParams = if request.params.is_null() {
+        ClearParams::default()
+    } else {
+        serde_json::from_value(request.params.clone())
+            .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?
+    };
+
+    let now = chrono::Utc::now();
+
+    let cleared_count = {
+        let mut messages = stores.agent_messages.write().await;
+        let original_len = messages.len();
+
+        messages.retain(|msg| {
+            let should_keep = if params.only_read && !msg.read {
+                // Keep unread messages when only_read is true
+                true
+            } else if let Some(secs) = params.older_than_secs {
+                // Keep messages newer than the threshold
+                let age = (now - msg.timestamp).num_seconds();
+                age < secs
+            } else if params.only_read {
+                // Remove read messages
+                !msg.read
+            } else {
+                // Clear all
+                false
+            };
+            should_keep
+        });
+
+        original_len - messages.len()
+    };
+
+    tracing::debug!("Cleared {} agent messages from queue", cleared_count);
+
+    Ok(json!({
+        "cleared": cleared_count
     }))
 }
 
