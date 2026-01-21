@@ -2281,6 +2281,163 @@ impl Store {
         let deps: Vec<RecordEdge> = response.take(0).context("Failed to parse dependencies")?;
         Ok(deps)
     }
+
+    // ========== Message Operations ==========
+
+    /// Create a new agent message
+    ///
+    /// Messages are records with type "message" that facilitate inter-agent communication.
+    /// The `from` and `to` fields identify agents (worker IDs, "coordinator", or "primary").
+    pub async fn create_message(
+        &self,
+        from: &str,
+        to: &str,
+        subject: &str,
+        body: &str,
+        message_type: crate::record::MessageType,
+        thread_id: Option<&str>,
+        task_id: Option<&str>,
+    ) -> Result<Record> {
+        use crate::record::{MessageContent, RecordType};
+
+        let mut content = MessageContent::new(from, to)
+            .with_type(message_type);
+
+        if let Some(tid) = thread_id {
+            content = content.with_thread(tid);
+        }
+        if let Some(taid) = task_id {
+            content = content.with_task(taid);
+        }
+
+        let record = Record::new(RecordType::Message, subject)
+            .with_description(body)
+            .with_content(content.to_json());
+
+        self.create_record(record).await
+    }
+
+    /// List messages for a specific recipient
+    ///
+    /// Returns messages addressed to the given agent, optionally filtered by read status.
+    pub async fn list_messages_for(
+        &self,
+        recipient: &str,
+        unread_only: bool,
+        limit: Option<usize>,
+    ) -> Result<Vec<Record>> {
+        let mut query = String::from(
+            "SELECT * FROM record WHERE record_type = 'message' AND deleted_at IS NONE AND content.to = $to"
+        );
+
+        if unread_only {
+            query.push_str(" AND content.read = false");
+        }
+
+        query.push_str(" ORDER BY created_at DESC");
+
+        if let Some(n) = limit {
+            query.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("to", recipient.to_string()))
+            .await
+            .context("Failed to query messages")?;
+
+        let messages: Vec<Record> = response.take(0).context("Failed to parse messages")?;
+        Ok(messages)
+    }
+
+    /// List messages sent by a specific sender
+    pub async fn list_messages_from(
+        &self,
+        sender: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<Record>> {
+        let mut query = String::from(
+            "SELECT * FROM record WHERE record_type = 'message' AND deleted_at IS NONE AND content.from = $from ORDER BY created_at DESC"
+        );
+
+        if let Some(n) = limit {
+            query.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("from", sender.to_string()))
+            .await
+            .context("Failed to query messages")?;
+
+        let messages: Vec<Record> = response.take(0).context("Failed to parse messages")?;
+        Ok(messages)
+    }
+
+    /// Mark a message as read
+    pub async fn mark_message_read(&self, message_id: &str) -> Result<Option<Record>> {
+        use surrealdb::sql::Datetime;
+
+        let sql = r#"
+            UPDATE type::thing('record', $id) SET
+                content.read = true,
+                content.read_at = $read_at,
+                updated_at = time::now()
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("id", message_id.to_string()))
+            .bind(("read_at", Datetime::default().to_string()))
+            .await
+            .context("Failed to mark message as read")?;
+
+        let updated: Option<Record> = response.take(0).ok().and_then(|v: Vec<Record>| v.into_iter().next());
+        Ok(updated)
+    }
+
+    /// Get unread message count for a recipient
+    pub async fn unread_message_count(&self, recipient: &str) -> Result<usize> {
+        let query = "SELECT count() as count FROM record WHERE record_type = 'message' AND deleted_at IS NONE AND content.to = $to AND content.read = false GROUP ALL";
+
+        let mut response = self
+            .db
+            .client()
+            .query(query)
+            .bind(("to", recipient.to_string()))
+            .await
+            .context("Failed to count unread messages")?;
+
+        #[derive(Deserialize)]
+        struct CountResult {
+            count: i64,
+        }
+
+        let counts: Vec<CountResult> = response.take(0).unwrap_or_default();
+        Ok(counts.first().map(|c| c.count as usize).unwrap_or(0))
+    }
+
+    /// Get messages in a thread
+    pub async fn get_thread_messages(&self, thread_id: &str) -> Result<Vec<Record>> {
+        let query = "SELECT * FROM record WHERE record_type = 'message' AND deleted_at IS NONE AND content.thread_id = $thread_id ORDER BY created_at ASC";
+
+        let mut response = self
+            .db
+            .client()
+            .query(query)
+            .bind(("thread_id", thread_id.to_string()))
+            .await
+            .context("Failed to query thread messages")?;
+
+        let messages: Vec<Record> = response.take(0).context("Failed to parse messages")?;
+        Ok(messages)
+    }
 }
 
 #[cfg(test)]

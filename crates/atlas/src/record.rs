@@ -88,6 +88,9 @@ pub enum RecordType {
     /// A task - a unit of work with lifecycle and completion semantics
     /// Content fields: { status, priority, project, completed_at }
     Task,
+    /// An agent message - communication between agents (Coordinator, workers, Primary Claude)
+    /// Content fields: { message_type, read, read_at }
+    Message,
 }
 
 impl Default for RecordType {
@@ -109,6 +112,7 @@ impl std::fmt::Display for RecordType {
             RecordType::Document => write!(f, "document"),
             RecordType::Technology => write!(f, "technology"),
             RecordType::Task => write!(f, "task"),
+            RecordType::Message => write!(f, "message"),
         }
     }
 }
@@ -128,6 +132,7 @@ impl std::str::FromStr for RecordType {
             "document" => Ok(RecordType::Document),
             "technology" => Ok(RecordType::Technology),
             "task" => Ok(RecordType::Task),
+            "message" => Ok(RecordType::Message),
             _ => Err(format!("Unknown record type: {}", s)),
         }
     }
@@ -204,6 +209,12 @@ pub enum EdgeRelation {
     /// Task/work assigned to worker or person
     /// Links agents or people to tasks they're actively working on
     AssignedTo,
+    /// Message addressed to an agent/worker
+    /// Links messages to their recipients for inter-agent communication
+    AddressedTo,
+    /// Message sent from an agent/worker
+    /// Links messages to their sender for provenance
+    SentFrom,
     /// Generic association
     RelatedTo,
 }
@@ -225,6 +236,8 @@ impl std::fmt::Display for EdgeRelation {
             EdgeRelation::DependsOn => write!(f, "depends_on"),
             EdgeRelation::PartOf => write!(f, "part_of"),
             EdgeRelation::AssignedTo => write!(f, "assigned_to"),
+            EdgeRelation::AddressedTo => write!(f, "addressed_to"),
+            EdgeRelation::SentFrom => write!(f, "sent_from"),
             EdgeRelation::RelatedTo => write!(f, "related_to"),
         }
     }
@@ -243,6 +256,8 @@ impl std::str::FromStr for EdgeRelation {
             "depends_on" => Ok(EdgeRelation::DependsOn),
             "part_of" => Ok(EdgeRelation::PartOf),
             "assigned_to" => Ok(EdgeRelation::AssignedTo),
+            "addressed_to" => Ok(EdgeRelation::AddressedTo),
+            "sent_from" => Ok(EdgeRelation::SentFrom),
             "related_to" => Ok(EdgeRelation::RelatedTo),
             _ => Err(format!("Unknown edge relation: {}", s)),
         }
@@ -591,6 +606,205 @@ pub mod task_relations {
     pub const BLOCKED_BY: &str = "blocked_by";
     /// Tasks are related (informational link)
     pub const RELATES_TO: &str = "relates_to";
+}
+
+// =============================================================================
+// Message-specific types: Messages are records for inter-agent communication
+// =============================================================================
+
+/// Message type for categorizing communications
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageType {
+    /// High-level guidance from Primary Claude
+    Guidance,
+    /// Status update from a worker
+    Status,
+    /// Request for clarification or help
+    Request,
+    /// Response to a request
+    Response,
+    /// Task completion report
+    Completion,
+    /// Error or issue report
+    Error,
+    /// General communication
+    General,
+}
+
+impl Default for MessageType {
+    fn default() -> Self {
+        Self::General
+    }
+}
+
+impl std::fmt::Display for MessageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MessageType::Guidance => write!(f, "guidance"),
+            MessageType::Status => write!(f, "status"),
+            MessageType::Request => write!(f, "request"),
+            MessageType::Response => write!(f, "response"),
+            MessageType::Completion => write!(f, "completion"),
+            MessageType::Error => write!(f, "error"),
+            MessageType::General => write!(f, "general"),
+        }
+    }
+}
+
+impl std::str::FromStr for MessageType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "guidance" => Ok(MessageType::Guidance),
+            "status" => Ok(MessageType::Status),
+            "request" => Ok(MessageType::Request),
+            "response" => Ok(MessageType::Response),
+            "completion" => Ok(MessageType::Completion),
+            "error" => Ok(MessageType::Error),
+            "general" => Ok(MessageType::General),
+            _ => Err(format!("Unknown message type: {}", s)),
+        }
+    }
+}
+
+/// Helper struct for message content fields stored in Record.content
+///
+/// Message records use Record with:
+/// - record_type: "message"
+/// - name: message subject/summary (for display)
+/// - description: the actual message content
+/// - content: MessageContent (serialized as JSON)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageContent {
+    /// Type of message (guidance, status, request, etc.)
+    pub message_type: MessageType,
+    /// Sender identifier (worker ID, "coordinator", or "primary")
+    pub from: String,
+    /// Recipient identifier (worker ID, "coordinator", or "primary")
+    pub to: String,
+    /// Whether the message has been read
+    pub read: bool,
+    /// When the message was read (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<Datetime>,
+    /// Optional thread/conversation ID for grouping related messages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// Optional reference to a task ID this message relates to
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+}
+
+impl Default for MessageContent {
+    fn default() -> Self {
+        Self {
+            message_type: MessageType::default(),
+            from: String::new(),
+            to: String::new(),
+            read: false,
+            read_at: None,
+            thread_id: None,
+            task_id: None,
+        }
+    }
+}
+
+impl MessageContent {
+    /// Create new message content
+    pub fn new(from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self {
+            from: from.into(),
+            to: to.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Set message type
+    pub fn with_type(mut self, message_type: MessageType) -> Self {
+        self.message_type = message_type;
+        self
+    }
+
+    /// Set thread ID
+    pub fn with_thread(mut self, thread_id: impl Into<String>) -> Self {
+        self.thread_id = Some(thread_id.into());
+        self
+    }
+
+    /// Set task ID
+    pub fn with_task(mut self, task_id: impl Into<String>) -> Self {
+        self.task_id = Some(task_id.into());
+        self
+    }
+
+    /// Convert to JSON Value for storage in Record.content
+    pub fn to_json(&self) -> JsonValue {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    /// Parse from Record.content JSON
+    pub fn from_json(value: &JsonValue) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
+/// A view of a Message record for API compatibility
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageView {
+    /// Record ID
+    pub id: Option<Thing>,
+    /// Subject/summary (from Record.name)
+    pub subject: String,
+    /// Message body (from Record.description)
+    pub body: Option<String>,
+    /// Sender identifier
+    pub from: String,
+    /// Recipient identifier
+    pub to: String,
+    /// Message type
+    pub message_type: MessageType,
+    /// Whether the message has been read
+    pub read: bool,
+    /// When the message was read
+    pub read_at: Option<Datetime>,
+    /// Thread/conversation ID
+    pub thread_id: Option<String>,
+    /// Related task ID
+    pub task_id: Option<String>,
+    /// When the message was created
+    pub created_at: Datetime,
+}
+
+impl MessageView {
+    /// Convert a Record to a MessageView
+    pub fn from_record(record: &Record) -> Option<Self> {
+        if record.record_type != "message" {
+            return None;
+        }
+
+        let content = MessageContent::from_json(&record.content)?;
+
+        Some(Self {
+            id: record.id.clone(),
+            subject: record.name.clone(),
+            body: record.description.clone(),
+            from: content.from,
+            to: content.to,
+            message_type: content.message_type,
+            read: content.read,
+            read_at: content.read_at,
+            thread_id: content.thread_id,
+            task_id: content.task_id,
+            created_at: record.created_at.clone(),
+        })
+    }
+
+    /// Get the message ID as a string
+    pub fn id_str(&self) -> Option<String> {
+        self.id.as_ref().map(|t| t.id.to_raw())
+    }
 }
 
 // =============================================================================
