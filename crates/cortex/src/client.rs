@@ -11,7 +11,7 @@ use serde_json::json;
 use ipc::Client;
 
 use crate::types::{TranscriptEntry, WorkerId, WorkerStatus};
-use crate::worker::{ShellValidation, WorkerResponse};
+use crate::worker::{ShellReloadResult, ShellValidation, WorkerResponse};
 
 /// Client for Cortex worker operations via daemon IPC
 pub struct CortexClient {
@@ -206,6 +206,46 @@ impl CortexClient {
         let result = self.client.request("cortex_validate_shell", params).await?;
         let validation: ShellValidation = serde_json::from_value(result)?;
         Ok(validation)
+    }
+
+    /// Reload the shell environment for a worker
+    ///
+    /// Validates that the shell environment loads correctly and optionally
+    /// clears the worker's session so it starts fresh with the new environment.
+    ///
+    /// # Why This Is Useful
+    ///
+    /// Workers operate in nix devshells via direnv. When a worker modifies
+    /// flake.nix, .envrc, or other shell configuration, they may want to:
+    /// 1. Verify the new shell loads correctly before continuing
+    /// 2. Reset their session so Claude picks up new tools/paths
+    ///
+    /// Note: The direnv environment is already captured fresh on each message,
+    /// so the main benefit of reload is validation + optional session reset.
+    ///
+    /// # Arguments
+    ///
+    /// * `worker_id` - Worker ID to reload
+    /// * `clear_session` - If true, clears the session ID so the next message
+    ///   starts a fresh Claude session instead of resuming
+    ///
+    /// # Returns
+    ///
+    /// - `ShellReloadResult::Success` with environment info if reload succeeded
+    /// - `ShellReloadResult::Failed` with error details if the shell won't load
+    pub async fn reload_shell(
+        &self,
+        worker_id: &WorkerId,
+        clear_session: bool,
+    ) -> Result<ShellReloadResult> {
+        let params = json!({
+            "worker_id": worker_id.0,
+            "clear_session": clear_session,
+        });
+
+        let result = self.client.request("cortex_reload_shell", params).await?;
+        let reload_result: ShellReloadResult = serde_json::from_value(result)?;
+        Ok(reload_result)
     }
 
     /// Get or create the Coordinator worker

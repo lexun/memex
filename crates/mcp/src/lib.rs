@@ -1446,6 +1446,74 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Reload the shell environment for a worker
+    ///
+    /// Validates that the shell environment loads correctly and optionally
+    /// clears the worker's session so it starts fresh with the new environment.
+    ///
+    /// **Why this is useful:** Workers operate in nix devshells via direnv. When
+    /// a worker modifies flake.nix, .envrc, or other shell configuration, they
+    /// may want to:
+    /// 1. Verify the new shell loads correctly before continuing
+    /// 2. Reset their session so Claude picks up new tools/paths
+    ///
+    /// Note: The direnv environment is already captured fresh on each message,
+    /// so the main benefit of reload is validation + optional session reset.
+    #[tool]
+    async fn cortex_reload_shell(
+        &self,
+        /// Worker ID to reload shell for
+        worker_id: String,
+        /// If true, clears the session so the next message starts a fresh
+        /// Claude session instead of resuming. Defaults to false.
+        clear_session: Option<bool>,
+    ) -> mcp_attr::Result<String> {
+        let worker_id = cortex::WorkerId::from_string(&worker_id);
+        let clear_session = clear_session.unwrap_or(false);
+        let result = self.cortex_client.reload_shell(&worker_id, clear_session).await;
+
+        match result {
+            Ok(cortex::ShellReloadResult::Success { env_var_count, has_nix, session_cleared }) => {
+                let mut output = String::from("Shell reload: SUCCESS\n");
+                output.push_str(&format!("Environment variables: {} loaded\n", env_var_count));
+
+                if has_nix {
+                    output.push_str("Nix environment: Active (PATH includes /nix/store)\n");
+                } else {
+                    output.push_str("Nix environment: Not detected (PATH doesn't include /nix/store)\n");
+                }
+
+                if session_cleared {
+                    output.push_str("Session: Cleared (next message will start fresh)\n");
+                } else if clear_session {
+                    output.push_str("Session: Was already empty\n");
+                } else {
+                    output.push_str("Session: Preserved (will resume existing conversation)\n");
+                }
+
+                output.push_str("\nThe worker's shell environment has been reloaded successfully.");
+                Ok(output)
+            }
+            Ok(cortex::ShellReloadResult::Failed { error, exit_code }) => {
+                let mut output = String::from("Shell reload: FAILED\n\n");
+                output.push_str(&format!("Error: {}\n", error));
+                if let Some(code) = exit_code {
+                    output.push_str(&format!("Exit code: {}\n", code));
+                }
+                output.push_str("\nThe shell environment failed to load. This typically means:\n");
+                output.push_str("- There's a syntax error in flake.nix\n");
+                output.push_str("- A dependency failed to build\n");
+                output.push_str("- The .envrc is missing or invalid\n");
+                output.push_str("\nFix the issue and try reloading again.");
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to reload shell: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Vibetree tools (git worktree management)
     // -------------------------------------------------------------------------

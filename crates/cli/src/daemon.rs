@@ -631,6 +631,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "cortex_remove_worker" => handle_cortex_remove_worker(request, stores).await,
         "cortex_worker_transcript" => handle_cortex_worker_transcript(request, &stores.workers).await,
         "cortex_validate_shell" => handle_cortex_validate_shell(request, &stores.workers).await,
+        "cortex_reload_shell" => handle_cortex_reload_shell(request, &stores.workers).await,
         "cortex_get_coordinator" => handle_cortex_get_coordinator(stores).await,
 
         // Vibetree operations (worktree management)
@@ -3291,6 +3292,35 @@ async fn handle_cortex_validate_shell(
     };
 
     Ok(serde_json::to_value(validation).unwrap())
+}
+
+#[derive(Deserialize)]
+struct ReloadShellParams {
+    /// Worker ID to reload shell for
+    worker_id: String,
+    /// If true, clears the session so the next message starts fresh
+    #[serde(default)]
+    clear_session: bool,
+}
+
+/// Reload the shell environment for a worker
+///
+/// Validates that the shell environment loads correctly and optionally
+/// clears the worker's session so it starts fresh with the new environment.
+async fn handle_cortex_reload_shell(
+    request: &Request,
+    workers: &WorkerManager,
+) -> Result<serde_json::Value, IpcError> {
+    let params: ReloadShellParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let worker_id = WorkerId::from_string(&params.worker_id);
+    let result = workers
+        .reload_shell(&worker_id, params.clear_session)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(result).unwrap())
 }
 
 /// Well-known Coordinator worker ID
