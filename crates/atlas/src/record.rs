@@ -388,6 +388,65 @@ impl ContextAssembly {
     pub fn tasks(&self) -> Vec<&Record> {
         self.records_of_type(RecordType::Task)
     }
+
+    /// Format the context assembly as a system prompt for agents
+    ///
+    /// This creates a structured text representation suitable for injection
+    /// into an agent's system prompt.
+    pub fn to_system_prompt(&self) -> String {
+        let mut sections = Vec::new();
+
+        // Rules section
+        let rules = self.rules();
+        if !rules.is_empty() {
+            let mut rule_lines = vec!["## Rules".to_string(), String::new()];
+            for rule in rules {
+                rule_lines.push(format!("### {}", rule.name));
+                if let Some(ref desc) = rule.description {
+                    rule_lines.push(desc.clone());
+                }
+                rule_lines.push(String::new());
+            }
+            sections.push(rule_lines.join("\n"));
+        }
+
+        // Skills section
+        let skills = self.skills();
+        if !skills.is_empty() {
+            let mut skill_lines = vec!["## Available Skills".to_string(), String::new()];
+            for skill in skills {
+                skill_lines.push(format!("- **{}**", skill.name));
+                if let Some(ref desc) = skill.description {
+                    skill_lines.push(format!("  {}", desc));
+                }
+            }
+            sections.push(skill_lines.join("\n"));
+        }
+
+        // People/Team section
+        let people = self.people();
+        if !people.is_empty() {
+            let mut people_lines = vec!["## Team".to_string(), String::new()];
+            for person in people {
+                people_lines.push(format!("- **{}**", person.name));
+                if let Some(ref desc) = person.description {
+                    people_lines.push(format!("  {}", desc));
+                }
+            }
+            sections.push(people_lines.join("\n"));
+        }
+
+        if sections.is_empty() {
+            return String::new();
+        }
+
+        format!(
+            "# Context from Knowledge Base\n\n\
+             The following context was automatically assembled from the knowledge graph.\n\n\
+             {}",
+            sections.join("\n\n")
+        )
+    }
 }
 
 // =============================================================================

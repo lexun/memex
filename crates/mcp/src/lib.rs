@@ -980,13 +980,42 @@ impl McpServer for MemexMcpServer {
         /// Each entry should be a JSON string containing MCP server configuration.
         /// Example: ["{\"mcpServers\":{\"memex\":{\"command\":\"memex\",\"args\":[\"mcp\",\"serve\"]}}}"]
         mcp_servers: Option<Vec<String>>,
+        /// Record ID to assemble context from. If provided, rules, skills, and team info
+        /// related to this record will be automatically added to the worker's system prompt.
+        /// This is typically a repo or project record ID.
+        context_from: Option<String>,
     ) -> mcp_attr::Result<String> {
+        // Build the system prompt, optionally including assembled context
+        let final_system_prompt = if let Some(ref record_id) = context_from {
+            // Assemble context from the specified record
+            let context = self
+                .record_client
+                .assemble_context(record_id, 3)
+                .await
+                .map_err(|e| {
+                    let msg = format!("Failed to assemble context from {}: {}", record_id, e);
+                    mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true)
+                })?;
+
+            let context_prompt = context.to_system_prompt();
+
+            // Combine with any user-provided system prompt
+            match (system_prompt.clone(), context_prompt.is_empty()) {
+                (Some(user_prompt), false) => Some(format!("{}\n\n{}", context_prompt, user_prompt)),
+                (Some(user_prompt), true) => Some(user_prompt),
+                (None, false) => Some(context_prompt),
+                (None, true) => None,
+            }
+        } else {
+            system_prompt.clone()
+        };
+
         match self
             .cortex_client
             .create_worker_with_mcp(
                 &cwd,
                 model.as_deref(),
-                system_prompt.as_deref(),
+                final_system_prompt.as_deref(),
                 mcp_strict,
                 mcp_servers.clone(),
             )
@@ -1001,9 +1030,12 @@ impl McpServer for MemexMcpServer {
                 let servers_info = mcp_servers
                     .map(|s| format!("\n  MCP servers: {} configured", s.len()))
                     .unwrap_or_default();
+                let context_info = context_from
+                    .map(|id| format!("\n  Context from: {}", id))
+                    .unwrap_or_default();
                 Ok(format!(
-                    "Created worker: {}\n  Directory: {}\n  MCP mode: {}{}",
-                    worker_id, cwd, mcp_mode, servers_info
+                    "Created worker: {}\n  Directory: {}\n  MCP mode: {}{}{}",
+                    worker_id, cwd, mcp_mode, servers_info, context_info
                 ))
             }
             Err(e) => {
