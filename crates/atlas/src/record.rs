@@ -781,3 +781,134 @@ impl TaskDependencyView {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use surrealdb::sql::Datetime;
+
+    fn make_record(record_type: &str, name: &str, description: Option<&str>) -> Record {
+        Record {
+            id: None,
+            record_type: record_type.to_string(),
+            name: name.to_string(),
+            description: description.map(|s| s.to_string()),
+            content: serde_json::json!({}),
+            deleted_at: None,
+            superseded_by: None,
+            superseded_via: None,
+            created_at: Datetime::default(),
+            updated_at: Datetime::default(),
+        }
+    }
+
+    #[test]
+    fn test_to_system_prompt_empty() {
+        let assembly = ContextAssembly {
+            records: vec![],
+            traversal_path: vec![],
+        };
+        assert_eq!(assembly.to_system_prompt(), "");
+    }
+
+    #[test]
+    fn test_to_system_prompt_rules_only() {
+        let assembly = ContextAssembly {
+            records: vec![
+                make_record("rule", "No merge commits", Some("Always use squash or rebase")),
+                make_record("rule", "Single-line commits", None),
+            ],
+            traversal_path: vec![],
+        };
+
+        let prompt = assembly.to_system_prompt();
+        assert!(prompt.contains("# Context from Knowledge Base"));
+        assert!(prompt.contains("## Rules"));
+        assert!(prompt.contains("### No merge commits"));
+        assert!(prompt.contains("Always use squash or rebase"));
+        assert!(prompt.contains("### Single-line commits"));
+        // Should not have other sections
+        assert!(!prompt.contains("## Available Skills"));
+        assert!(!prompt.contains("## Team"));
+    }
+
+    #[test]
+    fn test_to_system_prompt_skills_only() {
+        let assembly = ContextAssembly {
+            records: vec![
+                make_record("skill", "Git Operations", Some("Can perform git operations")),
+            ],
+            traversal_path: vec![],
+        };
+
+        let prompt = assembly.to_system_prompt();
+        assert!(prompt.contains("## Available Skills"));
+        assert!(prompt.contains("- **Git Operations**"));
+        assert!(prompt.contains("Can perform git operations"));
+        assert!(!prompt.contains("## Rules"));
+    }
+
+    #[test]
+    fn test_to_system_prompt_people_only() {
+        let assembly = ContextAssembly {
+            records: vec![
+                make_record("person", "Alice", Some("Lead developer")),
+                make_record("person", "Bob", None),
+            ],
+            traversal_path: vec![],
+        };
+
+        let prompt = assembly.to_system_prompt();
+        assert!(prompt.contains("## Team"));
+        assert!(prompt.contains("- **Alice**"));
+        assert!(prompt.contains("Lead developer"));
+        assert!(prompt.contains("- **Bob**"));
+    }
+
+    #[test]
+    fn test_to_system_prompt_mixed_types() {
+        let assembly = ContextAssembly {
+            records: vec![
+                make_record("rule", "TDD Required", Some("Write tests first")),
+                make_record("skill", "Rust Development", Some("Can write Rust code")),
+                make_record("person", "Luke", None),
+                make_record("repo", "memex", Some("Knowledge management system")), // Should be ignored
+            ],
+            traversal_path: vec![],
+        };
+
+        let prompt = assembly.to_system_prompt();
+        assert!(prompt.contains("## Rules"));
+        assert!(prompt.contains("### TDD Required"));
+        assert!(prompt.contains("## Available Skills"));
+        assert!(prompt.contains("- **Rust Development**"));
+        assert!(prompt.contains("## Team"));
+        assert!(prompt.contains("- **Luke**"));
+        // Repo should not appear (not a recognized section)
+        assert!(!prompt.contains("memex"));
+    }
+
+    #[test]
+    fn test_records_of_type() {
+        let assembly = ContextAssembly {
+            records: vec![
+                make_record("rule", "Rule 1", None),
+                make_record("skill", "Skill 1", None),
+                make_record("rule", "Rule 2", None),
+            ],
+            traversal_path: vec![],
+        };
+
+        let rules = assembly.rules();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].name, "Rule 1");
+        assert_eq!(rules[1].name, "Rule 2");
+
+        let skills = assembly.skills();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "Skill 1");
+
+        let people = assembly.people();
+        assert_eq!(people.len(), 0);
+    }
+}
