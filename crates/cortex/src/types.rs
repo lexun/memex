@@ -68,8 +68,12 @@ pub struct TranscriptEntry {
 pub struct WorkerStatus {
     pub id: WorkerId,
     pub state: WorkerState,
+    /// Working directory / worktree path
     pub worktree: Option<String>,
+    /// Task ID this worker is assigned to (links to task record)
     pub current_task: Option<String>,
+    /// Hostname where this worker is running (for multi-host orchestration)
+    pub host: Option<String>,
     pub started_at: DateTime<Utc>,
     pub last_activity: DateTime<Utc>,
     pub messages_sent: u64,
@@ -84,11 +88,30 @@ impl WorkerStatus {
             state: WorkerState::Starting,
             worktree: None,
             current_task: None,
+            host: None,
             started_at: now,
             last_activity: now,
             messages_sent: 0,
             messages_received: 0,
         }
+    }
+
+    /// Set the hostname for this worker
+    pub fn with_host(mut self, host: impl Into<String>) -> Self {
+        self.host = Some(host.into());
+        self
+    }
+
+    /// Set the current task for this worker
+    pub fn with_task(mut self, task_id: impl Into<String>) -> Self {
+        self.current_task = Some(task_id.into());
+        self
+    }
+
+    /// Set the worktree path for this worker
+    pub fn with_worktree(mut self, path: impl Into<String>) -> Self {
+        self.worktree = Some(path.into());
+        self
     }
 }
 

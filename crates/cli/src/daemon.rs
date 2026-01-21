@@ -92,6 +92,9 @@ async fn load_workers_from_db(stores: &Arc<Stores>) -> Result<()> {
         let mut status = WorkerStatus::new(worker_id.clone());
         status.worktree = db_worker.worktree.clone();
         status.current_task = db_worker.current_task.clone();
+        status.host = Some(hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "unknown".to_string()));
         status.messages_sent = db_worker.messages_sent as u64;
         status.messages_received = db_worker.messages_received as u64;
         // Set state to Idle - orchestrator will decide what to do

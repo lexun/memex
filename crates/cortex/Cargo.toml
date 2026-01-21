@@ -22,6 +22,9 @@ nix = { version = "0.29", features = ["signal", "process"] }
 # Path discovery
 dirs = "5"
 
+# System info
+hostname = "0.4"
+
 # For subprocess communication
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"

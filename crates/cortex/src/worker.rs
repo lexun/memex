@@ -336,6 +336,9 @@ impl WorkerManager {
 
         let mut status = WorkerStatus::new(id.clone());
         status.worktree = Some(config.cwd.clone());
+        status.host = Some(hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "unknown".to_string()));
         status.state = WorkerState::Ready;
 
         let worker = Worker {
