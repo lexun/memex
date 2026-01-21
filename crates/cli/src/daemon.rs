@@ -3431,11 +3431,31 @@ async fn handle_cortex_dispatch_task(
         "# Your Task\n\n\
          **Title:** {}\n\n\
          **Description:**\n{}\n\n\
-         Work on this task. When you complete it, report your results.",
+         Work on this task. When you complete it, summarize what you accomplished.",
         task_title, task_description
     ));
 
-    // Add assembled context
+    // Add worker guidance
+    system_parts.push(
+        "# Worker Guidelines\n\n\
+         ## Git Workflow\n\
+         - You are working in an isolated git worktree\n\
+         - Commit your changes with single-line commit messages (under 50 chars)\n\
+         - Commit frequently as you make progress\n\
+         - Do not push - your changes will be reviewed and merged by the coordinator\n\n\
+         ## Available Tools\n\
+         - You have access to Memex MCP tools for querying project knowledge\n\
+         - Use `query_knowledge` if you need more context about the project\n\
+         - Use `search_knowledge` for specific fact lookups\n\
+         - Use `record_memo` to capture important findings or decisions\n\n\
+         ## Communication\n\
+         - If you get stuck or need clarification, explain what's blocking you\n\
+         - When done, provide a clear summary of changes made and any issues found\n\
+         - If the task is already done or not needed, explain why"
+            .to_string(),
+    );
+
+    // Add assembled context (rules, skills, etc.)
     if let Some(context) = context_prompt {
         system_parts.push(context);
     }
