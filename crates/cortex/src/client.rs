@@ -208,6 +208,16 @@ impl CortexClient {
         Ok(validation)
     }
 
+    /// Get or create the Coordinator worker
+    ///
+    /// The Coordinator is a long-running headless worker with a special system prompt
+    /// for managing worker orchestration. There is only one Coordinator.
+    pub async fn get_coordinator(&self) -> Result<CoordinatorResult> {
+        let result = self.client.request("cortex_get_coordinator", json!({})).await?;
+        let coordinator: CoordinatorResult = serde_json::from_value(result)?;
+        Ok(coordinator)
+    }
+
     /// Dispatch a task to a worker with automatic context assembly
     ///
     /// This is the key orchestration abstraction - one command to go from
@@ -239,6 +249,17 @@ struct WorkerResponseDto {
     is_error: bool,
     session_id: Option<String>,
     duration_ms: u64,
+}
+
+/// Result of getting or creating the Coordinator
+#[derive(Debug, Deserialize)]
+pub struct CoordinatorResult {
+    /// Worker ID (always "coordinator")
+    pub worker_id: String,
+    /// State of the coordinator
+    pub state: String,
+    /// Whether a new coordinator was created
+    pub created: bool,
 }
 
 /// Result of dispatching a task to a worker

@@ -1193,6 +1193,36 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Get or create the Coordinator worker
+    ///
+    /// The Coordinator is a long-running headless worker responsible for managing
+    /// worker orchestration. It receives high-level guidance, dispatches tasks to
+    /// workers, monitors progress, and surfaces issues.
+    ///
+    /// There is only one Coordinator - calling this multiple times returns the same one.
+    #[tool]
+    async fn cortex_get_coordinator(&self) -> mcp_attr::Result<String> {
+        match self.cortex_client.get_coordinator().await {
+            Ok(result) => {
+                let mut output = String::new();
+                if result.created {
+                    output.push_str(&format!("Created new Coordinator: {}\n", result.worker_id));
+                } else {
+                    output.push_str(&format!("Coordinator: {} (state: {})\n", result.worker_id, result.state));
+                }
+                output.push_str("\nUse cortex_send_message to give the Coordinator guidance, e.g.:\n");
+                output.push_str("  cortex_send_message(worker_id=\"coordinator\", message=\"Keep 2 workers busy on memex tasks\")\n");
+                output.push_str("\nOr use send_agent_message for async communication:\n");
+                output.push_str("  send_agent_message(sender=\"primary\", recipient=\"coordinator\", content=\"...\")");
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to get coordinator: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     /// List all workers
     #[tool]
     async fn cortex_list_workers(&self) -> mcp_attr::Result<String> {

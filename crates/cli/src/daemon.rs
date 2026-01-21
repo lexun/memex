@@ -65,6 +65,77 @@ struct AgentMessage {
     read: bool,
 }
 
+/// System prompt for the Coordinator worker
+const COORDINATOR_SYSTEM_PROMPT: &str = r#"# Coordinator Role
+
+You are the Coordinator - a dedicated agent responsible for managing worker orchestration. Your job is to keep workers productive on the right tasks while freeing the Primary Claude (who works directly with the user) from management overhead.
+
+## Your Responsibilities
+
+1. **Receive Guidance**: Primary Claude sends you high-level direction via messages (e.g., "keep 3 workers busy on memex tasks", "focus on the orchestration feature")
+
+2. **Dispatch Workers**: Use `cortex_dispatch_task` to assign tasks to workers. Pick tasks from the ready queue that align with current guidance.
+
+3. **Monitor Progress**: Periodically check worker status with `cortex_list_workers` and `cortex_worker_status`. Look for:
+   - Workers that have finished (messages_received > messages_sent)
+   - Workers that seem stuck (long time since last activity)
+   - Workers in error state
+
+4. **Review Completed Work**: When a worker finishes:
+   - Check their worktree for commits using git commands
+   - Review the changes are reasonable
+   - Either merge to dev branch or flag for human review
+
+5. **Surface Issues**: Create tasks or send messages when you encounter:
+   - Architectural questions that need human decision
+   - Workers that are stuck on something unclear
+   - Merge conflicts or test failures
+
+## What You Do NOT Do
+
+- Talk directly to the user (only through Primary Claude or by creating tasks)
+- Make big architectural decisions without surfacing for review
+- Push to remote repositories
+- Replace Primary Claude for design discussions
+
+## Communication Protocol
+
+- Check for messages at the start of each work cycle: `check_messages(recipient="coordinator")`
+- Send status updates to Primary Claude: `send_agent_message(sender="coordinator", recipient="primary", message_type="status", ...)`
+- When you need clarification: `send_agent_message(sender="coordinator", recipient="primary", message_type="request", ...)`
+
+## Work Loop
+
+Each cycle:
+1. Check for new messages/guidance
+2. List current workers and their status
+3. If workers finished, review their work
+4. If guidance says to keep N workers busy, dispatch tasks until you have N active workers
+5. Record any significant decisions or findings as memos
+6. Go idle if no guidance or no ready tasks
+
+## Git Workflow
+
+When reviewing worker output:
+- Workers work in isolated worktrees off the dev branch
+- Use `vibetree_merge` with `squash=true` to merge completed work
+- Only merge to dev, never to main
+- Do not push to remote
+
+## Available Tools
+
+You have access to all Memex MCP tools including:
+- `cortex_dispatch_task` - spawn a worker for a task
+- `cortex_list_workers` - see all workers
+- `cortex_worker_status` - detailed worker info
+- `cortex_worker_transcript` - see worker conversation
+- `cortex_send_message` - send message to a worker
+- `vibetree_merge` - merge worktree branches
+- `ready_tasks` - get tasks ready to work on
+- `send_agent_message` / `check_messages` - inter-agent communication
+- `record_memo` - capture decisions and findings
+"#;
+
 /// Container for stores and services
 struct Stores {
     forge: ForgeStore,
@@ -560,6 +631,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "cortex_remove_worker" => handle_cortex_remove_worker(request, stores).await,
         "cortex_worker_transcript" => handle_cortex_worker_transcript(request, &stores.workers).await,
         "cortex_validate_shell" => handle_cortex_validate_shell(request, &stores.workers).await,
+        "cortex_get_coordinator" => handle_cortex_get_coordinator(stores).await,
 
         // Vibetree operations (worktree management)
         "vibetree_list" => handle_vibetree_list(request).await,
@@ -3218,6 +3290,87 @@ async fn handle_cortex_validate_shell(
     };
 
     Ok(serde_json::to_value(validation).unwrap())
+}
+
+/// Well-known Coordinator worker ID
+const COORDINATOR_WORKER_ID: &str = "coordinator";
+
+/// Get or create the Coordinator worker
+///
+/// The Coordinator is a long-running headless worker with a special system prompt
+/// for managing worker orchestration. There is only one Coordinator.
+async fn handle_cortex_get_coordinator(
+    stores: &Arc<Stores>,
+) -> Result<serde_json::Value, IpcError> {
+    let coordinator_id = WorkerId::from_string(COORDINATOR_WORKER_ID);
+
+    // Check if coordinator already exists and is running
+    if let Ok(status) = stores.workers.status(&coordinator_id).await {
+        let is_healthy = match &status.state {
+            WorkerState::Error(_) | WorkerState::Idle | WorkerState::Stopped => false,
+            _ => true,
+        };
+
+        if is_healthy {
+            // Coordinator exists and is healthy
+            return Ok(json!({
+                "worker_id": COORDINATOR_WORKER_ID,
+                "state": format!("{:?}", status.state),
+                "created": false,
+            }));
+        }
+        // Coordinator exists but in bad state - remove and recreate
+        tracing::info!("Removing stale coordinator in state {:?}", status.state);
+        let _ = stores.workers.remove(&coordinator_id).await;
+    }
+
+    // Create new Coordinator worker
+    // Use a temporary directory since Coordinator doesn't need a worktree
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| IpcError::internal("Could not determine home directory".to_string()))?;
+    let cwd = home_dir.to_string_lossy().to_string();
+
+    let mut config = WorkerConfig::new(&cwd);
+    config = config.with_system_prompt(COORDINATOR_SYSTEM_PROMPT);
+    config = config.with_model("sonnet"); // Use a capable model for coordination
+
+    // Don't inherit user MCP servers - Coordinator gets its own set
+    let mcp_config = cortex::WorkerMcpConfig {
+        strict: true,
+        servers: vec![],
+    };
+    config = config.with_mcp_config(mcp_config);
+
+    // Use load_worker with our known ID instead of create (which generates IDs)
+    let worker_id = WorkerId::from_string(COORDINATOR_WORKER_ID);
+    let mut status = WorkerStatus::new(worker_id.clone());
+    status.worktree = Some(cwd.clone());
+    status.host = Some(hostname::get()
+        .map(|h| h.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "unknown".to_string()));
+    status.state = WorkerState::Ready;
+
+    stores.workers
+        .load_worker(worker_id.clone(), config, status, None)
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to create coordinator: {}", e)))?;
+
+    // Persist to database
+    let db_worker = DbWorker::new(&worker_id.0, &cwd)
+        .with_model("sonnet".to_string())
+        .with_system_prompt(COORDINATOR_SYSTEM_PROMPT.to_string());
+
+    if let Err(e) = stores.forge.create_worker(db_worker).await {
+        tracing::warn!("Failed to persist coordinator to DB: {}", e);
+    }
+
+    tracing::info!("Created new Coordinator worker: {}", worker_id.0);
+
+    Ok(json!({
+        "worker_id": worker_id.0,
+        "state": "created",
+        "created": true,
+    }))
 }
 
 /// Send a message asynchronously - returns immediately with a message ID
