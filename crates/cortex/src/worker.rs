@@ -414,7 +414,7 @@ impl WorkerManager {
         };
 
         // Phase 1: Acquire lock, extract config, update state, add transcript entry, release lock
-        let (cwd, model, last_session_id, mcp_config, transcript_idx) = {
+        let (cwd, model, system_prompt, last_session_id, mcp_config, transcript_idx) = {
             let mut workers = self.workers.write().await;
             let worker = workers.get_mut(id).ok_or_else(|| {
                 CortexError::WorkerNotFound(id.to_string())
@@ -444,6 +444,7 @@ impl WorkerManager {
             (
                 worker.config.cwd.clone(),
                 worker.config.model.clone(),
+                worker.config.system_prompt.clone(),
                 worker.last_session_id.clone(),
                 worker.config.mcp_config.clone(),
                 idx.min(MAX_TRANSCRIPT_ENTRIES - 1), // Adjust index if we trimmed
@@ -471,6 +472,11 @@ impl WorkerManager {
         // Add model if specified
         if let Some(ref model) = model {
             cmd.arg("--model").arg(model);
+        }
+
+        // Add system prompt if specified (appends to default system prompt)
+        if let Some(ref prompt) = system_prompt {
+            cmd.arg("--append-system-prompt").arg(prompt);
         }
 
         // Skip permission prompts for automated use
