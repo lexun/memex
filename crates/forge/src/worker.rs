@@ -38,6 +38,9 @@ pub struct DbWorker {
     pub messages_received: i64,
     /// Claude session ID for resuming
     pub last_session_id: Option<String>,
+    /// MCP configuration (JSON-serialized WorkerMcpConfig)
+    /// If None, worker defaults to no MCP servers (isolated)
+    pub mcp_config: Option<String>,
     /// When the record was created
     pub created_at: Datetime,
     /// When the record was last updated
@@ -63,6 +66,7 @@ impl DbWorker {
             messages_sent: 0,
             messages_received: 0,
             last_session_id: None,
+            mcp_config: None,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -90,6 +94,12 @@ impl DbWorker {
 
     pub fn with_current_task(mut self, task_id: Option<String>) -> Self {
         self.current_task = task_id;
+        self
+    }
+
+    /// Set the MCP configuration (as JSON string)
+    pub fn with_mcp_config(mut self, mcp_config: impl Into<String>) -> Self {
+        self.mcp_config = Some(mcp_config.into());
         self
     }
 }

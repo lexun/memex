@@ -178,6 +178,21 @@ async fn load_workers_from_db(stores: &Arc<Stores>) -> Result<()> {
                 config = config.with_system_prompt(prompt);
             }
         }
+        // Restore MCP config if persisted
+        if let Some(ref mcp_json) = db_worker.mcp_config {
+            match serde_json::from_str::<cortex::WorkerMcpConfig>(mcp_json) {
+                Ok(mcp_config) => {
+                    config = config.with_mcp_config(mcp_config);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse MCP config for worker {}: {}",
+                        db_worker.worker_id,
+                        e
+                    );
+                }
+            }
+        }
 
         // Build WorkerStatus
         let worker_id = WorkerId::from_string(&db_worker.worker_id);
@@ -3092,6 +3107,8 @@ async fn handle_cortex_create_worker(
         strict: mcp_strict,
         servers: mcp_servers,
     };
+    // Serialize before moving into config
+    let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
     config = config.with_mcp_config(mcp_config);
 
     // Create in-memory worker
@@ -3103,7 +3120,8 @@ async fn handle_cortex_create_worker(
     // Persist to database
     let db_worker = DbWorker::new(&worker_id.0, &params.cwd)
         .with_model(params.model.unwrap_or_default())
-        .with_system_prompt(params.system_prompt.unwrap_or_default());
+        .with_system_prompt(params.system_prompt.unwrap_or_default())
+        .with_mcp_config(mcp_config_json);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
         tracing::warn!("Failed to persist worker to DB: {}", e);
@@ -3372,6 +3390,8 @@ async fn handle_cortex_get_coordinator(
         strict: true,
         servers: vec![memex_mcp_config.to_string()],
     };
+    // Serialize before moving into config
+    let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
     config = config.with_mcp_config(mcp_config);
 
     // Use load_worker with our known ID instead of create (which generates IDs)
@@ -3388,10 +3408,11 @@ async fn handle_cortex_get_coordinator(
         .await
         .map_err(|e| IpcError::internal(format!("Failed to create coordinator: {}", e)))?;
 
-    // Persist to database
+    // Persist to database (including MCP config so it survives daemon restart)
     let db_worker = DbWorker::new(&worker_id.0, &cwd)
         .with_model("sonnet".to_string())
-        .with_system_prompt(COORDINATOR_SYSTEM_PROMPT.to_string());
+        .with_system_prompt(COORDINATOR_SYSTEM_PROMPT.to_string())
+        .with_mcp_config(mcp_config_json);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
         tracing::warn!("Failed to persist coordinator to DB: {}", e);
@@ -3688,6 +3709,8 @@ async fn handle_cortex_dispatch_task(
         strict: true,
         servers: vec![memex_mcp_config.to_string()],
     };
+    // Serialize before moving into config
+    let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
     config = config.with_mcp_config(mcp_config);
 
     let worker_id = stores.workers
@@ -3709,7 +3732,8 @@ async fn handle_cortex_dispatch_task(
     let db_worker = DbWorker::new(&worker_id.0, &worktree_path)
         .with_model(params.model.unwrap_or_default())
         .with_system_prompt(system_prompt)
-        .with_current_task(Some(params.task_id.clone()));
+        .with_current_task(Some(params.task_id.clone()))
+        .with_mcp_config(mcp_config_json);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
         tracing::warn!("Failed to persist worker to DB: {}", e);
@@ -3991,6 +4015,8 @@ async fn dispatch_single_task(
         strict: false,
         servers: vec![],
     };
+    // Serialize before moving into config
+    let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
     config = config.with_mcp_config(mcp_config);
 
     let worker_id = match stores.workers.create(config).await {
@@ -4011,7 +4037,8 @@ async fn dispatch_single_task(
     let db_worker = DbWorker::new(&worker_id.0, &worktree_path)
         .with_model(model.unwrap_or_default())
         .with_system_prompt(system_prompt)
-        .with_current_task(Some(task_id.to_string()));
+        .with_current_task(Some(task_id.to_string()))
+        .with_mcp_config(mcp_config_json);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
         tracing::warn!("Failed to persist worker to DB: {}", e);
