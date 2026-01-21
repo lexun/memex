@@ -166,6 +166,9 @@ struct WorkerView {
     current_task: Option<String>,
     worktree: Option<String>,
     messages_sent: u64,
+    messages_received: u64,
+    last_activity: String,
+    error_message: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -246,6 +249,9 @@ async fn workers_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
             current_task: w.current_task,
             worktree: w.worktree,
             messages_sent: w.messages_sent as u64,
+            messages_received: w.messages_received as u64,
+            last_activity: w.last_activity.to_string(),
+            error_message: w.error_message,
         })
         .collect();
 
