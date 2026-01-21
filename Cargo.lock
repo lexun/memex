@@ -1127,6 +1127,7 @@ dependencies = [
  "dirs 6.0.0",
  "exec",
  "forge",
+ "futures",
  "hostname",
  "ipc",
  "libc",

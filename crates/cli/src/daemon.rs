@@ -623,6 +623,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         // Cortex operations (worker management)
         "cortex_create_worker" => handle_cortex_create_worker(request, stores).await,
         "cortex_dispatch_task" => handle_cortex_dispatch_task(request, stores).await,
+        "cortex_dispatch_tasks" => handle_cortex_dispatch_tasks(request, stores).await,
         "cortex_send_message" => handle_cortex_send_message(request, stores).await,
         "cortex_send_message_async" => handle_cortex_send_message_async(request, stores).await,
         "cortex_get_response" => handle_cortex_get_response(request, stores).await,
@@ -3729,6 +3730,306 @@ async fn handle_cortex_dispatch_task(
         "context_from": context_record_id,
         "ready": true,
     }))
+}
+
+// ========== Batch Dispatch Tasks Handler ==========
+
+#[derive(Deserialize)]
+struct DispatchTasksParams {
+    /// List of task IDs to dispatch
+    task_ids: Vec<String>,
+    /// Optional: model override for all workers
+    model: Option<String>,
+    /// Optional: repo path for worktree creation
+    repo_path: Option<String>,
+}
+
+/// Result for a single task dispatch in a batch
+#[derive(Serialize)]
+struct DispatchedWorkerResult {
+    task_id: String,
+    worker_id: Option<String>,
+    worktree: Option<String>,
+    context_from: Option<String>,
+    success: bool,
+    error: Option<String>,
+}
+
+/// Dispatch multiple tasks to workers in parallel
+///
+/// This is a streamlined command that spawns multiple workers concurrently.
+/// Each task gets its own isolated worktree and worker.
+async fn handle_cortex_dispatch_tasks(
+    request: &Request,
+    stores: &Arc<Stores>,
+) -> Result<serde_json::Value, IpcError> {
+    let params: DispatchTasksParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    if params.task_ids.is_empty() {
+        return Err(IpcError::invalid_params("task_ids cannot be empty".to_string()));
+    }
+
+    // Dispatch all tasks concurrently using join_all
+    let dispatch_futures: Vec<_> = params.task_ids.iter().map(|task_id| {
+        let stores = Arc::clone(stores);
+        let task_id = task_id.clone();
+        let model = params.model.clone();
+        let repo_path = params.repo_path.clone();
+
+        async move {
+            dispatch_single_task(&stores, &task_id, model.as_deref(), repo_path.as_deref()).await
+        }
+    }).collect();
+
+    let results = futures::future::join_all(dispatch_futures).await;
+
+    // Collect results
+    let mut workers = Vec::new();
+    let mut dispatched = 0;
+    let mut failed = 0;
+
+    for result in results {
+        match result {
+            Ok(worker_result) => {
+                if worker_result.success {
+                    dispatched += 1;
+                } else {
+                    failed += 1;
+                }
+                workers.push(worker_result);
+            }
+            Err(e) => {
+                // This shouldn't happen since dispatch_single_task handles errors internally
+                failed += 1;
+                workers.push(DispatchedWorkerResult {
+                    task_id: "unknown".to_string(),
+                    worker_id: None,
+                    worktree: None,
+                    context_from: None,
+                    success: false,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+
+    Ok(json!({
+        "workers": workers,
+        "dispatched": dispatched,
+        "failed": failed,
+    }))
+}
+
+/// Dispatch a single task - extracted to allow concurrent dispatch
+async fn dispatch_single_task(
+    stores: &Arc<Stores>,
+    task_id: &str,
+    model: Option<&str>,
+    repo_path: Option<&str>,
+) -> Result<DispatchedWorkerResult, IpcError> {
+    // 1. Get task record
+    let task_record = match stores.atlas.get_record(task_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return Ok(DispatchedWorkerResult {
+                task_id: task_id.to_string(),
+                worker_id: None,
+                worktree: None,
+                context_from: None,
+                success: false,
+                error: Some(format!("Task not found: {}", task_id)),
+            });
+        }
+        Err(e) => {
+            return Ok(DispatchedWorkerResult {
+                task_id: task_id.to_string(),
+                worker_id: None,
+                worktree: None,
+                context_from: None,
+                success: false,
+                error: Some(format!("Failed to get task: {}", e)),
+            });
+        }
+    };
+
+    // Ensure it's a task
+    if task_record.record_type != "task" {
+        return Ok(DispatchedWorkerResult {
+            task_id: task_id.to_string(),
+            worker_id: None,
+            worktree: None,
+            context_from: None,
+            success: false,
+            error: Some(format!("Record {} is not a task (type: {})", task_id, task_record.record_type)),
+        });
+    }
+
+    // Extract task info
+    let task_title = &task_record.name;
+    let task_description = task_record.description.as_deref().unwrap_or("");
+    let task_project = task_record.content.get("project")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // 2. Find context source (repo or project record)
+    let context_record_id = if let Some(ref project) = task_project {
+        match stores.atlas.get_record_by_type_name("repo", project).await {
+            Ok(Some(repo)) => repo.id.map(|t| t.id.to_raw()),
+            _ => {
+                match stores.atlas.get_record_by_type_name("initiative", project).await {
+                    Ok(Some(proj)) => proj.id.map(|t| t.id.to_raw()),
+                    _ => None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // 3. Assemble context if we have a record ID
+    let context_prompt = if let Some(ref record_id) = context_record_id {
+        match stores.atlas.assemble_context(record_id, 3).await {
+            Ok(assembly) => {
+                let prompt = assembly.to_system_prompt();
+                if prompt.is_empty() { None } else { Some(prompt) }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to assemble context from {}: {}", record_id, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // 4. Create worktree using vibetree
+    let repo_path = std::path::PathBuf::from(repo_path.unwrap_or("."));
+    let branch_name = format!("task-{}", &task_id[..8.min(task_id.len())]);
+
+    let worktree_path = match vibetree::VibeTreeApp::with_parent(repo_path.clone()) {
+        Ok(mut app) => {
+            match app.add_worktree(
+                branch_name.clone(),
+                None,
+                None,
+                false,
+                false,
+            ) {
+                Ok(_) => {
+                    let branches_dir = app.get_config_mut().project_config.branches_dir.clone();
+                    repo_path.join(&branches_dir).join(&branch_name).to_string_lossy().to_string()
+                }
+                Err(e) => {
+                    return Ok(DispatchedWorkerResult {
+                        task_id: task_id.to_string(),
+                        worker_id: None,
+                        worktree: None,
+                        context_from: context_record_id,
+                        success: false,
+                        error: Some(format!("Failed to create worktree: {}", e)),
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            return Ok(DispatchedWorkerResult {
+                task_id: task_id.to_string(),
+                worker_id: None,
+                worktree: None,
+                context_from: context_record_id,
+                success: false,
+                error: Some(format!("Failed to load vibetree config: {}", e)),
+            });
+        }
+    };
+
+    // 5. Build system prompt
+    let mut system_parts = Vec::new();
+
+    system_parts.push(format!(
+        "# Your Task\n\n\
+         **Title:** {}\n\n\
+         **Description:**\n{}\n\n\
+         Work on this task. When you complete it, summarize what you accomplished.",
+        task_title, task_description
+    ));
+
+    system_parts.push(
+        "# Worker Guidelines\n\n\
+         ## Git Workflow\n\
+         - You are working in an isolated git worktree\n\
+         - Commit your changes with single-line commit messages (under 50 chars)\n\
+         - Commit frequently as you make progress\n\
+         - Do not push - your changes will be reviewed and merged by the coordinator\n\n\
+         ## Available Tools\n\
+         - You have access to Memex MCP tools for querying project knowledge\n\
+         - Use `query_knowledge` if you need more context about the project\n\
+         - Use `search_knowledge` for specific fact lookups\n\
+         - Use `record_memo` to capture important findings or decisions\n\n\
+         ## Communication\n\
+         - If you get stuck or need clarification, explain what's blocking you\n\
+         - When done, provide a clear summary of changes made and any issues found\n\
+         - If the task is already done or not needed, explain why"
+            .to_string(),
+    );
+
+    if let Some(context) = context_prompt {
+        system_parts.push(context);
+    }
+
+    let system_prompt = system_parts.join("\n\n---\n\n");
+
+    // 6. Create worker
+    let mut config = WorkerConfig::new(&worktree_path);
+    config = config.with_system_prompt(&system_prompt);
+    if let Some(model) = model {
+        config = config.with_model(model);
+    }
+
+    let mcp_config = cortex::WorkerMcpConfig {
+        strict: false,
+        servers: vec![],
+    };
+    config = config.with_mcp_config(mcp_config);
+
+    let worker_id = match stores.workers.create(config).await {
+        Ok(id) => id,
+        Err(e) => {
+            return Ok(DispatchedWorkerResult {
+                task_id: task_id.to_string(),
+                worker_id: None,
+                worktree: Some(worktree_path),
+                context_from: context_record_id,
+                success: false,
+                error: Some(format!("Failed to create worker: {}", e)),
+            });
+        }
+    };
+
+    // 7. Persist worker to database
+    let db_worker = DbWorker::new(&worker_id.0, &worktree_path)
+        .with_model(model.unwrap_or_default())
+        .with_system_prompt(system_prompt)
+        .with_current_task(Some(task_id.to_string()));
+
+    if let Err(e) = stores.forge.create_worker(db_worker).await {
+        tracing::warn!("Failed to persist worker to DB: {}", e);
+    }
+
+    // 8. Update task status to in_progress
+    if let Err(e) = stores.atlas.update_task_status(task_id, "in_progress").await {
+        tracing::warn!("Failed to update task status: {}", e);
+    }
+
+    Ok(DispatchedWorkerResult {
+        task_id: task_id.to_string(),
+        worker_id: Some(worker_id.0),
+        worktree: Some(worktree_path),
+        context_from: context_record_id,
+        success: true,
+        error: None,
+    })
 }
 
 // ========== Vibetree Handlers ==========

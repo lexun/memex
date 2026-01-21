@@ -280,6 +280,33 @@ impl CortexClient {
         let dispatch_result: DispatchTaskResult = serde_json::from_value(result)?;
         Ok(dispatch_result)
     }
+
+    /// Dispatch multiple tasks to workers in parallel
+    ///
+    /// This is a streamlined way to spawn multiple workers at once.
+    /// All tasks are dispatched concurrently and the results are returned
+    /// together.
+    ///
+    /// # Arguments
+    /// * `task_ids` - List of task IDs to dispatch
+    /// * `model` - Optional model override applied to all workers
+    /// * `repo_path` - Optional repo path for worktree creation (all workers)
+    pub async fn dispatch_tasks(
+        &self,
+        task_ids: &[&str],
+        model: Option<&str>,
+        repo_path: Option<&str>,
+    ) -> Result<DispatchTasksResult> {
+        let params = json!({
+            "task_ids": task_ids,
+            "model": model,
+            "repo_path": repo_path,
+        });
+
+        let result = self.client.request("cortex_dispatch_tasks", params).await?;
+        let dispatch_result: DispatchTasksResult = serde_json::from_value(result)?;
+        Ok(dispatch_result)
+    }
 }
 
 /// DTO for worker response (matches what daemon returns)
@@ -303,7 +330,7 @@ pub struct CoordinatorResult {
 }
 
 /// Result of dispatching a task to a worker
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DispatchTaskResult {
     /// Worker ID that was created
     pub worker_id: String,
@@ -315,4 +342,32 @@ pub struct DispatchTaskResult {
     pub context_from: Option<String>,
     /// Whether the worker is ready to receive messages
     pub ready: bool,
+}
+
+/// Result of a single task dispatch in a batch operation
+#[derive(Debug, Clone, Deserialize)]
+pub struct DispatchedWorker {
+    /// Task ID that was dispatched
+    pub task_id: String,
+    /// Worker ID that was created (if successful)
+    pub worker_id: Option<String>,
+    /// Worktree path where the worker is operating (if successful)
+    pub worktree: Option<String>,
+    /// Record ID that context was assembled from (if any)
+    pub context_from: Option<String>,
+    /// Whether this dispatch succeeded
+    pub success: bool,
+    /// Error message if dispatch failed
+    pub error: Option<String>,
+}
+
+/// Result of dispatching multiple tasks to workers
+#[derive(Debug, Deserialize)]
+pub struct DispatchTasksResult {
+    /// Results for each task dispatch
+    pub workers: Vec<DispatchedWorker>,
+    /// Number of successfully dispatched tasks
+    pub dispatched: usize,
+    /// Number of failed dispatches
+    pub failed: usize,
 }

@@ -27,7 +27,7 @@ pub mod error;
 pub mod types;
 pub mod worker;
 
-pub use client::{CortexClient, DispatchTaskResult};
+pub use client::{CortexClient, DispatchTaskResult, DispatchTasksResult, DispatchedWorker};
 pub use error::{CortexError, Result};
 pub use types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerMcpConfig, WorkerState, WorkerStatus};
 pub use worker::{ShellReloadResult, ShellValidation, WorkerManager, WorkerResponse, validate_shell_env};

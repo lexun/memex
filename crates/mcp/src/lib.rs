@@ -1088,6 +1088,73 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Dispatch multiple tasks to workers in parallel
+    ///
+    /// This is a streamlined way to spawn multiple workers at once. All tasks
+    /// are dispatched concurrently and results are returned together.
+    ///
+    /// Use this when you need to start multiple workers at once - it's faster
+    /// and simpler than calling cortex_dispatch_task multiple times.
+    ///
+    /// Each task will:
+    /// 1. Get its own isolated worktree (auto-created via vibetree)
+    /// 2. Have context assembled from the project's rules/skills
+    /// 3. Be assigned to a new worker
+    #[tool]
+    async fn cortex_dispatch_tasks(
+        &self,
+        /// List of task IDs to dispatch
+        task_ids: Vec<String>,
+        /// Optional: model override applied to all workers (e.g., "haiku", "sonnet", "opus")
+        model: Option<String>,
+        /// Optional: repo path for worktree creation (defaults to current directory)
+        repo_path: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        if task_ids.is_empty() {
+            return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                .with_message("task_ids cannot be empty".to_string(), true));
+        }
+
+        // Convert to &str references for the client
+        let task_id_refs: Vec<&str> = task_ids.iter().map(|s| s.as_str()).collect();
+
+        match self
+            .cortex_client
+            .dispatch_tasks(&task_id_refs, model.as_deref(), repo_path.as_deref())
+            .await
+        {
+            Ok(result) => {
+                let mut output = format!(
+                    "Dispatched {} task(s), {} failed\n\n",
+                    result.dispatched, result.failed
+                );
+
+                for worker in &result.workers {
+                    if worker.success {
+                        output.push_str(&format!(
+                            "✓ Task {} -> Worker {}\n  Worktree: {}\n",
+                            worker.task_id,
+                            worker.worker_id.as_deref().unwrap_or("?"),
+                            worker.worktree.as_deref().unwrap_or("?")
+                        ));
+                    } else {
+                        output.push_str(&format!(
+                            "✗ Task {} failed: {}\n",
+                            worker.task_id,
+                            worker.error.as_deref().unwrap_or("unknown error")
+                        ));
+                    }
+                }
+
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to dispatch tasks: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     /// Send a message to a worker and get the response
     ///
     /// The message is sent to the Claude worker, which processes it
