@@ -1,0 +1,21 @@
+{% extends "layout.html" %}
+
+{% block content %}
+{% if companies.is_empty() %}
+<div class="empty-state">
+    <p>No companies defined yet.</p>
+</div>
+{% else %}
+<div class="card-grid">
+    {% for company in companies %}
+    <div class="card">
+        <div class="card-title">{{ company.name }}</div>
+        {% if let Some(desc) = company.description %}
+        <p>{{ desc }}</p>
+        {% endif %}
+        <div class="card-meta">Added {{ company.created_at }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

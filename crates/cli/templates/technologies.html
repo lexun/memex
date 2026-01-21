@@ -1,0 +1,21 @@
+{% extends "layout.html" %}
+
+{% block content %}
+{% if technologies.is_empty() %}
+<div class="empty-state">
+    <p>No technologies defined yet.</p>
+</div>
+{% else %}
+<div class="card-grid">
+    {% for technology in technologies %}
+    <div class="card">
+        <div class="card-title">{{ technology.name }}</div>
+        {% if let Some(desc) = technology.description %}
+        <p>{{ desc }}</p>
+        {% endif %}
+        <div class="card-meta">Added {{ technology.created_at }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,21 @@
+{% extends "layout.html" %}
+
+{% block content %}
+{% if skills.is_empty() %}
+<div class="empty-state">
+    <p>No skills defined yet.</p>
+</div>
+{% else %}
+<div class="card-grid">
+    {% for skill in skills %}
+    <div class="card">
+        <div class="card-title">{{ skill.name }}</div>
+        {% if let Some(desc) = skill.description %}
+        <p>{{ desc }}</p>
+        {% endif %}
+        <div class="card-meta">Added {{ skill.created_at }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

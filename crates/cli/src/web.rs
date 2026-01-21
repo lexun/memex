@@ -2,7 +2,7 @@
 //!
 //! Provides a local web UI organized into three sections:
 //! - Work: Tasks, Workers (active operations)
-//! - Directory: People, Teams, Projects, Repos, Rules (entities)
+//! - Directory: People, Teams, Companies, Projects, Repos, Rules, Skills, Documents, Technologies
 //! - Activity: Memos, Threads, Events (inputs/event sourcing)
 
 use std::sync::Arc;
@@ -37,9 +37,13 @@ pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
         // Directory section
         .route("/people", get(people_page))
         .route("/teams", get(teams_page))
+        .route("/companies", get(companies_page))
         .route("/projects", get(projects_page))
         .route("/repos", get(repos_page))
         .route("/rules", get(rules_page))
+        .route("/skills", get(skills_page))
+        .route("/documents", get(documents_page))
+        .route("/technologies", get(technologies_page))
 
         // Activity section
         .route("/memos", get(memos_page))
@@ -118,6 +122,38 @@ struct RulesTemplate {
     title: &'static str,
     active_section: &'static str,
     rules: Vec<RecordView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "companies.html")]
+struct CompaniesTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    companies: Vec<RecordView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "skills.html")]
+struct SkillsTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    skills: Vec<RecordView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "documents.html")]
+struct DocumentsTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    documents: Vec<RecordView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "technologies.html")]
+struct TechnologiesTemplate {
+    title: &'static str,
+    active_section: &'static str,
+    technologies: Vec<RecordView>,
 }
 
 #[derive(askama::Template)]
@@ -323,6 +359,54 @@ async fn rules_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
         title: "Rules",
         active_section: "rules",
         rules,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn companies_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let records = state.atlas.list_records(Some("company"), false, None).await.unwrap_or_default();
+    let companies: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+
+    let template = CompaniesTemplate {
+        title: "Companies",
+        active_section: "companies",
+        companies,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn skills_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let records = state.atlas.list_records(Some("skill"), false, None).await.unwrap_or_default();
+    let skills: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+
+    let template = SkillsTemplate {
+        title: "Skills",
+        active_section: "skills",
+        skills,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn documents_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let records = state.atlas.list_records(Some("document"), false, None).await.unwrap_or_default();
+    let documents: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+
+    let template = DocumentsTemplate {
+        title: "Documents",
+        active_section: "documents",
+        documents,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn technologies_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    let records = state.atlas.list_records(Some("technology"), false, None).await.unwrap_or_default();
+    let technologies: Vec<RecordView> = records.into_iter().map(record_to_view).collect();
+
+    let template = TechnologiesTemplate {
+        title: "Technologies",
+        active_section: "technologies",
+        technologies,
     };
     Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
 }
