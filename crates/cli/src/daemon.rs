@@ -3335,10 +3335,11 @@ async fn handle_cortex_get_coordinator(
     config = config.with_system_prompt(COORDINATOR_SYSTEM_PROMPT);
     config = config.with_model("sonnet"); // Use a capable model for coordination
 
-    // Inherit user MCP servers so Coordinator has access to Memex tools
+    // Only Memex MCP, not all user servers (avoids auth popups from Notion etc)
+    let memex_mcp_config = r#"{"mcpServers":{"memex":{"command":"memex","args":["mcp","serve"]}}}"#;
     let mcp_config = cortex::WorkerMcpConfig {
-        strict: false, // Allow inheritance of user's MCP config
-        servers: vec![],
+        strict: true,
+        servers: vec![memex_mcp_config.to_string()],
     };
     config = config.with_mcp_config(mcp_config);
 
@@ -3650,10 +3651,11 @@ async fn handle_cortex_dispatch_task(
         config = config.with_model(model);
     }
 
-    // Configure MCP - include memex for task updates
+    // Configure MCP - only Memex, not all user servers (avoids auth popups from Notion etc)
+    let memex_mcp_config = r#"{"mcpServers":{"memex":{"command":"memex","args":["mcp","serve"]}}}"#;
     let mcp_config = cortex::WorkerMcpConfig {
-        strict: false, // Inherit user MCP config for now
-        servers: vec![],
+        strict: true,
+        servers: vec![memex_mcp_config.to_string()],
     };
     config = config.with_mcp_config(mcp_config);
 
