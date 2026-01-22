@@ -30,7 +30,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
 
 # Worktree management
-vibetree = { path = "../../../vibetree" }
+vibetree = "0.2.5"
 
 # Internal crates
 ipc = { path = "../ipc" }
