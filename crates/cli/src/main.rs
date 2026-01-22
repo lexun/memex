@@ -3,8 +3,11 @@ mod completions;
 mod config;
 mod daemon;
 mod help;
+#[cfg(target_os = "macos")]
 mod launchd;
 mod pid;
+#[cfg(target_os = "linux")]
+mod systemd;
 mod web;
 
 use anyhow::Result;
@@ -258,9 +261,9 @@ enum DaemonAction {
     /// Run daemon in foreground (internal use after fork+exec)
     #[command(hide = true)]
     Run,
-    /// Enable automatic startup via launchd (macOS)
+    /// Enable automatic startup (launchd on macOS, systemd on Linux)
     Enable,
-    /// Disable automatic startup via launchd (macOS)
+    /// Disable automatic startup (launchd on macOS, systemd on Linux)
     Disable,
     /// View daemon logs
     Logs {
@@ -707,12 +710,76 @@ async fn handle_daemon(action: DaemonAction) -> Result<()> {
         DaemonAction::Status => {
             daemon::daemon_status()?;
             println!();
-            launchd::status()
+            autostart_status()
         }
-        DaemonAction::Enable => launchd::enable(),
-        DaemonAction::Disable => launchd::disable(),
-        DaemonAction::Logs { follow } => launchd::tail_logs(follow),
+        DaemonAction::Enable => autostart_enable(),
+        DaemonAction::Disable => autostart_disable(),
+        DaemonAction::Logs { follow } => autostart_tail_logs(follow),
     }
+}
+
+// Platform-specific autostart functions
+
+#[cfg(target_os = "macos")]
+fn autostart_status() -> Result<()> {
+    launchd::status()
+}
+
+#[cfg(target_os = "macos")]
+fn autostart_enable() -> Result<()> {
+    launchd::enable()
+}
+
+#[cfg(target_os = "macos")]
+fn autostart_disable() -> Result<()> {
+    launchd::disable()
+}
+
+#[cfg(target_os = "macos")]
+fn autostart_tail_logs(follow: bool) -> Result<()> {
+    launchd::tail_logs(follow)
+}
+
+#[cfg(target_os = "linux")]
+fn autostart_status() -> Result<()> {
+    systemd::status()
+}
+
+#[cfg(target_os = "linux")]
+fn autostart_enable() -> Result<()> {
+    systemd::enable()
+}
+
+#[cfg(target_os = "linux")]
+fn autostart_disable() -> Result<()> {
+    systemd::disable()
+}
+
+#[cfg(target_os = "linux")]
+fn autostart_tail_logs(follow: bool) -> Result<()> {
+    systemd::tail_logs(follow)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn autostart_status() -> Result<()> {
+    println!("Autostart is not supported on this platform.");
+    println!("Supported platforms: macOS (launchd), Linux (systemd)");
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn autostart_enable() -> Result<()> {
+    anyhow::bail!("Autostart is not supported on this platform. Supported platforms: macOS (launchd), Linux (systemd)")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn autostart_disable() -> Result<()> {
+    anyhow::bail!("Autostart is not supported on this platform. Supported platforms: macOS (launchd), Linux (systemd)")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn autostart_tail_logs(_follow: bool) -> Result<()> {
+    anyhow::bail!("Autostart logs are not supported on this platform. Supported platforms: macOS (launchd), Linux (systemd)")
 }
 
 fn handle_config(action: ConfigAction) -> Result<()> {
