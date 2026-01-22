@@ -32,7 +32,9 @@ pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
 
         // Work section
         .route("/tasks", get(tasks_page))
+        .route("/tasks/:id", get(task_detail_page))
         .route("/workers", get(workers_page))
+        .route("/workers/:id", get(worker_detail_page))
 
         // Directory section
         .route("/people", get(people_page))
@@ -82,6 +84,24 @@ struct WorkersTemplate {
     title: &'static str,
     active_section: &'static str,
     workers: Vec<WorkerView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "task_detail.html")]
+struct TaskDetailTemplate {
+    title: String,
+    active_section: &'static str,
+    task: TaskDetailView,
+    assigned_workers: Vec<WorkerView>,
+    notes: Vec<NoteView>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "worker_detail.html")]
+struct WorkerDetailTemplate {
+    title: String,
+    active_section: &'static str,
+    worker: WorkerDetailView,
 }
 
 #[derive(askama::Template)]
@@ -208,6 +228,43 @@ struct WorkerView {
 }
 
 #[derive(Clone, serde::Serialize)]
+struct TaskDetailView {
+    id: String,
+    title: String,
+    description: Option<String>,
+    status: String,
+    status_class: String,
+    priority: i32,
+    priority_class: String,
+    project: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct WorkerDetailView {
+    id: String,
+    state: String,
+    state_class: String,
+    current_task: Option<String>,
+    worktree: Option<String>,
+    cwd: String,
+    model: Option<String>,
+    messages_sent: u64,
+    messages_received: u64,
+    started_at: String,
+    last_activity: String,
+    error_message: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct NoteView {
+    id: String,
+    content: String,
+    created_at: String,
+}
+
+#[derive(Clone, serde::Serialize)]
 struct RecordView {
     id: String,
     name: String,
@@ -295,6 +352,160 @@ async fn workers_page(State(state): State<Arc<WebState>>) -> impl IntoResponse {
         title: "Workers",
         active_section: "workers",
         workers,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn task_detail_page(
+    State(state): State<Arc<WebState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Get the task
+    let task = match state.forge.get_task(&id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return Html(format!(
+                r#"<!DOCTYPE html><html><head><title>Not Found</title></head>
+                <body style="background:#1a1b26;color:#c0caf5;font-family:sans-serif;padding:2rem;">
+                <h1>Task not found</h1><p>Task with ID "{}" was not found.</p>
+                <a href="/tasks" style="color:#7aa2f7;">Back to tasks</a>
+                </body></html>"#,
+                id
+            ));
+        }
+        Err(e) => {
+            return Html(format!(
+                r#"<!DOCTYPE html><html><head><title>Error</title></head>
+                <body style="background:#1a1b26;color:#c0caf5;font-family:sans-serif;padding:2rem;">
+                <h1>Error</h1><p>Failed to load task: {}</p>
+                <a href="/tasks" style="color:#7aa2f7;">Back to tasks</a>
+                </body></html>"#,
+                e
+            ));
+        }
+    };
+
+    // Get workers assigned to this task
+    let assigned_workers: Vec<WorkerView> = state
+        .forge
+        .get_workers_by_task(&id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| WorkerView {
+            id: w.worker_id,
+            state: w.state,
+            current_task: w.current_task,
+            worktree: w.worktree,
+            messages_sent: w.messages_sent as u64,
+            messages_received: w.messages_received as u64,
+            last_activity: w.last_activity.to_string(),
+            error_message: w.error_message,
+        })
+        .collect();
+
+    // Get task notes
+    let notes: Vec<NoteView> = state
+        .forge
+        .get_notes(&id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|n| NoteView {
+            id: n.id.map(|t| t.id.to_string()).unwrap_or_default(),
+            content: n.content,
+            created_at: n.created_at.to_string(),
+        })
+        .collect();
+
+    let status = task.status.to_string();
+    let status_class = status.replace("_", "-");
+    let priority_class = if task.priority == 1 {
+        "p1"
+    } else if task.priority == 2 {
+        "p2"
+    } else {
+        ""
+    };
+
+    let task_view = TaskDetailView {
+        id: task.id.map(|id| id.id.to_string()).unwrap_or_default(),
+        title: task.title.clone(),
+        description: task.description,
+        status,
+        status_class,
+        priority: task.priority,
+        priority_class: priority_class.to_string(),
+        project: task.project,
+        created_at: task.created_at.to_string(),
+        updated_at: task.updated_at.to_string(),
+    };
+
+    let template = TaskDetailTemplate {
+        title: task.title,
+        active_section: "tasks",
+        task: task_view,
+        assigned_workers,
+        notes,
+    };
+    Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
+}
+
+async fn worker_detail_page(
+    State(state): State<Arc<WebState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Get the worker
+    let worker = match state.forge.get_worker(&id).await {
+        Ok(Some(w)) => w,
+        Ok(None) => {
+            return Html(format!(
+                r#"<!DOCTYPE html><html><head><title>Not Found</title></head>
+                <body style="background:#1a1b26;color:#c0caf5;font-family:sans-serif;padding:2rem;">
+                <h1>Worker not found</h1><p>Worker with ID "{}" was not found.</p>
+                <a href="/workers" style="color:#7aa2f7;">Back to workers</a>
+                </body></html>"#,
+                id
+            ));
+        }
+        Err(e) => {
+            return Html(format!(
+                r#"<!DOCTYPE html><html><head><title>Error</title></head>
+                <body style="background:#1a1b26;color:#c0caf5;font-family:sans-serif;padding:2rem;">
+                <h1>Error</h1><p>Failed to load worker: {}</p>
+                <a href="/workers" style="color:#7aa2f7;">Back to workers</a>
+                </body></html>"#,
+                e
+            ));
+        }
+    };
+
+    let state_class = match worker.state.as_str() {
+        "error" => "error",
+        "working" => "working",
+        "idle" | "ready" => "idle",
+        _ => "",
+    };
+
+    let worker_view = WorkerDetailView {
+        id: worker.worker_id.clone(),
+        state: worker.state,
+        state_class: state_class.to_string(),
+        current_task: worker.current_task,
+        worktree: worker.worktree,
+        cwd: worker.cwd,
+        model: worker.model,
+        messages_sent: worker.messages_sent as u64,
+        messages_received: worker.messages_received as u64,
+        started_at: worker.started_at.to_string(),
+        last_activity: worker.last_activity.to_string(),
+        error_message: worker.error_message,
+    };
+
+    let template = WorkerDetailTemplate {
+        title: format!("Worker {}", worker.worker_id),
+        active_section: "workers",
+        worker: worker_view,
     };
     Html(template.render().unwrap_or_else(|e| format!("Template error: {}", e)))
 }

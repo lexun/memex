@@ -20,7 +20,7 @@
     <tbody>
         {% for worker in workers %}
         <tr>
-            <td><code>{{ worker.id }}</code></td>
+            <td><a href="/workers/{{ worker.id }}"><code>{{ worker.id }}</code></a></td>
             <td>
                 {% if worker.state == "error" %}
                 <span class="badge badge-error" title="{{ worker.error_message.as_deref().unwrap_or("Unknown error") }}">{{ worker.state }}</span>
@@ -31,7 +31,7 @@
             <td>
                 {% match worker.current_task %}
                     {% when Some with (task_id) %}
-                    <a href="/tasks#{{ task_id }}"><code>{{ task_id }}</code></a>
+                    <a href="/tasks/{{ task_id }}"><code>{{ task_id }}</code></a>
                     {% when None %}
                     -
                 {% endmatch %}

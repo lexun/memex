@@ -1,0 +1,173 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="detail-header">
+    <a href="/workers" class="back-link">&larr; Back to Workers</a>
+    <h1 style="margin-top: 0.5rem;">Worker <code>{{ worker.id }}</code></h1>
+    <div class="detail-meta">
+        <span class="badge badge-status {{ worker.state_class }}">{{ worker.state }}</span>
+        {% match worker.model %}
+            {% when Some with (model) %}
+            <span class="badge badge-model">{{ model }}</span>
+            {% when None %}
+        {% endmatch %}
+    </div>
+</div>
+
+{% match worker.error_message %}
+    {% when Some with (error) %}
+    <div class="error-banner">
+        <strong>Error:</strong> {{ error }}
+    </div>
+    {% when None %}
+{% endmatch %}
+
+<div class="detail-grid">
+    <div class="detail-main">
+        <div class="card">
+            <h3>Status</h3>
+            <div class="status-grid">
+                <div class="status-item">
+                    <div class="status-value">{{ worker.messages_sent }}</div>
+                    <div class="status-label">Messages Sent</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-value">{{ worker.messages_received }}</div>
+                    <div class="status-label">Responses Received</div>
+                </div>
+            </div>
+        </div>
+
+        {% match worker.worktree %}
+            {% when Some with (path) %}
+            <div class="card">
+                <h3>Worktree</h3>
+                <code class="path-display">{{ path }}</code>
+            </div>
+            {% when None %}
+        {% endmatch %}
+
+        <div class="card">
+            <h3>Working Directory</h3>
+            <code class="path-display">{{ worker.cwd }}</code>
+        </div>
+
+        <div class="card transcript-placeholder">
+            <h3>Transcript</h3>
+            <p class="card-meta">
+                Worker transcript is not yet available in the web UI.
+                Use <code>memex cortex transcript {{ worker.id }}</code> to view the conversation history.
+            </p>
+        </div>
+    </div>
+
+    <div class="detail-sidebar">
+        <div class="card">
+            <h3>Details</h3>
+            <dl class="detail-list">
+                <dt>Worker ID</dt>
+                <dd><code>{{ worker.id }}</code></dd>
+                <dt>State</dt>
+                <dd>{{ worker.state }}</dd>
+                {% match worker.model %}
+                    {% when Some with (model) %}
+                    <dt>Model</dt>
+                    <dd>{{ model }}</dd>
+                    {% when None %}
+                {% endmatch %}
+                <dt>Started</dt>
+                <dd>{{ worker.started_at }}</dd>
+                <dt>Last Activity</dt>
+                <dd>{{ worker.last_activity }}</dd>
+            </dl>
+        </div>
+
+        {% match worker.current_task %}
+            {% when Some with (task_id) %}
+            <div class="card">
+                <h3>Current Task</h3>
+                <a href="/tasks/{{ task_id }}" class="task-link">
+                    <code>{{ task_id }}</code>
+                    <span class="link-arrow">&rarr;</span>
+                </a>
+            </div>
+            {% when None %}
+            <div class="card">
+                <h3>Current Task</h3>
+                <p class="card-meta">No task assigned</p>
+            </div>
+        {% endmatch %}
+    </div>
+</div>
+
+<style>
+    .detail-header { margin-bottom: 1.5rem; }
+    .back-link { color: var(--fg-dim); font-size: 0.85rem; }
+    .back-link:hover { color: var(--accent); }
+    .detail-meta { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+    .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        gap: 1.5rem;
+    }
+    @media (max-width: 900px) {
+        .detail-grid { grid-template-columns: 1fr; }
+    }
+    .detail-list {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.5rem 1rem;
+    }
+    .detail-list dt { color: var(--fg-dim); font-size: 0.85rem; }
+    .detail-list dd { margin: 0; }
+    .error-banner {
+        background: rgba(247, 118, 142, 0.15);
+        border: 1px solid var(--red);
+        color: var(--red);
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+    }
+    .status-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1rem;
+    }
+    .status-item { text-align: center; }
+    .status-value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: var(--accent);
+    }
+    .status-label {
+        color: var(--fg-dim);
+        font-size: 0.85rem;
+    }
+    .path-display {
+        display: block;
+        padding: 0.75rem;
+        background: var(--bg);
+        border-radius: 4px;
+        word-break: break-all;
+    }
+    .task-link {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem;
+        background: var(--bg);
+        border-radius: 4px;
+        text-decoration: none;
+    }
+    .task-link:hover { background: var(--bg-alt); }
+    .link-arrow { color: var(--accent); }
+    .badge-model { background: var(--cyan); color: var(--bg); }
+    .badge-status.error { background: var(--red); }
+    .badge-status.working { background: var(--accent); }
+    .badge-status.idle { background: var(--green); }
+    .transcript-placeholder {
+        border: 1px dashed var(--fg-dim);
+        background: transparent;
+    }
+</style>
+{% endblock %}

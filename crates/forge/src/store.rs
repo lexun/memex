@@ -491,6 +491,20 @@ impl Store {
         Ok(workers)
     }
 
+    /// Find workers assigned to a specific task
+    pub async fn get_workers_by_task(&self, task_id: &str) -> Result<Vec<DbWorker>> {
+        let mut response = self
+            .db
+            .client()
+            .query("SELECT * FROM worker WHERE current_task = $task_id ORDER BY last_activity DESC")
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .context("Failed to query workers by task")?;
+
+        let workers: Vec<DbWorker> = response.take(0).context("Failed to parse workers")?;
+        Ok(workers)
+    }
+
     /// Update worker status fields
     pub async fn update_worker_status(
         &self,
