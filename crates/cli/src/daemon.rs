@@ -3646,6 +3646,7 @@ async fn handle_cortex_dispatch_task(
             None, // custom_values
             false, // dry_run
             false, // switch (don't spawn shell)
+            true, // reuse existing worktree if present
         )
         .map_err(|e| IpcError::internal(format!(
             "Failed to create worktree: {}. Specify worktree path manually.",
@@ -3939,6 +3940,7 @@ async fn dispatch_single_task(
                 None,
                 false,
                 false,
+                true, // reuse existing worktree if present
             ) {
                 Ok(_) => {
                     let branches_dir = app.get_config_mut().project_config.branches_dir.clone();
@@ -4011,9 +4013,11 @@ async fn dispatch_single_task(
         config = config.with_model(model);
     }
 
+    // Configure MCP - only Memex, not all user servers (avoids auth popups from Notion etc)
+    let memex_mcp_config = r#"{"mcpServers":{"memex":{"command":"memex","args":["mcp","serve"]}}}"#;
     let mcp_config = cortex::WorkerMcpConfig {
-        strict: false,
-        servers: vec![],
+        strict: true,
+        servers: vec![memex_mcp_config.to_string()],
     };
     // Serialize before moving into config
     let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
@@ -4100,6 +4104,7 @@ struct VibetreeCreateParams {
     cwd: String,
     branch_name: String,
     from_branch: Option<String>,
+    reuse: Option<bool>,
 }
 
 async fn handle_vibetree_create(request: &Request) -> Result<serde_json::Value, IpcError> {
@@ -4118,6 +4123,7 @@ async fn handle_vibetree_create(request: &Request) -> Result<serde_json::Value, 
         None, // custom_values
         false, // dry_run
         false, // switch (don't spawn shell)
+        params.reuse.unwrap_or(false), // reuse existing worktree
     )
     .map_err(|e| IpcError::internal(format!("Failed to create worktree: {}", e)))?;
 

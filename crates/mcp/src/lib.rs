@@ -1643,11 +1643,14 @@ impl McpServer for MemexMcpServer {
         branch_name: String,
         /// Optional branch to create from (defaults to current HEAD)
         from_branch: Option<String>,
+        /// Reuse existing worktree if it already exists instead of failing (default: false)
+        reuse: Option<bool>,
     ) -> mcp_attr::Result<String> {
         let params = serde_json::json!({
             "cwd": cwd,
             "branch_name": branch_name,
             "from_branch": from_branch,
+            "reuse": reuse.unwrap_or(false),
         });
 
         match self.ipc_client.request("vibetree_create", params).await {
