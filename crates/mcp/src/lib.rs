@@ -1162,6 +1162,10 @@ impl McpServer for MemexMcpServer {
     ///
     /// If run_in_background is true, returns immediately with a message_id.
     /// Use cortex_get_response to retrieve the result later.
+    ///
+    /// **Note**: Messages to the Coordinator (worker_id="coordinator") default to
+    /// async mode since Coordinator operations are long-running. Set
+    /// run_in_background=false explicitly to wait synchronously.
     #[tool]
     async fn cortex_send_message(
         &self,
@@ -1171,7 +1175,11 @@ impl McpServer for MemexMcpServer {
     ) -> mcp_attr::Result<String> {
         let wid = cortex::WorkerId::from_string(&worker_id);
 
-        if run_in_background.unwrap_or(false) {
+        // Default to async for Coordinator since its operations are long-running
+        let is_coordinator = worker_id == "coordinator";
+        let use_async = run_in_background.unwrap_or(is_coordinator);
+
+        if use_async {
             // Async mode: dispatch and return immediately
             match self.cortex_client.send_message_async(&wid, &message).await {
                 Ok(message_id) => {
@@ -1277,10 +1285,10 @@ impl McpServer for MemexMcpServer {
                 } else {
                     output.push_str(&format!("Coordinator: {} (state: {})\n", result.worker_id, result.state));
                 }
-                output.push_str("\nUse cortex_send_message to give the Coordinator guidance, e.g.:\n");
+                output.push_str("\nSend guidance to the Coordinator (async by default):\n");
                 output.push_str("  cortex_send_message(worker_id=\"coordinator\", message=\"Keep 2 workers busy on memex tasks\")\n");
-                output.push_str("\nOr use send_agent_message for async communication:\n");
-                output.push_str("  send_agent_message(sender=\"primary\", recipient=\"coordinator\", content=\"...\")");
+                output.push_str("\nThis returns a message_id immediately. Use cortex_get_response(message_id) to check for results.\n");
+                output.push_str("To wait synchronously (blocking), set run_in_background=false explicitly.");
                 Ok(output)
             }
             Err(e) => {
