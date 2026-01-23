@@ -450,13 +450,6 @@ impl WorkerManager {
     pub async fn send_message(&self, id: &WorkerId, message: &str) -> Result<WorkerResponse> {
         let start_time = Utc::now();
 
-        // Create a truncated version of the message for display (first 100 chars)
-        let task_preview = if message.len() > 100 {
-            format!("{}...", &message[..100])
-        } else {
-            message.to_string()
-        };
-
         // Phase 1: Acquire lock, extract config, update state, add transcript entry, release lock
         let (cwd, model, system_prompt, last_session_id, mcp_config, transcript_idx) = {
             let mut workers = self.workers.write().await;
@@ -465,7 +458,7 @@ impl WorkerManager {
             })?;
 
             worker.status.state = WorkerState::Working;
-            worker.status.current_task = Some(task_preview.clone());
+            // Note: current_task is preserved - it holds the task ID assigned at dispatch time
             worker.status.last_activity = start_time;
             worker.status.messages_sent += 1;
 
@@ -577,10 +570,10 @@ impl WorkerManager {
             );
 
             // Update worker state to error and update transcript
+            // Note: current_task is preserved - worker remains assigned to task even on error
             let mut workers = self.workers.write().await;
             if let Some(worker) = workers.get_mut(id) {
                 worker.status.state = WorkerState::Error(error_msg.clone());
-                worker.status.current_task = None;
 
                 // Update transcript entry with error
                 if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
@@ -618,6 +611,7 @@ impl WorkerManager {
         };
 
         // Phase 4: Acquire lock again to update final state and transcript
+        // Note: current_task is preserved - worker remains assigned to task across messages
         {
             let mut workers = self.workers.write().await;
             if let Some(worker) = workers.get_mut(id) {
@@ -629,7 +623,6 @@ impl WorkerManager {
                 worker.status.messages_received += 1;
                 worker.status.last_activity = Utc::now();
                 worker.status.state = WorkerState::Idle;
-                worker.status.current_task = None;
 
                 // Update transcript entry with response
                 if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
