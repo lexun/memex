@@ -1,0 +1,173 @@
+# Extraction Test: Multi-Team Project
+#
+# Tests extraction of a complex project with multiple teams, dependencies,
+# and cross-team relationships. Represents a real-world scenario where
+# multiple memos build up context over time.
+#
+# CATEGORY: Strong case - explicit mentions, clear relationships
+# DIFFICULTY: Medium - multiple entities but clear structure
+
+[meta]
+name = "multi_team_project"
+description = "Multiple teams collaborating on a shared project with cross-dependencies"
+
+# =============================================================================
+# EXPECTED RECORDS
+# =============================================================================
+
+[[expected.records]]
+type = "company"
+name = "CloudScale"
+
+[[expected.records]]
+type = "initiative"
+name = "Project Mercury"
+description = "Next-gen cloud infrastructure platform"
+
+[[expected.records]]
+type = "team"
+name = "Infrastructure Team"
+
+[[expected.records]]
+type = "team"
+name = "API Team"
+
+[[expected.records]]
+type = "team"
+name = "Security Team"
+
+[[expected.records]]
+type = "person"
+name = "David Park"
+description = "Infrastructure Team lead"
+
+[[expected.records]]
+type = "person"
+name = "Maria Santos"
+description = "API Team lead"
+
+[[expected.records]]
+type = "person"
+name = "Wei Zhang"
+description = "Security Team lead"
+
+[[expected.records]]
+type = "repo"
+name = "mercury-core"
+
+[[expected.records]]
+type = "repo"
+name = "mercury-api"
+
+[[expected.records]]
+type = "repo"
+name = "mercury-auth"
+
+[[expected.records]]
+type = "technology"
+name = "Kubernetes"
+
+[[expected.records]]
+type = "technology"
+name = "gRPC"
+
+[[expected.records]]
+type = "rule"
+name = "Security review required for auth changes"
+
+[[expected.records]]
+type = "rule"
+name = "All APIs must be documented in OpenAPI"
+
+# =============================================================================
+# EXPECTED EDGES
+# =============================================================================
+
+[[expected.edges]]
+from = "Infrastructure Team"
+relation = "belongs_to"
+to = "CloudScale"
+
+[[expected.edges]]
+from = "API Team"
+relation = "belongs_to"
+to = "CloudScale"
+
+[[expected.edges]]
+from = "Security Team"
+relation = "belongs_to"
+to = "CloudScale"
+
+[[expected.edges]]
+from = "David Park"
+relation = "member_of"
+to = "Infrastructure Team"
+
+[[expected.edges]]
+from = "Maria Santos"
+relation = "member_of"
+to = "API Team"
+
+[[expected.edges]]
+from = "Wei Zhang"
+relation = "member_of"
+to = "Security Team"
+
+[[expected.edges]]
+from = "Infrastructure Team"
+relation = "owns"
+to = "mercury-core"
+
+[[expected.edges]]
+from = "API Team"
+relation = "owns"
+to = "mercury-api"
+
+[[expected.edges]]
+from = "Security Team"
+relation = "owns"
+to = "mercury-auth"
+
+[[expected.edges]]
+from = "Project Mercury"
+relation = "part_of"
+to = "CloudScale"
+
+[[expected.edges]]
+from = "Security review required for auth changes"
+relation = "applies_to"
+to = "mercury-auth"
+
+[[expected.edges]]
+from = "All APIs must be documented in OpenAPI"
+relation = "applies_to"
+to = "mercury-api"
+
+# =============================================================================
+# TEST MEMOS
+# Memos arrive over time, building up the picture incrementally
+# =============================================================================
+
+[[memos]]
+content = """
+CloudScale is launching Project Mercury - our next-gen cloud infrastructure platform.
+The project spans three teams:
+- Infrastructure Team (lead: David Park) - core orchestration
+- API Team (lead: Maria Santos) - external interfaces
+- Security Team (lead: Wei Zhang) - auth and permissions
+"""
+
+[[memos]]
+content = """
+Repository structure for Project Mercury:
+- mercury-core: Kubernetes-based orchestration, owned by Infrastructure Team
+- mercury-api: gRPC services for clients, owned by API Team
+- mercury-auth: Authentication service, owned by Security Team
+"""
+
+[[memos]]
+content = """
+Engineering standards for Mercury:
+1. Any changes to mercury-auth require security review from Wei's team
+2. All public APIs in mercury-api must be documented using OpenAPI specs
+"""

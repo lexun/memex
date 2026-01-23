@@ -1,0 +1,71 @@
+# Retrieval Test: Negative Queries
+#
+# Tests that the system correctly handles queries where the answer
+# is that something is NOT present, or should explicitly exclude items.
+#
+# CATEGORY: Medium - tests negative knowledge handling
+
+[scenario]
+name = "negative_queries"
+description = "Tests handling of negative queries and exclusions"
+tests = ["negative_filtering", "absence_detection"]
+
+[[setup]]
+action = "record_memo"
+content = """
+Project Alpha uses Python and Go for backend services.
+We explicitly decided NOT to use Java due to team expertise.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+The web frontend uses React. We evaluated Vue and Angular but
+chose React for its ecosystem.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+Team structure:
+- Backend Team: 5 engineers (Python, Go)
+- Frontend Team: 3 engineers (React)
+No dedicated DevOps team - we use platform engineering model.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+Security policies apply to backend only. Frontend has its own
+review process managed by the Frontend Team lead.
+"""
+
+# =============================================================================
+# QUERIES
+# Test negative knowledge and exclusion
+# =============================================================================
+
+[queries.explicit_exclusion]
+query = "What languages does Project Alpha use?"
+description = "Should mention Python/Go and possibly the Java exclusion"
+should_find = ["Python", "Go"]
+should_not_find = []
+answer_type = "list"
+
+[queries.no_devops]
+query = "Does Project Alpha have a DevOps team?"
+description = "Should indicate there is no dedicated DevOps team"
+should_find = ["no", "platform engineering"]
+answer_type = "factual"
+
+[queries.rejected_alternatives]
+query = "Why doesn't Project Alpha use Vue?"
+description = "Should explain Vue was evaluated but React was chosen"
+should_find = ["React", "ecosystem"]
+answer_type = "explanation"
+
+[queries.scope_limitation]
+query = "What security policies apply to the frontend?"
+description = "Should indicate backend-only policies don't apply"
+should_find = ["own review process", "Frontend Team"]
+answer_type = "factual"

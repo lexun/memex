@@ -1,0 +1,100 @@
+# Extraction Test: Conflicting Updates
+#
+# Tests handling of contradictory information across memos.
+# Later information should supersede earlier information.
+#
+# CATEGORY: Weak case - requires temporal reasoning and conflict resolution
+# DIFFICULTY: Hard - must track changes over time
+
+[meta]
+name = "conflicting_updates"
+description = "Handling contradictory information with temporal ordering"
+
+# =============================================================================
+# EXPECTED RECORDS (Final State)
+# Should reflect the LATEST information, not accumulate all versions
+# =============================================================================
+
+[[expected.records]]
+type = "company"
+name = "BuildFast"
+
+[[expected.records]]
+type = "team"
+name = "Backend Team"
+
+[[expected.records]]
+type = "person"
+name = "Alex Rivera"
+description = "Backend Team lead"
+
+[[expected.records]]
+type = "person"
+name = "Sam Chen"
+
+# NOTE: There should only be ONE database technology - the latest (MongoDB)
+# Not both MySQL and MongoDB
+[[expected.records]]
+type = "technology"
+name = "MongoDB"
+
+[[expected.records]]
+type = "repo"
+name = "buildfast-api"
+
+# The framework should be Express (latest), not Flask
+[[expected.records]]
+type = "technology"
+name = "Express"
+
+# =============================================================================
+# EXPECTED EDGES
+# =============================================================================
+
+[[expected.edges]]
+from = "Backend Team"
+relation = "belongs_to"
+to = "BuildFast"
+
+[[expected.edges]]
+from = "Alex Rivera"
+relation = "member_of"
+to = "Backend Team"
+
+[[expected.edges]]
+from = "Sam Chen"
+relation = "member_of"
+to = "Backend Team"
+
+[[expected.edges]]
+from = "Backend Team"
+relation = "owns"
+to = "buildfast-api"
+
+# =============================================================================
+# TEST MEMOS
+# Information changes over time - extraction should track the current state
+# =============================================================================
+
+[[memos]]
+content = """
+BuildFast Backend Team is led by Alex Rivera. We're using MySQL for our database
+and building the API with Flask.
+"""
+
+[[memos]]
+content = """
+Sam Chen joined the Backend Team today. He'll be working on the buildfast-api repo.
+"""
+
+[[memos]]
+content = """
+DECISION: We're migrating from MySQL to MongoDB for better document storage.
+The migration is complete as of today.
+"""
+
+[[memos]]
+content = """
+UPDATE: We've also moved from Flask to Express for the API framework.
+The switch happened last week and we're fully migrated now.
+"""

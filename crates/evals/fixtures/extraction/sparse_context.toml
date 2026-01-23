@@ -1,0 +1,53 @@
+# Extraction Test: Sparse Context
+#
+# Tests extraction from minimal, sparse memos that don't provide
+# much context. Should extract what's certain and avoid hallucination.
+#
+# CATEGORY: Weak case - limited information, tests conservative extraction
+# DIFFICULTY: Medium - must avoid over-extraction
+
+[meta]
+name = "sparse_context"
+description = "Extraction from minimal context without hallucination"
+
+# =============================================================================
+# EXPECTED RECORDS
+# Only extract what's clearly stated - no inference/hallucination
+# =============================================================================
+
+[[expected.records]]
+type = "person"
+name = "Taylor Morgan"
+
+[[expected.records]]
+type = "repo"
+name = "quickstart"
+
+[[expected.records]]
+type = "technology"
+name = "Python"
+
+# NOTE: We should NOT extract a company or team since none is mentioned
+# NOTE: We should NOT infer Taylor owns quickstart just from working on it
+
+# =============================================================================
+# EXPECTED EDGES
+# Should be minimal - only relationships that are explicitly stated
+# =============================================================================
+
+# No edges expected - none are explicitly stated in the memos
+
+# =============================================================================
+# TEST MEMOS
+# Minimal information - tests that we don't over-extract
+# =============================================================================
+
+[[memos]]
+content = """
+Taylor Morgan pushed some Python changes to quickstart today.
+"""
+
+[[memos]]
+content = """
+The quickstart repo has good documentation now.
+"""

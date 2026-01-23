@@ -1,0 +1,75 @@
+# Retrieval Test: Multi-Hop Reasoning
+#
+# Tests queries that require following multiple relationships
+# to find the answer. No single memo contains the complete answer.
+#
+# CATEGORY: Weak case - requires graph traversal and synthesis
+
+[scenario]
+name = "multi_hop_reasoning"
+description = "Queries requiring multi-hop graph traversal to answer"
+tests = ["graph_traversal", "reasoning", "synthesis"]
+
+[[setup]]
+action = "record_memo"
+content = """
+Nexus Corp has three departments: Engineering, Sales, and Support.
+The Engineering department is led by Michael Torres.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+The Platform Team is part of Engineering at Nexus Corp.
+They build the core infrastructure that other teams depend on.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+Lisa Wang leads the Platform Team. She reports to Michael Torres.
+The team owns the nexus-platform repository.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+Engineering policy: All infrastructure code must have 80% test coverage.
+This applies to nexus-platform and related repos.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+The API Team also reports to Michael. They build the external interfaces
+and depend on Platform Team's infrastructure.
+"""
+
+# =============================================================================
+# QUERIES
+# Require following chains of relationships
+# =============================================================================
+
+[queries.two_hop]
+query = "Who does Lisa Wang report to?"
+description = "Lisa -> Platform Team (lead) -> Engineering (part of) -> Michael (leads)"
+should_find = ["Michael Torres"]
+answer_type = "factual"
+
+[queries.three_hop]
+query = "What test coverage requirements apply to Lisa's team?"
+description = "Lisa -> Platform Team -> nexus-platform -> policy"
+should_find = ["80%", "test coverage"]
+answer_type = "factual"
+
+[queries.reverse_traversal]
+query = "What teams report to Michael Torres?"
+description = "Michael leads Engineering, which contains Platform and API teams"
+should_find = ["Platform Team", "API Team"]
+answer_type = "list"
+
+[queries.synthesis]
+query = "Describe the Engineering organization at Nexus Corp"
+description = "Should synthesize leader, teams, policies into coherent summary"
+should_find = ["Michael Torres", "Platform Team", "API Team", "Lisa Wang"]
+answer_type = "summary"

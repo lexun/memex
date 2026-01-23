@@ -1,0 +1,96 @@
+# Extraction Test: Implicit Relationships
+#
+# Tests extraction of relationships that are implied rather than explicitly stated.
+# This is a WEAK CASE where we expect to measure improvement over time.
+#
+# CATEGORY: Weak case - implicit context, requires inference
+# DIFFICULTY: Hard - relationships must be inferred from context
+
+[meta]
+name = "implicit_relationships"
+description = "Extracting relationships from implicit context and natural language"
+
+# =============================================================================
+# EXPECTED RECORDS
+# These should be extracted even though relationships are implicit
+# =============================================================================
+
+[[expected.records]]
+type = "company"
+name = "NovaTech"
+
+[[expected.records]]
+type = "team"
+name = "Mobile Team"
+
+[[expected.records]]
+type = "person"
+name = "Jordan Lee"
+
+[[expected.records]]
+type = "person"
+name = "Priya Sharma"
+
+[[expected.records]]
+type = "repo"
+name = "nova-mobile"
+
+[[expected.records]]
+type = "technology"
+name = "React Native"
+
+[[expected.records]]
+type = "technology"
+name = "TypeScript"
+
+# =============================================================================
+# EXPECTED EDGES
+# These relationships are implied, not explicitly stated
+# =============================================================================
+
+# Implied: Jordan is mentioned as "Jordan's team" -> member_of relationship
+[[expected.edges]]
+from = "Jordan Lee"
+relation = "member_of"
+to = "Mobile Team"
+
+# Implied: Priya works "with Jordan" on mobile -> also member_of
+[[expected.edges]]
+from = "Priya Sharma"
+relation = "member_of"
+to = "Mobile Team"
+
+# Implied: "our mobile app repo" owned by Mobile Team
+[[expected.edges]]
+from = "Mobile Team"
+relation = "owns"
+to = "nova-mobile"
+
+# Implied: Mobile Team is part of NovaTech (mentioned as "we at NovaTech")
+[[expected.edges]]
+from = "Mobile Team"
+relation = "belongs_to"
+to = "NovaTech"
+
+# =============================================================================
+# TEST MEMOS
+# Natural language without explicit relationship declarations
+# =============================================================================
+
+[[memos]]
+content = """
+Jordan's team is shipping the new version of our mobile app next week.
+He and Priya have been doing great work with React Native.
+"""
+
+[[memos]]
+content = """
+We at NovaTech are really proud of what the Mobile Team has accomplished.
+The nova-mobile repo has grown a lot this quarter.
+"""
+
+[[memos]]
+content = """
+Priya mentioned she's enjoying working with TypeScript in the mobile codebase.
+Jordan agrees it's made the development experience much better.
+"""

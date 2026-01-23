@@ -1,0 +1,72 @@
+# Retrieval Test: Temporal Queries
+#
+# Tests retrieval of information with temporal aspects.
+# Queries may ask about "recent", "latest", or historical information.
+#
+# CATEGORY: Weak case - temporal reasoning is challenging
+
+[scenario]
+name = "temporal_queries"
+description = "Tests retrieval handling of time-based queries"
+tests = ["temporal_filtering", "recency_ranking"]
+
+[[setup]]
+action = "record_memo"
+content = """
+Week 1 update: The team started working on user authentication.
+Focus areas: OAuth2 integration and session management.
+"""
+delay_secs = 1
+
+[[setup]]
+action = "record_memo"
+content = """
+Week 2 update: Authentication is mostly complete. Moving on to
+the dashboard redesign. Using React for the new components.
+"""
+delay_secs = 1
+
+[[setup]]
+action = "record_memo"
+content = """
+Week 3 update: Dashboard redesign in progress. We've added charts
+using D3.js and improved the navigation. Authentication launched.
+"""
+delay_secs = 1
+
+[[setup]]
+action = "record_memo"
+content = """
+Week 4 update: Dashboard is live! Now focusing on performance
+optimization and adding caching with Redis.
+"""
+
+# =============================================================================
+# QUERIES
+# Test temporal understanding and recent/historical queries
+# =============================================================================
+
+[queries.recent_work]
+query = "What is the team currently working on?"
+description = "Should prioritize most recent information"
+should_find = ["performance", "caching", "Redis"]
+should_not_find = ["OAuth2"]
+answer_type = "summary"
+
+[queries.historical]
+query = "What features has the team shipped recently?"
+description = "Should include completed work from the timeline"
+should_find = ["authentication", "dashboard"]
+answer_type = "list"
+
+[queries.specific_period]
+query = "What was the focus during the dashboard work?"
+description = "Should find relevant period's details"
+should_find = ["React", "D3.js", "charts", "navigation"]
+answer_type = "summary"
+
+[queries.status]
+query = "What is the current status of the authentication feature?"
+description = "Should indicate it's complete/launched"
+should_find = ["complete", "launched"]
+answer_type = "factual"

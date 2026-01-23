@@ -1,0 +1,105 @@
+# Extraction Test: Entity Disambiguation
+#
+# Tests handling of entities with similar or ambiguous names.
+# The system must disambiguate based on context.
+#
+# CATEGORY: Weak case - requires careful entity resolution
+# DIFFICULTY: Hard - multiple entities with similar names
+
+[meta]
+name = "entity_disambiguation"
+description = "Disambiguating entities with similar names using context"
+
+# =============================================================================
+# EXPECTED RECORDS
+# Two different people named "Kim" should be correctly distinguished
+# =============================================================================
+
+[[expected.records]]
+type = "company"
+name = "TwinPeaks Software"
+
+[[expected.records]]
+type = "team"
+name = "Frontend Team"
+
+[[expected.records]]
+type = "team"
+name = "DevOps Team"
+
+# Two different people - must not be merged
+[[expected.records]]
+type = "person"
+name = "Kim Park"
+description = "Frontend engineer"
+
+[[expected.records]]
+type = "person"
+name = "Kim Johnson"
+description = "DevOps engineer"
+
+[[expected.records]]
+type = "repo"
+name = "twinpeaks-web"
+
+[[expected.records]]
+type = "repo"
+name = "twinpeaks-infra"
+
+# =============================================================================
+# EXPECTED EDGES
+# Each Kim should be correctly associated with their team
+# =============================================================================
+
+[[expected.edges]]
+from = "Frontend Team"
+relation = "belongs_to"
+to = "TwinPeaks Software"
+
+[[expected.edges]]
+from = "DevOps Team"
+relation = "belongs_to"
+to = "TwinPeaks Software"
+
+[[expected.edges]]
+from = "Kim Park"
+relation = "member_of"
+to = "Frontend Team"
+
+[[expected.edges]]
+from = "Kim Johnson"
+relation = "member_of"
+to = "DevOps Team"
+
+[[expected.edges]]
+from = "Frontend Team"
+relation = "owns"
+to = "twinpeaks-web"
+
+[[expected.edges]]
+from = "DevOps Team"
+relation = "owns"
+to = "twinpeaks-infra"
+
+# =============================================================================
+# TEST MEMOS
+# Intentionally use "Kim" ambiguously, requiring context for disambiguation
+# =============================================================================
+
+[[memos]]
+content = """
+TwinPeaks Software has two teams: Frontend Team and DevOps Team.
+Kim Park is our frontend expert - she works on twinpeaks-web.
+"""
+
+[[memos]]
+content = """
+Kim Johnson handles our infrastructure. She's on the DevOps Team
+and maintains the twinpeaks-infra repository.
+"""
+
+[[memos]]
+content = """
+Both Kims did great work this sprint. Kim from Frontend shipped the new
+dashboard, while Kim from DevOps improved our deployment pipeline.
+"""

@@ -1,6 +1,8 @@
 //! LLM-based answer evaluation
 //!
 //! Uses an LLM to subjectively evaluate answer quality against expected outcomes.
+//! Supports multiple evaluation dimensions including relevance, completeness,
+//! accuracy, coherence, and specialized dimensions for extraction evaluation.
 
 use anyhow::{Context, Result};
 use llm::LlmClient;
@@ -21,6 +23,23 @@ pub struct EvalScore {
     pub coherence: u8,
     /// Overall score (0-100)
     pub overall: u8,
+}
+
+/// Extended evaluation scores for more detailed analysis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtendedEvalScore {
+    /// Basic scores
+    pub basic: EvalScore,
+    /// Did the system correctly identify entities? (0-100)
+    pub entity_recognition: Option<u8>,
+    /// Did the system correctly identify relationships? (0-100)
+    pub relationship_accuracy: Option<u8>,
+    /// Did the system avoid hallucination? (0-100)
+    pub factual_grounding: Option<u8>,
+    /// Did the system handle updates/changes correctly? (0-100)
+    pub temporal_reasoning: Option<u8>,
+    /// Did the system correctly disambiguate similar entities? (0-100)
+    pub disambiguation: Option<u8>,
 }
 
 impl EvalScore {
@@ -119,6 +138,99 @@ impl Judge {
         })
     }
 
+    /// Evaluate extraction quality with extended dimensions
+    pub async fn evaluate_extraction(
+        &self,
+        memos: &[String],
+        extracted_records: &[String],
+        extracted_edges: &[String],
+        expected_records: &[String],
+        expected_edges: &[String],
+    ) -> Result<ExtractionEvalResult> {
+        let prompt = self.build_extraction_eval_prompt(
+            memos,
+            extracted_records,
+            extracted_edges,
+            expected_records,
+            expected_edges,
+        );
+
+        let response = self
+            .llm
+            .complete(EXTRACTION_JUDGE_SYSTEM_PROMPT, &prompt)
+            .await
+            .context("LLM extraction evaluation failed")?;
+
+        let raw: RawExtractionEvalResponse = serde_json::from_str(&extract_json(&response))
+            .with_context(|| format!("Failed to parse extraction eval response: {}", response))?;
+
+        Ok(ExtractionEvalResult {
+            entity_recognition: raw.entity_recognition,
+            relationship_accuracy: raw.relationship_accuracy,
+            factual_grounding: raw.factual_grounding,
+            temporal_reasoning: raw.temporal_reasoning,
+            disambiguation: raw.disambiguation,
+            overall: raw.overall,
+            feedback: raw.feedback,
+            missing_entities: raw.missing_entities,
+            hallucinated_entities: raw.hallucinated_entities,
+            relationship_errors: raw.relationship_errors,
+        })
+    }
+
+    fn build_extraction_eval_prompt(
+        &self,
+        memos: &[String],
+        extracted_records: &[String],
+        extracted_edges: &[String],
+        expected_records: &[String],
+        expected_edges: &[String],
+    ) -> String {
+        let memos_str = memos.iter()
+            .enumerate()
+            .map(|(i, m)| format!("{}. {}", i + 1, m))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let extracted_records_str = extracted_records.join("\n");
+        let extracted_edges_str = extracted_edges.join("\n");
+        let expected_records_str = expected_records.join("\n");
+        let expected_edges_str = expected_edges.join("\n");
+
+        format!(
+            r#"Evaluate the quality of entity and relationship extraction from these memos.
+
+ORIGINAL MEMOS:
+{memos_str}
+
+EXTRACTED RECORDS:
+{extracted_records_str}
+
+EXTRACTED EDGES/RELATIONSHIPS:
+{extracted_edges_str}
+
+EXPECTED RECORDS:
+{expected_records_str}
+
+EXPECTED EDGES/RELATIONSHIPS:
+{expected_edges_str}
+
+Evaluate on these dimensions (0-100 scale):
+- entity_recognition: Were all entities correctly identified?
+- relationship_accuracy: Were relationships between entities correct?
+- factual_grounding: Did extraction stay true to memo content without hallucination?
+- temporal_reasoning: Were updates/changes handled correctly (if applicable)?
+- disambiguation: Were similar entities correctly distinguished (if applicable)?
+
+Also identify:
+- missing_entities: Important entities not extracted
+- hallucinated_entities: Entities extracted but not in source
+- relationship_errors: Incorrect or missing relationships
+
+Provide your evaluation as JSON."#
+        )
+    }
+
     fn build_eval_prompt(&self, query: &str, answer: &str, expected: &ExpectedOutcome) -> String {
         let answer_type_desc = match expected.answer_type {
             AnswerType::Factual => "a factual response with specific information",
@@ -192,6 +304,61 @@ struct RawEvalResponse {
     feedback: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RawExtractionEvalResponse {
+    entity_recognition: u8,
+    relationship_accuracy: u8,
+    factual_grounding: u8,
+    #[serde(default)]
+    temporal_reasoning: Option<u8>,
+    #[serde(default)]
+    disambiguation: Option<u8>,
+    overall: u8,
+    #[serde(default)]
+    feedback: String,
+    #[serde(default)]
+    missing_entities: Vec<String>,
+    #[serde(default)]
+    hallucinated_entities: Vec<String>,
+    #[serde(default)]
+    relationship_errors: Vec<String>,
+}
+
+/// Result of LLM-based extraction evaluation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractionEvalResult {
+    /// How well were entities identified? (0-100)
+    pub entity_recognition: u8,
+    /// How accurate were the relationships? (0-100)
+    pub relationship_accuracy: u8,
+    /// Did extraction stay grounded in facts? (0-100)
+    pub factual_grounding: u8,
+    /// Were temporal updates handled correctly? (0-100, optional)
+    pub temporal_reasoning: Option<u8>,
+    /// Were similar entities distinguished? (0-100, optional)
+    pub disambiguation: Option<u8>,
+    /// Overall extraction quality (0-100)
+    pub overall: u8,
+    /// Detailed feedback
+    pub feedback: String,
+    /// Entities that were expected but not extracted
+    pub missing_entities: Vec<String>,
+    /// Entities that were extracted but not in source
+    pub hallucinated_entities: Vec<String>,
+    /// Relationship errors identified
+    pub relationship_errors: Vec<String>,
+}
+
+impl ExtractionEvalResult {
+    /// Check if the extraction passed quality thresholds
+    pub fn passed(&self) -> bool {
+        self.overall >= 70
+            && self.entity_recognition >= 60
+            && self.relationship_accuracy >= 60
+            && self.factual_grounding >= 70
+    }
+}
+
 /// Extract JSON from a response that may be wrapped in markdown code blocks
 fn extract_json(response: &str) -> &str {
     let trimmed = response.trim();
@@ -234,6 +401,38 @@ Respond with JSON only:
 }
 
 Be strict but fair. An empty or "no information found" answer should score 0 on completeness if key items were expected."#;
+
+const EXTRACTION_JUDGE_SYSTEM_PROMPT: &str = r#"You are an evaluation judge for a knowledge extraction system. Your task is to evaluate how well the system extracted entities and relationships from source memos.
+
+Score each dimension from 0-100:
+- 0-30: Poor - major errors or omissions
+- 31-50: Below average - several mistakes
+- 51-70: Average - mostly correct with some gaps
+- 71-85: Good - accurate with minor issues
+- 86-100: Excellent - comprehensive and precise
+
+Key evaluation criteria:
+1. entity_recognition: Did the system identify all important entities (people, teams, repos, technologies, rules)?
+2. relationship_accuracy: Are the extracted relationships (belongs_to, member_of, owns, applies_to) correct?
+3. factual_grounding: Did the system only extract information that was actually in the source memos, without hallucinating?
+4. temporal_reasoning: If the memos contain updates or changes over time, did the system handle this correctly? (Only score if applicable)
+5. disambiguation: If there were similar entities (e.g., two people named Kim), were they correctly distinguished? (Only score if applicable)
+
+Respond with JSON only:
+{
+  "entity_recognition": <0-100>,
+  "relationship_accuracy": <0-100>,
+  "factual_grounding": <0-100>,
+  "temporal_reasoning": <0-100 or null if not applicable>,
+  "disambiguation": <0-100 or null if not applicable>,
+  "overall": <0-100>,
+  "feedback": "Brief explanation of scores",
+  "missing_entities": ["entity1", "entity2"],
+  "hallucinated_entities": ["entity3"],
+  "relationship_errors": ["description of error 1", "description of error 2"]
+}
+
+Be thorough in identifying errors. Hallucination (making up entities or relationships not in the source) should severely penalize factual_grounding."#;
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,69 @@
+# Retrieval Test: Context Assembly
+#
+# Tests that context assembly correctly gathers related records
+# when traversing the knowledge graph.
+#
+# CATEGORY: Strong case - tests core context assembly functionality
+
+[scenario]
+name = "context_assembly"
+description = "Tests that context assembly traverses relationships correctly"
+tests = ["graph_traversal", "completeness", "relevance"]
+
+[[setup]]
+action = "record_memo"
+content = """
+FinanceCore is a fintech company building payment infrastructure.
+The Payments Team handles all payment processing, led by Dana White.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+The Payments Team owns the payments-api repository. All changes to
+payments-api require the security review rule to pass.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+Engineering rule for FinanceCore: Security review required for all
+payment-related code changes.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+Dana uses Go for most backend services. The payments-api is built with
+Go and PostgreSQL.
+"""
+
+# =============================================================================
+# QUERIES
+# Test that context assembly provides complete related information
+# =============================================================================
+
+[queries.team_context]
+query = "Tell me about the Payments Team"
+description = "Should assemble full context: company, members, repos, rules"
+should_find = ["FinanceCore", "Dana White", "payments-api", "security review"]
+should_not_find = []
+answer_type = "summary"
+
+[queries.repo_context]
+query = "What rules apply to payments-api?"
+description = "Should find rules that apply_to this repo"
+should_find = ["security review"]
+answer_type = "list"
+
+[queries.person_context]
+query = "What does Dana White work on?"
+description = "Should traverse person -> team -> repos"
+should_find = ["Payments Team", "payments-api", "Go"]
+answer_type = "summary"
+
+[queries.technology_context]
+query = "What technologies does FinanceCore use?"
+description = "Should aggregate technologies across the organization"
+should_find = ["Go", "PostgreSQL"]
+answer_type = "list"
