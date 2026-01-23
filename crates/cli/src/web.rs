@@ -40,6 +40,7 @@ pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
         .route("/api/workers", get(api_list_workers))
         .route("/api/workers/:id", get(api_get_worker))
         .route("/api/records/:record_type", get(api_list_records_by_type))
+        .route("/api/record/:id", get(api_get_record))
         .route("/api/memos", get(api_list_memos))
         .route("/api/events", get(api_list_events))
         // Serve embedded WASM/JS/CSS assets
@@ -140,6 +141,12 @@ struct RecordView {
     content: serde_json::Value,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct RecordDetailView {
+    record: RecordView,
+    related: Vec<RecordView>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -335,6 +342,74 @@ async fn api_list_records_by_type(
             tracing::error!("Failed to list records: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list records").into_response()
         }
+    }
+}
+
+async fn api_get_record(
+    State(state): State<Arc<WebState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Get the record
+    let record = match state.atlas.get_record(&id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, "Record not found").into_response();
+        }
+        Err(e) => {
+            tracing::error!("Failed to get record {}: {}", id, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get record").into_response();
+        }
+    };
+
+    // Get related records via edges (both directions)
+    let mut related: Vec<RecordView> = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    seen_ids.insert(id.clone());
+
+    // Get outgoing edges
+    if let Ok(edges_out) = state.atlas.get_edges_from(&id, None, true).await {
+        for edge in edges_out {
+            let target_id = edge.target.id.to_string();
+            if !seen_ids.contains(&target_id) {
+                seen_ids.insert(target_id.clone());
+                if let Ok(Some(r)) = state.atlas.get_record(&target_id).await {
+                    related.push(record_to_view(r));
+                }
+            }
+        }
+    }
+
+    // Get incoming edges
+    if let Ok(edges_in) = state.atlas.get_edges_to(&id, None, true).await {
+        for edge in edges_in {
+            let source_id = edge.source.id.to_string();
+            if !seen_ids.contains(&source_id) {
+                seen_ids.insert(source_id.clone());
+                if let Ok(Some(r)) = state.atlas.get_record(&source_id).await {
+                    related.push(record_to_view(r));
+                }
+            }
+        }
+    }
+
+    let record_view = record_to_view(record);
+
+    Json(RecordDetailView {
+        record: record_view,
+        related,
+    })
+    .into_response()
+}
+
+fn record_to_view(r: atlas::Record) -> RecordView {
+    RecordView {
+        id: r.id.map(|t| t.id.to_string()).unwrap_or_default(),
+        record_type: r.record_type,
+        name: r.name,
+        description: r.description,
+        content: r.content,
+        created_at: r.created_at.to_string(),
+        updated_at: r.updated_at.to_string(),
     }
 }
 
