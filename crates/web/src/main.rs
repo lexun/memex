@@ -45,7 +45,8 @@ async fn main() {
         .route("/api/workers/:id", get(api_get_worker))
         // Records by type and single record
         .route("/api/records/:record_type", get(api_list_records_by_type))
-        .route("/api/record/:id", get(api_get_record))
+        .route("/api/record/:id", get(api_get_record).put(api_update_record))
+        .route("/api/record/:id/content", axum::routing::put(api_update_record_content))
         // Memos
         .route("/api/memos", get(api_list_memos))
         // Events
@@ -448,6 +449,99 @@ async fn api_get_record(
     }
 
     Ok(axum::Json(memex_web::types::RecordDetail { record, related }))
+}
+
+/// Request body for updating a record
+#[cfg(feature = "ssr")]
+#[derive(serde::Deserialize)]
+struct UpdateRecordRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    content: Option<serde_json::Value>,
+}
+
+/// Update a record's name, description, or content
+#[cfg(feature = "ssr")]
+async fn api_update_record(
+    axum::extract::State(client): axum::extract::State<IpcClient>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<UpdateRecordRequest>,
+) -> Result<axum::Json<memex_web::types::Record>, axum::http::StatusCode> {
+    use serde_json::json;
+
+    let mut params = json!({ "id": id });
+    if let Some(name) = body.name {
+        params["name"] = json!(name);
+    }
+    if let Some(description) = body.description {
+        params["description"] = json!(description);
+    }
+    if let Some(content) = body.content {
+        params["content"] = content;
+    }
+
+    let result = client.request("update_record", params).await;
+
+    match result {
+        Ok(value) => match parse_record(&value) {
+            Some(record) => Ok(axum::Json(record)),
+            None => {
+                tracing::error!("Failed to parse updated record {}", id);
+                Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to update record {}: {}", id, e);
+            Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Request body for updating record content (markdown)
+#[cfg(feature = "ssr")]
+#[derive(serde::Deserialize)]
+struct UpdateContentRequest {
+    content: String,
+}
+
+/// Update only the content field of a record (for markdown editor)
+#[cfg(feature = "ssr")]
+async fn api_update_record_content(
+    axum::extract::State(client): axum::extract::State<IpcClient>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<UpdateContentRequest>,
+) -> Result<axum::Json<memex_web::types::Record>, axum::http::StatusCode> {
+    use serde_json::json;
+
+    // Store the markdown as a JSON object with a "text" field for compatibility
+    let content_value = json!({ "text": body.content });
+
+    let result = client
+        .request(
+            "update_record",
+            json!({
+                "id": id,
+                "content": content_value
+            }),
+        )
+        .await;
+
+    match result {
+        Ok(value) => match parse_record(&value) {
+            Some(record) => Ok(axum::Json(record)),
+            None => {
+                tracing::error!("Failed to parse updated record {}", id);
+                Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to update record content {}: {}", id, e);
+            Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 #[cfg(feature = "ssr")]

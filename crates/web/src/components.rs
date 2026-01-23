@@ -4,6 +4,17 @@ use leptos::*;
 use leptos_router::*;
 use pulldown_cmark::{html, Options, Parser};
 
+#[cfg(feature = "hydrate")]
+use leptos::spawn_local;
+
+// For SSR mode, we need a dummy spawn_local that does nothing
+#[cfg(not(feature = "hydrate"))]
+fn spawn_local<F>(_future: F)
+where
+    F: std::future::Future<Output = ()> + 'static,
+{
+}
+
 use crate::types::{DashboardStats, Event, MemoView, Record, RecordDetail, Task, TaskDetail, Worker};
 
 // =============================================================================
@@ -181,6 +192,320 @@ pub fn Markdown(
 
     view! {
         <div class=class_name inner_html=html></div>
+    }
+}
+
+/// Interactive markdown editor with live preview (Notion-style)
+///
+/// Features:
+/// - Click to edit mode
+/// - Live markdown preview while editing
+/// - Save/cancel buttons
+/// - Keyboard shortcuts (Escape to cancel, Cmd/Ctrl+Enter to save)
+#[component]
+pub fn MarkdownEditor(
+    /// The initial markdown content
+    #[prop(into)]
+    content: String,
+    /// Record ID for saving
+    #[prop(into)]
+    record_id: String,
+    /// Callback when content is saved
+    #[prop(optional, into)]
+    on_save: Option<Callback<String>>,
+) -> impl IntoView {
+    let (is_editing, set_is_editing) = create_signal(false);
+    let (edit_content, set_edit_content) = create_signal(content.clone());
+    let (is_saving, set_is_saving) = create_signal(false);
+    let (save_error, set_save_error) = create_signal::<Option<String>>(None);
+    let original_content = content.clone();
+
+    // Create derived signal for preview HTML
+    let preview_html = move || render_markdown(&edit_content.get());
+
+    // Handle clicking on the content to edit
+    let start_editing = move |_| {
+        set_is_editing.set(true);
+        set_save_error.set(None);
+    };
+
+    // Cancel editing and restore original content
+    let do_cancel = {
+        let original_content = original_content.clone();
+        move || {
+            set_edit_content.set(original_content.clone());
+            set_is_editing.set(false);
+            set_save_error.set(None);
+        }
+    };
+
+    // Save the content
+    let do_save = {
+        let record_id = record_id.clone();
+        let on_save = on_save.clone();
+        move || {
+            let id = record_id.clone();
+            let new_content = edit_content.get();
+            let on_save = on_save.clone();
+
+            set_is_saving.set(true);
+            set_save_error.set(None);
+
+            spawn_local(async move {
+                match save_record_content(&id, &new_content).await {
+                    Ok(_) => {
+                        set_is_editing.set(false);
+                        set_is_saving.set(false);
+                        if let Some(callback) = on_save {
+                            callback.call(new_content);
+                        }
+                    }
+                    Err(e) => {
+                        set_save_error.set(Some(e));
+                        set_is_saving.set(false);
+                    }
+                }
+            });
+        }
+    };
+
+    // Click handlers that wrap the internal functions
+    let cancel_editing = {
+        let do_cancel = do_cancel.clone();
+        move |_: leptos::ev::MouseEvent| {
+            do_cancel();
+        }
+    };
+
+    let save_content = {
+        let do_save = do_save.clone();
+        move |_: leptos::ev::MouseEvent| {
+            do_save();
+        }
+    };
+
+    // Handle keyboard shortcuts
+    let on_keydown = {
+        let do_cancel = do_cancel.clone();
+        let do_save = do_save.clone();
+        move |ev: leptos::ev::KeyboardEvent| {
+            let key = ev.key();
+            if key == "Escape" {
+                do_cancel();
+            } else if key == "Enter" && (ev.meta_key() || ev.ctrl_key()) {
+                ev.prevent_default();
+                do_save();
+            }
+        }
+    };
+
+    view! {
+        {move || {
+            if is_editing.get() {
+                // Edit mode with live preview
+                view! {
+                    <div class="markdown-editor editing">
+                        <div class="editor-container">
+                            <div class="editor-pane">
+                                <div class="editor-header">
+                                    <span class="editor-label">"Edit"</span>
+                                    <span class="editor-hint">"Cmd+Enter to save, Escape to cancel"</span>
+                                </div>
+                                <textarea
+                                    class="editor-textarea"
+                                    prop:value=move || edit_content.get()
+                                    on:input=move |ev| {
+                                        set_edit_content.set(event_target_value(&ev));
+                                    }
+                                    on:keydown=on_keydown.clone()
+                                    autofocus=true
+                                    placeholder="Write markdown here..."
+                                />
+                            </div>
+                            <div class="preview-pane">
+                                <div class="editor-header">
+                                    <span class="editor-label">"Preview"</span>
+                                </div>
+                                <div class="markdown-content" inner_html=preview_html></div>
+                            </div>
+                        </div>
+
+                        {move || {
+                            save_error.get().map(|err| {
+                                view! {
+                                    <div class="editor-error">
+                                        "Error: " {err}
+                                    </div>
+                                }
+                            })
+                        }}
+
+                        <div class="editor-actions">
+                            <button
+                                class="btn btn-secondary"
+                                on:click=cancel_editing.clone()
+                                disabled=move || is_saving.get()
+                            >
+                                "Cancel"
+                            </button>
+                            <button
+                                class="btn btn-primary"
+                                on:click=save_content.clone()
+                                disabled=move || is_saving.get()
+                            >
+                                {move || if is_saving.get() { "Saving..." } else { "Save" }}
+                            </button>
+                        </div>
+                    </div>
+                }.into_view()
+            } else {
+                // View mode - click to edit
+                let html = render_markdown(&edit_content.get());
+                view! {
+                    <div
+                        class="markdown-editor viewable"
+                        on:click=start_editing.clone()
+                        title="Click to edit"
+                    >
+                        <div class="edit-hint">
+                            <span class="edit-icon">"\u{270E}"</span>
+                            " Click to edit"
+                        </div>
+                        <div class="markdown-content" inner_html=html></div>
+                    </div>
+                }.into_view()
+            }
+        }}
+    }
+}
+
+/// Simple editable text field with inline editing
+#[component]
+pub fn EditableText(
+    /// The current text value
+    #[prop(into)]
+    value: String,
+    /// Record ID for saving
+    #[prop(into)]
+    record_id: String,
+    /// Field name (name, description)
+    #[prop(into)]
+    field: String,
+    /// Placeholder text when empty
+    #[prop(optional, into)]
+    placeholder: String,
+    /// Display as heading (larger text)
+    #[prop(optional)]
+    heading: bool,
+) -> impl IntoView {
+    let (is_editing, set_is_editing) = create_signal(false);
+    let (edit_value, set_edit_value) = create_signal(value.clone());
+    let (is_saving, set_is_saving) = create_signal(false);
+    let original_value = value.clone();
+
+    let start_editing = move |_| {
+        set_is_editing.set(true);
+    };
+
+    let do_cancel = {
+        let original_value = original_value.clone();
+        move || {
+            set_edit_value.set(original_value.clone());
+            set_is_editing.set(false);
+        }
+    };
+
+    let do_save = {
+        let record_id = record_id.clone();
+        let field = field.clone();
+        move || {
+            let id = record_id.clone();
+            let field = field.clone();
+            let new_value = edit_value.get();
+
+            set_is_saving.set(true);
+
+            spawn_local(async move {
+                let result = save_record_field(&id, &field, &new_value).await;
+                set_is_saving.set(false);
+                if result.is_ok() {
+                    set_is_editing.set(false);
+                }
+            });
+        }
+    };
+
+    // Blur handler to save on focus loss
+    let save_on_blur = {
+        let do_save = do_save.clone();
+        move |_: leptos::ev::FocusEvent| {
+            do_save();
+        }
+    };
+
+    let on_keydown = {
+        let do_cancel = do_cancel.clone();
+        let do_save = do_save.clone();
+        move |ev: leptos::ev::KeyboardEvent| {
+            let key = ev.key();
+            if key == "Escape" {
+                do_cancel();
+            } else if key == "Enter" && !ev.shift_key() {
+                ev.prevent_default();
+                do_save();
+            }
+        }
+    };
+
+    let class_name = if heading {
+        "editable-text editable-heading"
+    } else {
+        "editable-text"
+    };
+    let placeholder_text = if placeholder.is_empty() {
+        "Click to add...".to_string()
+    } else {
+        placeholder
+    };
+
+    view! {
+        {move || {
+            if is_editing.get() {
+                view! {
+                    <div class=format!("{} editing", class_name)>
+                        <input
+                            type="text"
+                            class="editable-input"
+                            prop:value=move || edit_value.get()
+                            on:input=move |ev| {
+                                set_edit_value.set(event_target_value(&ev));
+                            }
+                            on:keydown=on_keydown.clone()
+                            on:blur=save_on_blur.clone()
+                            autofocus=true
+                            placeholder=placeholder_text.clone()
+                        />
+                        {move || is_saving.get().then(|| view! { <span class="saving-indicator">"..."</span> })}
+                    </div>
+                }.into_view()
+            } else {
+                let display_value = edit_value.get();
+                let is_empty = display_value.is_empty();
+                view! {
+                    <div
+                        class=format!("{} viewable{}", class_name, if is_empty { " empty" } else { "" })
+                        on:click=start_editing.clone()
+                        title="Click to edit"
+                    >
+                        {if is_empty {
+                            view! { <span class="placeholder">{placeholder_text.clone()}</span> }.into_view()
+                        } else {
+                            view! { <span>{display_value}</span> }.into_view()
+                        }}
+                    </div>
+                }.into_view()
+            }
+        }}
     }
 }
 
@@ -1132,11 +1457,22 @@ fn RecordDetailContent(detail: RecordDetail) -> impl IntoView {
 
     // Extract markdown content from the JSON content field
     let content_markdown = extract_content_markdown(&record.content);
+    let record_id = record.id.clone();
+    let record_id_for_name = record.id.clone();
+    let record_id_for_desc = record.id.clone();
 
     view! {
         <div class="detail-header">
             <a href=back_link class="back-link">"\u{2190} Back"</a>
-            <h1 style="margin-top: 0.5rem;">{&record.name}</h1>
+            <div style="margin-top: 0.5rem;">
+                <EditableText
+                    value=record.name.clone()
+                    record_id=record_id_for_name
+                    field="name"
+                    placeholder="Record name"
+                    heading=true
+                />
+            </div>
             <div class="detail-meta">
                 <span class=type_badge_class>{&record.record_type}</span>
             </div>
@@ -1144,27 +1480,23 @@ fn RecordDetailContent(detail: RecordDetail) -> impl IntoView {
 
         <div class="detail-grid">
             <div class="detail-main">
-                {record
-                    .description
-                    .as_ref()
-                    .map(|desc| {
-                        view! {
-                            <div class="card">
-                                <h3>"Description"</h3>
-                                <p>{desc.clone()}</p>
-                            </div>
-                        }
-                    })}
+                <div class="card">
+                    <h3>"Description"</h3>
+                    <EditableText
+                        value=record.description.clone().unwrap_or_default()
+                        record_id=record_id_for_desc
+                        field="description"
+                        placeholder="Add a description..."
+                    />
+                </div>
 
-                {content_markdown
-                    .map(|md| {
-                        view! {
-                            <div class="card">
-                                <h3>"Content"</h3>
-                                <Markdown content=md/>
-                            </div>
-                        }
-                    })}
+                <div class="card">
+                    <h3>"Content"</h3>
+                    <MarkdownEditor
+                        content=content_markdown.clone().unwrap_or_default()
+                        record_id=record_id.clone()
+                    />
+                </div>
 
                 {(!related.is_empty())
                     .then(|| {
@@ -1558,4 +1890,62 @@ async fn fetch_memos() -> Result<Vec<MemoView>, String> {
 
 async fn fetch_events() -> Result<Vec<Event>, String> {
     fetch_json("/api/events").await
+}
+
+/// Save record content via API
+#[cfg(feature = "hydrate")]
+async fn save_record_content(id: &str, content: &str) -> Result<(), String> {
+    use gloo_net::http::Request;
+
+    let body = serde_json::json!({
+        "content": content
+    });
+
+    let resp = Request::put(&format!("/api/record/{}/content", id))
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "hydrate"))]
+async fn save_record_content(_id: &str, _content: &str) -> Result<(), String> {
+    Err("SSR mode - cannot save".to_string())
+}
+
+/// Save a specific field of a record
+#[cfg(feature = "hydrate")]
+async fn save_record_field(id: &str, field: &str, value: &str) -> Result<(), String> {
+    use gloo_net::http::Request;
+
+    let body = serde_json::json!({
+        field: value
+    });
+
+    let resp = Request::put(&format!("/api/record/{}", id))
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "hydrate"))]
+async fn save_record_field(_id: &str, _field: &str, _value: &str) -> Result<(), String> {
+    Err("SSR mode - cannot save".to_string())
 }
