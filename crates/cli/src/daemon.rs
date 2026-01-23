@@ -3698,7 +3698,17 @@ async fn handle_cortex_dispatch_task(
 
         // Compute the worktree path (branches_dir/branch_name)
         let branches_dir = app.get_config_mut().project_config.branches_dir.clone();
-        repo_path.join(&branches_dir).join(&branch_name).to_string_lossy().to_string()
+        let computed_path = repo_path.join(&branches_dir).join(&branch_name);
+
+        // Verify the worktree directory actually exists
+        if !computed_path.exists() {
+            return Err(IpcError::internal(format!(
+                "Worktree creation reported success but directory does not exist: {}",
+                computed_path.display()
+            )));
+        }
+
+        computed_path.to_string_lossy().to_string()
     };
 
     // 5. Build system prompt with task and context
@@ -3987,7 +3997,24 @@ async fn dispatch_single_task(
             ) {
                 Ok(_) => {
                     let branches_dir = app.get_config_mut().project_config.branches_dir.clone();
-                    repo_path.join(&branches_dir).join(&branch_name).to_string_lossy().to_string()
+                    let computed_path = repo_path.join(&branches_dir).join(&branch_name);
+
+                    // Verify the worktree directory actually exists
+                    if !computed_path.exists() {
+                        return Ok(DispatchedWorkerResult {
+                            task_id: task_id.to_string(),
+                            worker_id: None,
+                            worktree: None,
+                            context_from: context_record_id,
+                            success: false,
+                            error: Some(format!(
+                                "Worktree creation reported success but directory does not exist: {}",
+                                computed_path.display()
+                            )),
+                        });
+                    }
+
+                    computed_path.to_string_lossy().to_string()
                 }
                 Err(e) => {
                     return Ok(DispatchedWorkerResult {
