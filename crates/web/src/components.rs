@@ -224,10 +224,24 @@ pub fn DashboardPage() -> impl IntoView {
 // Tasks Pages
 // =============================================================================
 
-/// Tasks list page
+/// Sort options for tasks
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum TaskSortBy {
+    Priority,
+    CreatedAt,
+    UpdatedAt,
+}
+
+/// Tasks list page with filtering and sorting
 #[component]
 pub fn TasksPage() -> impl IntoView {
     let tasks = create_resource(|| (), |_| async move { fetch_tasks().await });
+
+    // Filter signals
+    let (status_filter, set_status_filter) = create_signal(String::from("active")); // "all", "active", or specific status
+    let (project_filter, set_project_filter) = create_signal(String::new()); // empty = all projects
+    let (priority_filter, set_priority_filter) = create_signal(-1i32); // -1 = all priorities
+    let (sort_by, set_sort_by) = create_signal(TaskSortBy::Priority);
 
     view! {
         <Layout title="Tasks".to_string() active_section="tasks".to_string()>
@@ -237,23 +251,55 @@ pub fn TasksPage() -> impl IntoView {
                         .get()
                         .map(|result| {
                             match result {
-                                Ok(tasks) => {
-                                    let pending = tasks.iter().filter(|t| t.status == "pending").count();
-                                    let in_progress = tasks
+                                Ok(all_tasks) => {
+                                    // Calculate stats from all tasks
+                                    let pending = all_tasks.iter().filter(|t| t.status == "pending").count();
+                                    let in_progress = all_tasks
                                         .iter()
                                         .filter(|t| t.status == "in_progress")
                                         .count();
-                                    let done = tasks
+                                    let done = all_tasks
                                         .iter()
-                                        .filter(|t| t.status == "done" || t.status == "completed")
+                                        .filter(|t| t.status == "done" || t.status == "completed" || t.status == "cancelled")
                                         .count();
+
+                                    // Get unique projects for filter dropdown
+                                    let projects: Vec<String> = {
+                                        let mut p: Vec<String> = all_tasks
+                                            .iter()
+                                            .filter_map(|t| t.project.clone())
+                                            .collect();
+                                        p.sort();
+                                        p.dedup();
+                                        p
+                                    };
+
                                     view! {
                                         <div class="stats">
                                             <StatCard value=pending label="Pending"/>
                                             <StatCard value=in_progress label="In Progress"/>
                                             <StatCard value=done label="Done"/>
                                         </div>
-                                        <TasksTable tasks=tasks/>
+
+                                        <TaskFilters
+                                            status_filter=status_filter
+                                            set_status_filter=set_status_filter
+                                            project_filter=project_filter
+                                            set_project_filter=set_project_filter
+                                            priority_filter=priority_filter
+                                            set_priority_filter=set_priority_filter
+                                            sort_by=sort_by
+                                            set_sort_by=set_sort_by
+                                            projects=projects
+                                        />
+
+                                        <TasksTableFiltered
+                                            tasks=all_tasks
+                                            status_filter=status_filter
+                                            project_filter=project_filter
+                                            priority_filter=priority_filter
+                                            sort_by=sort_by
+                                        />
                                     }
                                         .into_view()
                                 }
@@ -267,6 +313,177 @@ pub fn TasksPage() -> impl IntoView {
 
             </Suspense>
         </Layout>
+    }
+}
+
+/// Filter controls for tasks
+#[component]
+fn TaskFilters(
+    status_filter: ReadSignal<String>,
+    set_status_filter: WriteSignal<String>,
+    project_filter: ReadSignal<String>,
+    set_project_filter: WriteSignal<String>,
+    priority_filter: ReadSignal<i32>,
+    set_priority_filter: WriteSignal<i32>,
+    sort_by: ReadSignal<TaskSortBy>,
+    set_sort_by: WriteSignal<TaskSortBy>,
+    projects: Vec<String>,
+) -> impl IntoView {
+    view! {
+        <div class="task-filters">
+            <div class="filter-group">
+                <label for="status-filter">"Status"</label>
+                <select
+                    id="status-filter"
+                    on:change=move |ev| {
+                        set_status_filter.set(event_target_value(&ev));
+                    }
+                    prop:value=move || status_filter.get()
+                >
+                    <option value="active">"Active (hide completed)"</option>
+                    <option value="all">"All"</option>
+                    <option value="pending">"Pending"</option>
+                    <option value="in_progress">"In Progress"</option>
+                    <option value="blocked">"Blocked"</option>
+                    <option value="completed">"Completed"</option>
+                    <option value="cancelled">"Cancelled"</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label for="project-filter">"Project"</label>
+                <select
+                    id="project-filter"
+                    on:change=move |ev| {
+                        set_project_filter.set(event_target_value(&ev));
+                    }
+                    prop:value=move || project_filter.get()
+                >
+                    <option value="">"All Projects"</option>
+                    {projects
+                        .into_iter()
+                        .map(|p| {
+                            let p_clone = p.clone();
+                            view! { <option value=p>{p_clone}</option> }
+                        })
+                        .collect_view()}
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label for="priority-filter">"Priority"</label>
+                <select
+                    id="priority-filter"
+                    on:change=move |ev| {
+                        let val = event_target_value(&ev);
+                        set_priority_filter.set(val.parse().unwrap_or(-1));
+                    }
+                    prop:value=move || priority_filter.get().to_string()
+                >
+                    <option value="-1">"All Priorities"</option>
+                    <option value="0">"P0 (Critical)"</option>
+                    <option value="1">"P1 (High)"</option>
+                    <option value="2">"P2 (Medium)"</option>
+                    <option value="3">"P3 (Low)"</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label for="sort-by">"Sort By"</label>
+                <select
+                    id="sort-by"
+                    on:change=move |ev| {
+                        let val = event_target_value(&ev);
+                        set_sort_by.set(match val.as_str() {
+                            "created" => TaskSortBy::CreatedAt,
+                            "updated" => TaskSortBy::UpdatedAt,
+                            _ => TaskSortBy::Priority,
+                        });
+                    }
+                    prop:value=move || {
+                        match sort_by.get() {
+                            TaskSortBy::Priority => "priority",
+                            TaskSortBy::CreatedAt => "created",
+                            TaskSortBy::UpdatedAt => "updated",
+                        }
+                    }
+                >
+                    <option value="priority">"Priority"</option>
+                    <option value="created">"Created Date"</option>
+                    <option value="updated">"Updated Date"</option>
+                </select>
+            </div>
+        </div>
+    }
+}
+
+/// Tasks table with filtering and sorting applied
+#[component]
+fn TasksTableFiltered(
+    tasks: Vec<Task>,
+    status_filter: ReadSignal<String>,
+    project_filter: ReadSignal<String>,
+    priority_filter: ReadSignal<i32>,
+    sort_by: ReadSignal<TaskSortBy>,
+) -> impl IntoView {
+    // Create a derived signal for filtered and sorted tasks
+    let filtered_tasks = move || {
+        let status = status_filter.get();
+        let project = project_filter.get();
+        let priority = priority_filter.get();
+        let sort = sort_by.get();
+
+        let mut filtered: Vec<Task> = tasks
+            .iter()
+            .filter(|t| {
+                // Status filter
+                let status_match = match status.as_str() {
+                    "all" => true,
+                    "active" => t.status != "completed" && t.status != "cancelled" && t.status != "done",
+                    s => t.status == s,
+                };
+
+                // Project filter
+                let project_match = project.is_empty()
+                    || t.project.as_ref().map(|p| p == &project).unwrap_or(false);
+
+                // Priority filter
+                let priority_match = priority < 0 || t.priority == priority;
+
+                status_match && project_match && priority_match
+            })
+            .cloned()
+            .collect();
+
+        // Sort the filtered tasks
+        match sort {
+            TaskSortBy::Priority => {
+                // Primary: priority (lower = higher priority)
+                // Secondary: updated_at (newest first)
+                filtered.sort_by(|a, b| {
+                    a.priority
+                        .cmp(&b.priority)
+                        .then_with(|| b.updated_at.cmp(&a.updated_at))
+                });
+            }
+            TaskSortBy::CreatedAt => {
+                // Newest first
+                filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            }
+            TaskSortBy::UpdatedAt => {
+                // Most recently updated first
+                filtered.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            }
+        }
+
+        filtered
+    };
+
+    view! {
+        {move || {
+            let tasks = filtered_tasks();
+            view! { <TasksTable tasks=tasks/> }
+        }}
     }
 }
 

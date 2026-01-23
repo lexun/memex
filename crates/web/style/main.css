@@ -493,3 +493,54 @@ code {
     60% { content: '..'; }
     80%, 100% { content: '...'; }
 }
+
+/* Task filters */
+.task-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background: var(--bg-alt);
+    border-radius: 8px;
+}
+
+.filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    min-width: 150px;
+}
+
+.filter-group label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.filter-group select {
+    padding: 0.5rem 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--bg-alt);
+    border-radius: 4px;
+    color: var(--fg);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.filter-group select:hover {
+    border-color: var(--fg-dim);
+}
+
+.filter-group select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.filter-group select option {
+    background: var(--bg);
+    color: var(--fg);
+}
