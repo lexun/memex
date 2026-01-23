@@ -626,6 +626,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "list_memos" => handle_list_memos(request, &stores.atlas).await,
         "get_memo" => handle_get_memo(request, &stores.atlas).await,
         "delete_memo" => handle_delete_memo(request, &stores.atlas).await,
+        "purge_memo" => handle_purge_memo(request, &stores.atlas).await,
 
         // Event operations (atlas)
         "list_events" => handle_list_events(request, &stores.atlas).await,
@@ -661,6 +662,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "create_record" => handle_create_record(request, stores).await,
         "update_record" => handle_update_record(request, stores).await,
         "delete_record" => handle_delete_record(request, stores).await,
+        "purge_record" => handle_purge_record(request, &stores.atlas).await,
         "create_edge" => handle_create_edge(request, stores).await,
         "list_edges" => handle_list_edges(request, &stores.atlas).await,
         "delete_edge" => handle_delete_edge(request, stores).await,
@@ -1483,6 +1485,34 @@ async fn handle_delete_memo(request: &Request, store: &AtlasStore) -> Result<ser
         .map_err(|e| IpcError::internal(e.to_string()))
 }
 
+#[derive(Deserialize)]
+struct PurgeMemoParams {
+    id: String,
+    dry_run: Option<bool>,
+}
+
+/// Purge a memo and all derived data (events, facts, entities)
+async fn handle_purge_memo(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: PurgeMemoParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let dry_run = params.dry_run.unwrap_or(false);
+
+    if dry_run {
+        store
+            .preview_purge_memo(&params.id)
+            .await
+            .map(|result| serde_json::to_value(result).unwrap())
+            .map_err(|e| IpcError::internal(e.to_string()))
+    } else {
+        store
+            .purge_memo(&params.id)
+            .await
+            .map(|result| serde_json::to_value(result).unwrap())
+            .map_err(|e| IpcError::internal(e.to_string()))
+    }
+}
+
 // ========== Event Handlers ==========
 
 #[derive(Deserialize)]
@@ -2266,6 +2296,34 @@ async fn handle_delete_record(request: &Request, stores: &Stores) -> Result<serd
     }
 
     Ok(serde_json::to_value(record).unwrap())
+}
+
+#[derive(Deserialize)]
+struct PurgeRecordParams {
+    id: String,
+    dry_run: Option<bool>,
+}
+
+/// Purge a record and all derived data (events, facts, entities, edges)
+async fn handle_purge_record(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: PurgeRecordParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let dry_run = params.dry_run.unwrap_or(false);
+
+    if dry_run {
+        store
+            .preview_purge_record(&params.id)
+            .await
+            .map(|result| serde_json::to_value(result).unwrap())
+            .map_err(|e| IpcError::internal(e.to_string()))
+    } else {
+        store
+            .purge_record(&params.id)
+            .await
+            .map(|result| serde_json::to_value(result).unwrap())
+            .map_err(|e| IpcError::internal(e.to_string()))
+    }
 }
 
 #[derive(Deserialize)]

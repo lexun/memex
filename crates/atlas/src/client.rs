@@ -124,6 +124,29 @@ impl MemoClient {
             serde_json::from_value(result).context("Failed to parse memo response")?;
         Ok(Some(memo))
     }
+
+    /// Purge a memo and all derived data (events, facts, entities)
+    ///
+    /// This is a complete removal operation that deletes:
+    /// - The memo itself
+    /// - All events with source_record = "memo:{id}"
+    /// - All facts derived from this memo
+    /// - Orphaned entities (only sourced from this memo)
+    pub async fn purge_memo(&self, id: &str, dry_run: bool) -> Result<crate::store::PurgeResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+            dry_run: bool,
+        }
+
+        let result = self
+            .client
+            .request("purge_memo", Params { id, dry_run })
+            .await
+            .context("Failed to purge memo")?;
+
+        serde_json::from_value(result).context("Failed to parse purge result")
+    }
 }
 
 /// Client for event operations via the daemon
@@ -822,5 +845,29 @@ impl RecordClient {
             .context("Failed to assemble context")?;
 
         serde_json::from_value(result).context("Failed to parse context assembly")
+    }
+
+    /// Purge a record and all derived data (events, facts, entities, edges)
+    ///
+    /// This is a complete removal operation that deletes:
+    /// - The record itself (hard delete, not soft delete)
+    /// - All events with source_record = "record:{id}"
+    /// - All facts derived from this record
+    /// - Orphaned entities (only sourced from this record)
+    /// - All edges to/from this record
+    pub async fn purge_record(&self, id: &str, dry_run: bool) -> Result<crate::store::PurgeResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+            dry_run: bool,
+        }
+
+        let result = self
+            .client
+            .request("purge_record", Params { id, dry_run })
+            .await
+            .context("Failed to purge record")?;
+
+        serde_json::from_value(result).context("Failed to parse purge result")
     }
 }

@@ -237,12 +237,48 @@ enum SystemCommands {
         #[command(subcommand)]
         action: MigrateAction,
     },
+    /// Completely purge sensitive data from the system
+    #[command(display_order = 29)]
+    Purge {
+        #[command(subcommand)]
+        action: PurgeAction,
+    },
 }
 
 #[derive(Subcommand)]
 enum MigrateAction {
     /// Migrate tasks from Forge to Atlas records
     TasksToRecords,
+}
+
+#[derive(Subcommand)]
+enum PurgeAction {
+    /// Purge a memo and all derived data (events, facts, entities)
+    Memo {
+        /// Memo ID to purge
+        id: String,
+
+        /// Preview what would be deleted without actually deleting
+        #[arg(short, long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Purge a record and all derived data (events, facts, entities, edges)
+    Record {
+        /// Record ID to purge
+        id: String,
+
+        /// Preview what would be deleted without actually deleting
+        #[arg(short, long)]
+        dry_run: bool,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -693,6 +729,7 @@ async fn async_main(command: Commands) -> Result<()> {
             SystemCommands::Completions { .. } => unreachable!("Handled in main()"),
             SystemCommands::Upgrade => handle_upgrade().await,
             SystemCommands::Migrate { action } => handle_migrate(action, &socket_path).await,
+            SystemCommands::Purge { action } => handle_purge(action, &socket_path).await,
         },
     }
 }
@@ -878,6 +915,111 @@ async fn handle_migrate(action: MigrateAction, socket_path: &std::path::Path) ->
             if skipped > 0 {
                 println!("  Skipped (already migrated): {}", skipped);
             }
+            Ok(())
+        }
+    }
+}
+
+async fn handle_purge(action: PurgeAction, socket_path: &std::path::Path) -> Result<()> {
+    use atlas::{MemoClient, RecordClient};
+    use std::io::{self, Write};
+
+    match action {
+        PurgeAction::Memo { id, dry_run, yes } => {
+            let client = MemoClient::new(socket_path);
+
+            // First, preview what will be deleted
+            let preview = client.purge_memo(&id, true).await?;
+
+            if !preview.any_deleted() {
+                println!("Nothing to purge. Memo not found: {}", id);
+                return Ok(());
+            }
+
+            println!("Purge preview for memo: {}", id);
+            println!("  Memo: will be deleted");
+            println!("  Events: {} to delete", preview.events_deleted);
+            println!("  Facts: {} to delete", preview.facts_deleted);
+            println!("  Entities (orphaned): {} to delete", preview.entities_deleted);
+            println!("  Total: {} items", preview.total_deleted());
+            println!();
+
+            if dry_run {
+                println!("[DRY RUN] No changes made.");
+                return Ok(());
+            }
+
+            // Confirm unless --yes flag
+            if !yes {
+                print!("This will PERMANENTLY delete all listed items. Continue? [y/N] ");
+                io::stdout().flush()?;
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+
+            // Execute the purge
+            let result = client.purge_memo(&id, false).await?;
+            println!("Purge complete:");
+            println!("  Memo: deleted");
+            println!("  Events deleted: {}", result.events_deleted);
+            println!("  Facts deleted: {}", result.facts_deleted);
+            println!("  Entities deleted: {}", result.entities_deleted);
+            println!("  Total items removed: {}", result.total_deleted());
+
+            Ok(())
+        }
+
+        PurgeAction::Record { id, dry_run, yes } => {
+            let client = RecordClient::new(socket_path);
+
+            // First, preview what will be deleted
+            let preview = client.purge_record(&id, true).await?;
+
+            if !preview.any_deleted() {
+                println!("Nothing to purge. Record not found: {}", id);
+                return Ok(());
+            }
+
+            println!("Purge preview for record: {}", id);
+            println!("  Record: will be deleted");
+            println!("  Events: {} to delete", preview.events_deleted);
+            println!("  Facts: {} to delete", preview.facts_deleted);
+            println!("  Entities (orphaned): {} to delete", preview.entities_deleted);
+            println!("  Edges: {} to delete", preview.edges_deleted);
+            println!("  Total: {} items", preview.total_deleted());
+            println!();
+
+            if dry_run {
+                println!("[DRY RUN] No changes made.");
+                return Ok(());
+            }
+
+            // Confirm unless --yes flag
+            if !yes {
+                print!("This will PERMANENTLY delete all listed items. Continue? [y/N] ");
+                io::stdout().flush()?;
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+
+            // Execute the purge
+            let result = client.purge_record(&id, false).await?;
+            println!("Purge complete:");
+            println!("  Record: deleted");
+            println!("  Events deleted: {}", result.events_deleted);
+            println!("  Facts deleted: {}", result.facts_deleted);
+            println!("  Entities deleted: {}", result.entities_deleted);
+            println!("  Edges deleted: {}", result.edges_deleted);
+            println!("  Total items removed: {}", result.total_deleted());
+
             Ok(())
         }
     }

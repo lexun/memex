@@ -26,6 +26,11 @@ pub struct Event {
 
     /// Event payload - flexible JSON containing event-specific data
     pub payload: Value,
+
+    /// Source record that created this event (for purge tracking)
+    /// Format: "memo:abc123" or "task:xyz789" or "record:def456"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_record: Option<String>,
 }
 
 /// Source attribution for an event
@@ -64,7 +69,31 @@ impl Event {
             event_type: event_type.into(),
             source,
             payload,
+            source_record: None,
         }
+    }
+
+    /// Create a new event with a source record for purge tracking
+    pub fn new_with_source(
+        event_type: impl Into<String>,
+        source: EventSource,
+        payload: Value,
+        source_record: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: None,
+            timestamp: Datetime::default(),
+            event_type: event_type.into(),
+            source,
+            payload,
+            source_record: Some(source_record.into()),
+        }
+    }
+
+    /// Set the source record for purge tracking
+    pub fn with_source_record(mut self, source_record: impl Into<String>) -> Self {
+        self.source_record = Some(source_record.into());
+        self
     }
 
     /// Get the event ID as a string, if set

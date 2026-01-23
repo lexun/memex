@@ -976,6 +976,46 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Completely purge a memo and ALL derived data
+    ///
+    /// This is a complete removal operation for sensitive information. Unlike delete_memo,
+    /// this removes ALL traces including:
+    /// - The memo itself
+    /// - All events with source_record pointing to this memo
+    /// - All facts extracted from this memo
+    /// - Orphaned entities (entities only sourced from this memo)
+    ///
+    /// Use this when sensitive information (PII, credentials, confidential data) was
+    /// accidentally recorded and must be completely removed.
+    ///
+    /// **WARNING**: This operation is irreversible and deletes data from the event log.
+    #[tool]
+    async fn purge_memo(
+        &self,
+        /// Memo ID to purge
+        id: String,
+        /// If true, only preview what would be deleted without actually deleting
+        dry_run: Option<bool>,
+    ) -> mcp_attr::Result<String> {
+        let dry_run = dry_run.unwrap_or(false);
+        match self.memo_client.purge_memo(&id, dry_run).await {
+            Ok(result) => {
+                let mode = if dry_run { "Would delete" } else { "Deleted" };
+                let mut output = format!("Purge {} for memo: {}\n", if dry_run { "preview" } else { "complete" }, id);
+                output.push_str(&format!("  Memo: {}\n", if result.source_deleted { mode } else { "not found" }));
+                output.push_str(&format!("  Events: {} {}\n", mode.to_lowercase(), result.events_deleted));
+                output.push_str(&format!("  Facts: {} {}\n", mode.to_lowercase(), result.facts_deleted));
+                output.push_str(&format!("  Entities (orphaned): {} {}\n", mode.to_lowercase(), result.entities_deleted));
+                output.push_str(&format!("  Total items: {}", result.total_deleted()));
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to purge memo: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Event tools (Atlas event history)
     // -------------------------------------------------------------------------
@@ -2481,6 +2521,48 @@ impl McpServer for MemexMcpServer {
             }
             Err(e) => {
                 let msg = format!("Failed to delete record: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Completely purge a record and ALL derived data
+    ///
+    /// This is a complete removal operation for sensitive information. Unlike delete_record
+    /// (which soft-deletes), this HARD deletes and removes ALL traces including:
+    /// - The record itself (permanent deletion)
+    /// - All events with source_record pointing to this record
+    /// - All facts extracted from this record
+    /// - Orphaned entities (entities only sourced from this record)
+    /// - All edges to/from this record
+    ///
+    /// Use this when sensitive information (PII, credentials, confidential data) was
+    /// accidentally recorded and must be completely removed.
+    ///
+    /// **WARNING**: This operation is irreversible.
+    #[tool]
+    async fn purge_record(
+        &self,
+        /// Record ID to purge
+        id: String,
+        /// If true, only preview what would be deleted without actually deleting
+        dry_run: Option<bool>,
+    ) -> mcp_attr::Result<String> {
+        let dry_run = dry_run.unwrap_or(false);
+        match self.record_client.purge_record(&id, dry_run).await {
+            Ok(result) => {
+                let mode = if dry_run { "Would delete" } else { "Deleted" };
+                let mut output = format!("Purge {} for record: {}\n", if dry_run { "preview" } else { "complete" }, id);
+                output.push_str(&format!("  Record: {}\n", if result.source_deleted { mode } else { "not found" }));
+                output.push_str(&format!("  Events: {} {}\n", mode.to_lowercase(), result.events_deleted));
+                output.push_str(&format!("  Facts: {} {}\n", mode.to_lowercase(), result.facts_deleted));
+                output.push_str(&format!("  Entities (orphaned): {} {}\n", mode.to_lowercase(), result.entities_deleted));
+                output.push_str(&format!("  Edges: {} {}\n", mode.to_lowercase(), result.edges_deleted));
+                output.push_str(&format!("  Total items: {}", result.total_deleted()));
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to purge record: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
             }
         }

@@ -578,4 +578,194 @@ impl Store {
 
         Ok(true)
     }
+
+    // ========== Purge Operations ==========
+    //
+    // These operations support complete data purge for tasks with sensitive information.
+    // Unlike normal deletes, purge removes ALL traces including related notes and dependencies.
+
+    /// Purge a task completely - removes task, notes, and dependencies
+    ///
+    /// This is the same as delete_task but returns more detailed info about what was deleted.
+    /// Use this when you need to track exactly what was removed.
+    pub async fn purge_task(&self, id: &TaskId) -> Result<TaskPurgeResult> {
+        // Count notes before deletion
+        let mut response = self
+            .db
+            .client()
+            .query("SELECT count() FROM task_note WHERE task_id = $task_id GROUP ALL")
+            .bind(("task_id", Thing::from(("task", id.as_str()))))
+            .await
+            .context("Failed to count task notes")?;
+
+        let note_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let notes_deleted = note_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Count dependencies before deletion
+        let mut response = self
+            .db
+            .client()
+            .query("SELECT count() FROM task_dependency WHERE from_task = $task_id OR to_task = $task_id GROUP ALL")
+            .bind(("task_id", Thing::from(("task", id.as_str()))))
+            .await
+            .context("Failed to count task dependencies")?;
+
+        let dep_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let dependencies_deleted = dep_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Delete related notes
+        self.db
+            .client()
+            .query("DELETE FROM task_note WHERE task_id = $task_id")
+            .bind(("task_id", Thing::from(("task", id.as_str()))))
+            .await
+            .context("Failed to delete task notes")?;
+
+        // Delete dependencies
+        self.db
+            .client()
+            .query("DELETE FROM task_dependency WHERE from_task = $task_id OR to_task = $task_id")
+            .bind(("task_id", Thing::from(("task", id.as_str()))))
+            .await
+            .context("Failed to delete task dependencies")?;
+
+        // Delete the task itself
+        let deleted: Option<Task> = self
+            .db
+            .client()
+            .delete(("task", id.as_str()))
+            .await
+            .context("Failed to delete task")?;
+
+        Ok(TaskPurgeResult {
+            task_id: id.to_string(),
+            task_deleted: deleted.is_some(),
+            notes_deleted,
+            dependencies_deleted,
+        })
+    }
+
+    /// Preview what would be purged for a task
+    pub async fn preview_purge_task(&self, id: &TaskId) -> Result<TaskPurgeResult> {
+        // Count notes
+        let mut response = self
+            .db
+            .client()
+            .query("SELECT count() FROM task_note WHERE task_id = $task_id GROUP ALL")
+            .bind(("task_id", Thing::from(("task", id.as_str()))))
+            .await
+            .context("Failed to count task notes")?;
+
+        let note_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let notes_deleted = note_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Count dependencies
+        let mut response = self
+            .db
+            .client()
+            .query("SELECT count() FROM task_dependency WHERE from_task = $task_id OR to_task = $task_id GROUP ALL")
+            .bind(("task_id", Thing::from(("task", id.as_str()))))
+            .await
+            .context("Failed to count task dependencies")?;
+
+        let dep_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let dependencies_deleted = dep_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Check if task exists
+        let task = self.get_task(id).await?;
+
+        Ok(TaskPurgeResult {
+            task_id: id.to_string(),
+            task_deleted: task.is_some(),
+            notes_deleted,
+            dependencies_deleted,
+        })
+    }
+}
+
+/// Result of a task purge operation
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TaskPurgeResult {
+    /// ID of the task being purged
+    pub task_id: String,
+    /// Whether the task was found and deleted
+    pub task_deleted: bool,
+    /// Number of notes deleted
+    pub notes_deleted: usize,
+    /// Number of dependencies deleted
+    pub dependencies_deleted: usize,
+}
+
+impl TaskPurgeResult {
+    /// Returns true if anything was actually deleted
+    pub fn any_deleted(&self) -> bool {
+        self.task_deleted || self.notes_deleted > 0 || self.dependencies_deleted > 0
+    }
+
+    /// Total count of items deleted
+    pub fn total_deleted(&self) -> usize {
+        let task = if self.task_deleted { 1 } else { 0 };
+        task + self.notes_deleted + self.dependencies_deleted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_purge_result_any_deleted() {
+        let empty = TaskPurgeResult {
+            task_id: "test".to_string(),
+            task_deleted: false,
+            notes_deleted: 0,
+            dependencies_deleted: 0,
+        };
+        assert!(!empty.any_deleted());
+
+        let with_task = TaskPurgeResult {
+            task_deleted: true,
+            ..empty.clone()
+        };
+        assert!(with_task.any_deleted());
+
+        let with_notes = TaskPurgeResult {
+            notes_deleted: 3,
+            ..empty.clone()
+        };
+        assert!(with_notes.any_deleted());
+
+        let with_deps = TaskPurgeResult {
+            dependencies_deleted: 2,
+            ..empty.clone()
+        };
+        assert!(with_deps.any_deleted());
+    }
+
+    #[test]
+    fn test_task_purge_result_total_deleted() {
+        let result = TaskPurgeResult {
+            task_id: "test".to_string(),
+            task_deleted: true,
+            notes_deleted: 3,
+            dependencies_deleted: 2,
+        };
+        // 1 (task) + 3 (notes) + 2 (deps) = 6
+        assert_eq!(result.total_deleted(), 6);
+
+        let result_no_task = TaskPurgeResult {
+            task_deleted: false,
+            ..result.clone()
+        };
+        // 0 (task) + 3 (notes) + 2 (deps) = 5
+        assert_eq!(result_no_task.total_deleted(), 5);
+    }
 }

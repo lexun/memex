@@ -2697,6 +2697,493 @@ impl Store {
 
         Ok(())
     }
+
+    // ========== Purge Operations ==========
+    //
+    // These operations support complete data purge for sensitive information.
+    // Unlike normal deletes, purge removes ALL traces including:
+    // - The source record (memo, task, etc.)
+    // - All events with source_record matching the purged record
+    // - All facts derived from the source (via source_episodes)
+    // - All fact_entity links for those facts
+    // - Orphaned entities (entities with no remaining source_episodes)
+    // - All record edges involving the purged record
+
+    /// Delete an event by ID (hard delete)
+    ///
+    /// This breaks the immutability of events, but is necessary for data purge
+    /// when sensitive information was accidentally recorded.
+    pub async fn delete_event(&self, id: &str) -> Result<Option<crate::event::Event>> {
+        let deleted: Option<crate::event::Event> = self
+            .db
+            .client()
+            .delete(("event", id))
+            .await
+            .context("Failed to delete event")?;
+
+        Ok(deleted)
+    }
+
+    /// Delete all events with a specific source_record
+    ///
+    /// Returns the number of events deleted.
+    pub async fn delete_events_by_source(&self, source_record: &str) -> Result<usize> {
+        // First count how many will be deleted
+        let count_sql = "SELECT count() FROM event WHERE source_record = $source GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(count_sql)
+            .bind(("source", source_record.to_string()))
+            .await
+            .context("Failed to count events")?;
+
+        let count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let count = count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Delete the events
+        self.db
+            .client()
+            .query("DELETE FROM event WHERE source_record = $source")
+            .bind(("source", source_record.to_string()))
+            .await
+            .context("Failed to delete events by source")?;
+
+        Ok(count)
+    }
+
+    /// Delete a fact by ID (hard delete)
+    pub async fn delete_fact(&self, id: &str) -> Result<Option<crate::fact::Fact>> {
+        // First delete fact_entity links
+        self.db
+            .client()
+            .query("DELETE FROM fact_entity WHERE fact = type::thing('fact', $id)")
+            .bind(("id", id.to_string()))
+            .await
+            .context("Failed to delete fact_entity links")?;
+
+        // Then delete the fact
+        let deleted: Option<crate::fact::Fact> = self
+            .db
+            .client()
+            .delete(("fact", id))
+            .await
+            .context("Failed to delete fact")?;
+
+        Ok(deleted)
+    }
+
+    /// Delete all facts with a specific source episode
+    ///
+    /// Returns the number of facts deleted.
+    pub async fn delete_facts_by_source_episode(
+        &self,
+        episode_type: &str,
+        episode_id: &str,
+    ) -> Result<usize> {
+        // Find facts with this source episode
+        let sql = r#"
+            SELECT * FROM fact WHERE source_episodes CONTAINS {
+                episode_type: $episode_type,
+                episode_id: $episode_id
+            }
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("episode_type", episode_type.to_string()))
+            .bind(("episode_id", episode_id.to_string()))
+            .await
+            .context("Failed to find facts by source episode")?;
+
+        let facts: Vec<crate::fact::Fact> = response.take(0).unwrap_or_default();
+        let count = facts.len();
+
+        // Delete each fact (including their fact_entity links)
+        for fact in facts {
+            if let Some(id) = fact.id.as_ref().map(|t| t.id.to_raw()) {
+                self.delete_fact(&id).await?;
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Delete an entity by ID (hard delete)
+    pub async fn delete_entity(&self, id: &str) -> Result<Option<crate::fact::Entity>> {
+        // First delete fact_entity links
+        self.db
+            .client()
+            .query("DELETE FROM fact_entity WHERE entity = type::thing('entity', $id)")
+            .bind(("id", id.to_string()))
+            .await
+            .context("Failed to delete fact_entity links for entity")?;
+
+        // Then delete the entity
+        let deleted: Option<crate::fact::Entity> = self
+            .db
+            .client()
+            .delete(("entity", id))
+            .await
+            .context("Failed to delete entity")?;
+
+        Ok(deleted)
+    }
+
+    /// Delete entities that have no remaining source episodes after purge
+    ///
+    /// Returns the number of entities deleted.
+    pub async fn delete_orphaned_entities(&self, purged_episode_type: &str, purged_episode_id: &str) -> Result<usize> {
+        // Find entities that ONLY have the purged episode as their source
+        // This is conservative - we only delete if they would have NO sources left
+        let sql = r#"
+            SELECT * FROM entity WHERE array::len(source_episodes) = 1
+            AND source_episodes[0].episode_type = $episode_type
+            AND source_episodes[0].episode_id = $episode_id
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("episode_type", purged_episode_type.to_string()))
+            .bind(("episode_id", purged_episode_id.to_string()))
+            .await
+            .context("Failed to find orphaned entities")?;
+
+        let entities: Vec<crate::fact::Entity> = response.take(0).unwrap_or_default();
+        let count = entities.len();
+
+        // Delete each orphaned entity
+        for entity in entities {
+            if let Some(id) = entity.id.as_ref().map(|t| t.id.to_raw()) {
+                self.delete_entity(&id).await?;
+            }
+        }
+
+        // Also remove the source episode from entities that have multiple sources
+        let update_sql = r#"
+            UPDATE entity SET
+                source_episodes = array::filter(source_episodes, |$ep|
+                    $ep.episode_type != $episode_type OR $ep.episode_id != $episode_id
+                ),
+                updated_at = time::now()
+            WHERE array::len(source_episodes) > 1
+            AND source_episodes CONTAINS {
+                episode_type: $episode_type,
+                episode_id: $episode_id
+            }
+        "#;
+
+        let _ = self
+            .db
+            .client()
+            .query(update_sql)
+            .bind(("episode_type", purged_episode_type.to_string()))
+            .bind(("episode_id", purged_episode_id.to_string()))
+            .await;
+
+        Ok(count)
+    }
+
+    /// Hard delete a record and all its edges
+    pub async fn hard_delete_record(&self, id: &str) -> Result<Option<crate::record::Record>> {
+        // Delete all edges from/to this record
+        self.db
+            .client()
+            .query("DELETE FROM record_edge WHERE source = type::thing('record', $id) OR target = type::thing('record', $id)")
+            .bind(("id", id.to_string()))
+            .await
+            .context("Failed to delete record edges")?;
+
+        // Hard delete the record
+        let deleted: Option<crate::record::Record> = self
+            .db
+            .client()
+            .delete(("record", id))
+            .await
+            .context("Failed to hard delete record")?;
+
+        Ok(deleted)
+    }
+
+    /// Purge a memo and all derived data
+    ///
+    /// This completely removes:
+    /// - The memo itself
+    /// - All events with source_record = "memo:{id}"
+    /// - All facts with source_episodes containing this memo
+    /// - All fact_entity links for those facts
+    /// - Orphaned entities (only sourced from this memo)
+    ///
+    /// Returns a summary of what was deleted.
+    pub async fn purge_memo(&self, memo_id: &str) -> Result<PurgeResult> {
+        let source_record = format!("memo:{}", memo_id);
+
+        // 1. Delete events with this source_record
+        let events_deleted = self.delete_events_by_source(&source_record).await?;
+
+        // 2. Delete facts with this memo as source episode
+        let facts_deleted = self.delete_facts_by_source_episode("memo", memo_id).await?;
+
+        // 3. Delete orphaned entities
+        let entities_deleted = self.delete_orphaned_entities("memo", memo_id).await?;
+
+        // 4. Delete the memo itself
+        let memo = self.delete_memo(memo_id).await?;
+
+        Ok(PurgeResult {
+            source_type: "memo".to_string(),
+            source_id: memo_id.to_string(),
+            source_deleted: memo.is_some(),
+            events_deleted,
+            facts_deleted,
+            entities_deleted,
+            records_deleted: 0,
+            edges_deleted: 0,
+        })
+    }
+
+    /// Purge a record and all related data (for records that generated events/facts)
+    ///
+    /// This is used for records like tasks that may have events and derived facts.
+    pub async fn purge_record(&self, record_id: &str) -> Result<PurgeResult> {
+        let source_record = format!("record:{}", record_id);
+
+        // 1. Delete events with this source_record
+        let events_deleted = self.delete_events_by_source(&source_record).await?;
+
+        // 2. Delete facts with this record as source episode
+        let facts_deleted = self.delete_facts_by_source_episode("record", record_id).await?;
+
+        // 3. Delete orphaned entities
+        let entities_deleted = self.delete_orphaned_entities("record", record_id).await?;
+
+        // 4. Count edges before deletion
+        let edge_count_sql = "SELECT count() FROM record_edge WHERE source = type::thing('record', $id) OR target = type::thing('record', $id) GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(edge_count_sql)
+            .bind(("id", record_id.to_string()))
+            .await
+            .context("Failed to count edges")?;
+        let edge_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let edges_deleted = edge_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // 5. Hard delete the record and edges
+        let record = self.hard_delete_record(record_id).await?;
+
+        Ok(PurgeResult {
+            source_type: "record".to_string(),
+            source_id: record_id.to_string(),
+            source_deleted: record.is_some(),
+            events_deleted,
+            facts_deleted,
+            entities_deleted,
+            records_deleted: if record.is_some() { 1 } else { 0 },
+            edges_deleted,
+        })
+    }
+
+    /// Preview what would be purged without actually deleting
+    ///
+    /// Returns a PurgeResult with counts of what would be affected.
+    pub async fn preview_purge_memo(&self, memo_id: &str) -> Result<PurgeResult> {
+        let source_record = format!("memo:{}", memo_id);
+
+        // Count events
+        let event_sql = "SELECT count() FROM event WHERE source_record = $source GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(event_sql)
+            .bind(("source", source_record.clone()))
+            .await?;
+        let event_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let events_deleted = event_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Count facts
+        let fact_sql = r#"
+            SELECT count() FROM fact WHERE source_episodes CONTAINS {
+                episode_type: 'memo',
+                episode_id: $id
+            } GROUP ALL
+        "#;
+        let mut response = self
+            .db
+            .client()
+            .query(fact_sql)
+            .bind(("id", memo_id.to_string()))
+            .await?;
+        let fact_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let facts_deleted = fact_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Count orphaned entities
+        let entity_sql = r#"
+            SELECT count() FROM entity WHERE array::len(source_episodes) = 1
+            AND source_episodes[0].episode_type = 'memo'
+            AND source_episodes[0].episode_id = $id GROUP ALL
+        "#;
+        let mut response = self
+            .db
+            .client()
+            .query(entity_sql)
+            .bind(("id", memo_id.to_string()))
+            .await?;
+        let entity_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let entities_deleted = entity_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Check if memo exists
+        let memo = self.get_memo(memo_id).await?;
+
+        Ok(PurgeResult {
+            source_type: "memo".to_string(),
+            source_id: memo_id.to_string(),
+            source_deleted: memo.is_some(),
+            events_deleted,
+            facts_deleted,
+            entities_deleted,
+            records_deleted: 0,
+            edges_deleted: 0,
+        })
+    }
+
+    /// Preview what would be purged for a record
+    pub async fn preview_purge_record(&self, record_id: &str) -> Result<PurgeResult> {
+        let source_record = format!("record:{}", record_id);
+
+        // Count events
+        let event_sql = "SELECT count() FROM event WHERE source_record = $source GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(event_sql)
+            .bind(("source", source_record.clone()))
+            .await?;
+        let event_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let events_deleted = event_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Count facts
+        let fact_sql = r#"
+            SELECT count() FROM fact WHERE source_episodes CONTAINS {
+                episode_type: 'record',
+                episode_id: $id
+            } GROUP ALL
+        "#;
+        let mut response = self
+            .db
+            .client()
+            .query(fact_sql)
+            .bind(("id", record_id.to_string()))
+            .await?;
+        let fact_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let facts_deleted = fact_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Count orphaned entities
+        let entity_sql = r#"
+            SELECT count() FROM entity WHERE array::len(source_episodes) = 1
+            AND source_episodes[0].episode_type = 'record'
+            AND source_episodes[0].episode_id = $id GROUP ALL
+        "#;
+        let mut response = self
+            .db
+            .client()
+            .query(entity_sql)
+            .bind(("id", record_id.to_string()))
+            .await?;
+        let entity_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let entities_deleted = entity_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Count edges
+        let edge_sql = "SELECT count() FROM record_edge WHERE source = type::thing('record', $id) OR target = type::thing('record', $id) GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(edge_sql)
+            .bind(("id", record_id.to_string()))
+            .await?;
+        let edge_count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let edges_deleted = edge_count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        // Check if record exists
+        let record = self.get_record(record_id).await?;
+
+        Ok(PurgeResult {
+            source_type: "record".to_string(),
+            source_id: record_id.to_string(),
+            source_deleted: record.is_some(),
+            events_deleted,
+            facts_deleted,
+            entities_deleted,
+            records_deleted: if record.is_some() { 1 } else { 0 },
+            edges_deleted,
+        })
+    }
+}
+
+/// Result of a purge operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PurgeResult {
+    /// Type of the source being purged (memo, record, task)
+    pub source_type: String,
+    /// ID of the source being purged
+    pub source_id: String,
+    /// Whether the source record was found and deleted
+    pub source_deleted: bool,
+    /// Number of events deleted
+    pub events_deleted: usize,
+    /// Number of facts deleted
+    pub facts_deleted: usize,
+    /// Number of entities deleted (orphaned only)
+    pub entities_deleted: usize,
+    /// Number of records deleted
+    pub records_deleted: usize,
+    /// Number of edges deleted
+    pub edges_deleted: usize,
+}
+
+impl PurgeResult {
+    /// Returns true if anything was actually deleted
+    pub fn any_deleted(&self) -> bool {
+        self.source_deleted
+            || self.events_deleted > 0
+            || self.facts_deleted > 0
+            || self.entities_deleted > 0
+            || self.records_deleted > 0
+            || self.edges_deleted > 0
+    }
+
+    /// Total count of items deleted
+    pub fn total_deleted(&self) -> usize {
+        let source = if self.source_deleted { 1 } else { 0 };
+        source
+            + self.events_deleted
+            + self.facts_deleted
+            + self.entities_deleted
+            + self.records_deleted
+            + self.edges_deleted
+    }
 }
 
 #[cfg(test)]
@@ -2829,6 +3316,62 @@ mod tests {
         println!("Cleaned up test task and note");
 
         Ok(())
+    }
+
+    #[test]
+    fn test_purge_result_any_deleted() {
+        let empty = PurgeResult {
+            source_type: "memo".to_string(),
+            source_id: "test".to_string(),
+            source_deleted: false,
+            events_deleted: 0,
+            facts_deleted: 0,
+            entities_deleted: 0,
+            records_deleted: 0,
+            edges_deleted: 0,
+        };
+        assert!(!empty.any_deleted());
+
+        let with_source = PurgeResult {
+            source_deleted: true,
+            ..empty.clone()
+        };
+        assert!(with_source.any_deleted());
+
+        let with_events = PurgeResult {
+            events_deleted: 5,
+            ..empty.clone()
+        };
+        assert!(with_events.any_deleted());
+
+        let with_facts = PurgeResult {
+            facts_deleted: 3,
+            ..empty.clone()
+        };
+        assert!(with_facts.any_deleted());
+    }
+
+    #[test]
+    fn test_purge_result_total_deleted() {
+        let result = PurgeResult {
+            source_type: "memo".to_string(),
+            source_id: "test".to_string(),
+            source_deleted: true,
+            events_deleted: 2,
+            facts_deleted: 3,
+            entities_deleted: 1,
+            records_deleted: 0,
+            edges_deleted: 0,
+        };
+        // 1 (source) + 2 (events) + 3 (facts) + 1 (entities) = 7
+        assert_eq!(result.total_deleted(), 7);
+
+        let result_no_source = PurgeResult {
+            source_deleted: false,
+            ..result.clone()
+        };
+        // 0 (source) + 2 (events) + 3 (facts) + 1 (entities) = 6
+        assert_eq!(result_no_source.total_deleted(), 6);
     }
 }
 
