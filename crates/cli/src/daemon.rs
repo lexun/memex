@@ -3798,8 +3798,25 @@ async fn handle_cortex_dispatch_task(
         tracing::warn!("Failed to update task status: {}", e);
     }
 
-    // Note: We don't send an initial message here - that would block waiting for Claude.
-    // The caller should use cortex_send_message or cortex_send_message_async to start the worker.
+    // 9. Send initial message to worker asynchronously to start work
+    let worker_id_for_msg = worker_id.clone();
+    let stores_for_msg = Arc::clone(stores);
+    tokio::spawn(async move {
+        let message = "Begin work on your assigned task.";
+        match stores_for_msg.workers.send_message(&worker_id_for_msg, message).await {
+            Ok(response) => {
+                // Persist session_id after initial message
+                if let Some(ref session_id) = response.session_id {
+                    if let Err(e) = stores_for_msg.forge.update_worker_session(&worker_id_for_msg.0, Some(session_id)).await {
+                        tracing::warn!("Failed to update worker session in DB: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to send initial message to worker {}: {}", worker_id_for_msg.0, e);
+            }
+        }
+    });
 
     Ok(json!({
         "worker_id": worker_id.0,
@@ -4123,9 +4140,29 @@ async fn dispatch_single_task(
         tracing::warn!("Failed to update task status: {}", e);
     }
 
+    // 9. Send initial message to worker asynchronously to start work
+    let worker_id_for_msg = worker_id.clone();
+    let stores_for_msg = Arc::clone(stores);
+    tokio::spawn(async move {
+        let message = "Begin work on your assigned task.";
+        match stores_for_msg.workers.send_message(&worker_id_for_msg, message).await {
+            Ok(response) => {
+                // Persist session_id after initial message
+                if let Some(ref session_id) = response.session_id {
+                    if let Err(e) = stores_for_msg.forge.update_worker_session(&worker_id_for_msg.0, Some(session_id)).await {
+                        tracing::warn!("Failed to update worker session in DB: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to send initial message to worker {}: {}", worker_id_for_msg.0, e);
+            }
+        }
+    });
+
     Ok(DispatchedWorkerResult {
         task_id: task_id.to_string(),
-        worker_id: Some(worker_id.0),
+        worker_id: Some(worker_id.0.clone()),
         worktree: Some(worktree_path),
         context_from: context_record_id,
         success: true,
