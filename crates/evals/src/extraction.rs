@@ -70,6 +70,12 @@ pub struct ExpectedOutput {
     pub records: Vec<ExpectedRecord>,
     #[serde(default)]
     pub edges: Vec<ExpectedEdge>,
+    /// Records that should NOT be extracted (quality gate)
+    #[serde(default)]
+    pub not_present: Vec<NotExpectedRecord>,
+    /// Constraints on extraction results
+    #[serde(default)]
+    pub constraints: Vec<ExtractionConstraint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +85,45 @@ pub struct ExpectedRecord {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// If true, this record is optional - not finding it doesn't hurt recall
+    #[serde(default)]
+    pub optional: bool,
+}
+
+/// A record that should NOT be extracted
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotExpectedRecord {
+    /// Record type to check (optional - if not set, checks all types)
+    #[serde(rename = "type")]
+    pub record_type: Option<String>,
+    /// Exact name match (mutually exclusive with name_contains)
+    pub name: Option<String>,
+    /// Substring match for name
+    pub name_contains: Option<String>,
+    /// Why this shouldn't be extracted (for reporting)
+    pub reason: String,
+}
+
+/// A constraint on extraction results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExtractionConstraint {
+    /// Maximum count of records matching a pattern
+    MaxCount {
+        record_type: String,
+        #[serde(default)]
+        name_pattern: Option<String>,
+        max: usize,
+        reason: String,
+    },
+    /// Minimum count of records matching a pattern
+    MinCount {
+        record_type: String,
+        #[serde(default)]
+        name_pattern: Option<String>,
+        min: usize,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +166,29 @@ pub struct ExtractionTestResult {
     /// Legacy accuracy metrics (recall)
     pub record_accuracy: f64,
     pub edge_accuracy: f64,
+    /// Records that were extracted but shouldn't have been (not_present violations)
+    #[serde(default)]
+    pub forbidden_records: Vec<ForbiddenRecordViolation>,
+    /// Constraint violations
+    #[serde(default)]
+    pub constraint_violations: Vec<ConstraintViolation>,
+}
+
+/// A violation of a not_present rule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForbiddenRecordViolation {
+    pub record_type: String,
+    pub record_name: String,
+    pub reason: String,
+}
+
+/// A violation of an extraction constraint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintViolation {
+    pub constraint_type: String,
+    pub actual: usize,
+    pub expected: String,
+    pub reason: String,
 }
 
 impl ExtractionTest {
@@ -138,10 +206,13 @@ impl ExtractionTest {
         extracted_records: &[ExtractedRecord],
         extracted_edges: &[ExtractedEdge],
     ) -> ExtractionTestResult {
+        // Filter out optional records for recall calculation
+        let required_records: Vec<_> = self.expected.records.iter()
+            .filter(|r| !r.optional)
+            .collect();
+
         // Build sets for comparison (normalized to lowercase for fuzzy matching)
-        let expected_set: HashSet<(String, String)> = self
-            .expected
-            .records
+        let expected_set: HashSet<(String, String)> = required_records
             .iter()
             .map(|r| (r.record_type.to_lowercase(), r.name.to_lowercase()))
             .collect();
@@ -161,6 +232,12 @@ impl ExtractionTest {
             .difference(&expected_set)
             .map(|(t, n)| format!("{}:{}", t, n))
             .collect();
+
+        // Check for forbidden records (not_present violations)
+        let forbidden_records = self.check_forbidden_records(extracted_records);
+
+        // Check constraints
+        let constraint_violations = self.check_constraints(extracted_records);
 
         // Build edge comparison (by name references)
         let expected_edges: HashSet<(String, String, String)> = self
@@ -186,16 +263,20 @@ impl ExtractionTest {
             .collect();
 
         // Calculate precision, recall, F1 for records
-        let record_precision = if extracted_records.is_empty() {
+        // Forbidden records count against precision
+        let effective_extracted = extracted_records.len();
+        let effective_correct = matched.len().saturating_sub(forbidden_records.len());
+
+        let record_precision = if effective_extracted == 0 {
             1.0 // No false positives if nothing extracted
         } else {
-            matched.len() as f64 / extracted_records.len() as f64
+            effective_correct as f64 / effective_extracted as f64
         };
 
-        let record_recall = if self.expected.records.is_empty() {
+        let record_recall = if required_records.is_empty() {
             1.0
         } else {
-            matched.len() as f64 / self.expected.records.len() as f64
+            matched.len() as f64 / required_records.len() as f64
         };
 
         let record_f1 = if record_precision + record_recall == 0.0 {
@@ -228,7 +309,7 @@ impl ExtractionTest {
             category: self.meta.category,
             difficulty: self.meta.difficulty,
             memos_recorded: self.memos.len(),
-            records_expected: self.expected.records.len(),
+            records_expected: required_records.len(),
             records_extracted: extracted_records.len(),
             records_matched: matched.len(),
             records_missing: missing,
@@ -246,7 +327,95 @@ impl ExtractionTest {
             // Legacy: accuracy = recall
             record_accuracy: record_recall,
             edge_accuracy: edge_recall,
+            forbidden_records,
+            constraint_violations,
         }
+    }
+
+    /// Check for records that shouldn't have been extracted
+    fn check_forbidden_records(&self, extracted: &[ExtractedRecord]) -> Vec<ForbiddenRecordViolation> {
+        let mut violations = Vec::new();
+
+        for forbidden in &self.expected.not_present {
+            for record in extracted {
+                let type_matches = forbidden.record_type.as_ref()
+                    .map(|t| t.to_lowercase() == record.record_type.to_lowercase())
+                    .unwrap_or(true);
+
+                if !type_matches {
+                    continue;
+                }
+
+                let name_matches = if let Some(exact) = &forbidden.name {
+                    exact.to_lowercase() == record.name.to_lowercase()
+                } else if let Some(contains) = &forbidden.name_contains {
+                    record.name.to_lowercase().contains(&contains.to_lowercase())
+                } else {
+                    false
+                };
+
+                if name_matches {
+                    violations.push(ForbiddenRecordViolation {
+                        record_type: record.record_type.clone(),
+                        record_name: record.name.clone(),
+                        reason: forbidden.reason.clone(),
+                    });
+                }
+            }
+        }
+
+        violations
+    }
+
+    /// Check extraction constraints
+    fn check_constraints(&self, extracted: &[ExtractedRecord]) -> Vec<ConstraintViolation> {
+        let mut violations = Vec::new();
+
+        for constraint in &self.expected.constraints {
+            match constraint {
+                ExtractionConstraint::MaxCount { record_type, name_pattern, max, reason } => {
+                    let count = self.count_matching(extracted, record_type, name_pattern.as_deref());
+                    if count > *max {
+                        violations.push(ConstraintViolation {
+                            constraint_type: "max_count".to_string(),
+                            actual: count,
+                            expected: format!("<= {}", max),
+                            reason: reason.clone(),
+                        });
+                    }
+                }
+                ExtractionConstraint::MinCount { record_type, name_pattern, min, reason } => {
+                    let count = self.count_matching(extracted, record_type, name_pattern.as_deref());
+                    if count < *min {
+                        violations.push(ConstraintViolation {
+                            constraint_type: "min_count".to_string(),
+                            actual: count,
+                            expected: format!(">= {}", min),
+                            reason: reason.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        violations
+    }
+
+    /// Count records matching a type and optional name pattern
+    fn count_matching(&self, extracted: &[ExtractedRecord], record_type: &str, name_pattern: Option<&str>) -> usize {
+        extracted.iter().filter(|r| {
+            if r.record_type.to_lowercase() != record_type.to_lowercase() {
+                return false;
+            }
+            if let Some(pattern) = name_pattern {
+                // Simple glob-style matching: just check if contains for now
+                // Could use regex crate for full pattern support
+                let pattern_lower = pattern.to_lowercase().replace(".*", "");
+                r.name.to_lowercase().contains(&pattern_lower)
+            } else {
+                true
+            }
+        }).count()
     }
 }
 
@@ -268,6 +437,11 @@ pub struct ExtractedEdge {
 impl ExtractionTestResult {
     /// Check if this test passed based on category-specific thresholds
     pub fn passed(&self) -> bool {
+        // Any forbidden record or constraint violation = automatic fail
+        if !self.forbidden_records.is_empty() || !self.constraint_violations.is_empty() {
+            return false;
+        }
+
         match self.category {
             TestCategory::Strong | TestCategory::Regression => {
                 // Strong/regression tests should achieve high accuracy
@@ -278,6 +452,11 @@ impl ExtractionTestResult {
                 self.record_f1 >= 0.5 && self.edge_f1 >= 0.4
             }
         }
+    }
+
+    /// Check if there are any quality violations (forbidden records or constraints)
+    pub fn has_violations(&self) -> bool {
+        !self.forbidden_records.is_empty() || !self.constraint_violations.is_empty()
     }
 
     /// Print a summary of the test results
@@ -346,10 +525,30 @@ impl ExtractionTestResult {
             }
         }
 
+        // Print quality violations
+        if !self.forbidden_records.is_empty() {
+            println!();
+            println!("⚠️  FORBIDDEN RECORDS (quality violations):");
+            for v in &self.forbidden_records {
+                println!("    - {}:{} - {}", v.record_type, v.record_name, v.reason);
+            }
+        }
+
+        if !self.constraint_violations.is_empty() {
+            println!();
+            println!("⚠️  CONSTRAINT VIOLATIONS:");
+            for v in &self.constraint_violations {
+                println!("    - {} (actual: {}, expected: {}) - {}",
+                    v.constraint_type, v.actual, v.expected, v.reason);
+            }
+        }
+
         println!();
         let status = if self.passed() { "PASS" } else { "FAIL" };
-        println!("[{}] Record F1: {:.1}%, Edge F1: {:.1}%",
+        let violation_note = if self.has_violations() { " [VIOLATIONS]" } else { "" };
+        println!("[{}]{} Record F1: {:.1}%, Edge F1: {:.1}%",
             status,
+            violation_note,
             self.record_f1 * 100.0,
             self.edge_f1 * 100.0
         );
@@ -358,9 +557,16 @@ impl ExtractionTestResult {
     /// Generate a compact one-line summary
     pub fn one_line_summary(&self) -> String {
         let status = if self.passed() { "PASS" } else { "FAIL" };
+        let violation_count = self.forbidden_records.len() + self.constraint_violations.len();
+        let violation_note = if violation_count > 0 {
+            format!(" [{}v]", violation_count)
+        } else {
+            String::new()
+        };
         format!(
-            "[{}] {} - Records: {:.0}% F1, Edges: {:.0}% F1",
+            "[{}]{} {} - Records: {:.0}% F1, Edges: {:.0}% F1",
             status,
+            violation_note,
             self.test_name,
             self.record_f1 * 100.0,
             self.edge_f1 * 100.0

@@ -1,0 +1,95 @@
+# Extraction Test: Task ID Noise Filtering
+#
+# Tests that extraction ignores internal identifiers like:
+# - Task IDs (task-abc123, w6wktiu2rrauyyoxjstg)
+# - Worker IDs (worker_xyz789)
+# - Record IDs (randomly generated strings)
+#
+# These should NOT become records - they're internal references,
+# not meaningful entities.
+#
+# QUALITY GATE: Precision test - IDs as records = major quality issue
+#
+# CATEGORY: Quality gate - prevents ID-as-entity errors
+# DIFFICULTY: Easy - clear pattern to reject
+
+[meta]
+name = "task_ids_noise"
+description = "Filters out internal IDs that shouldn't become records"
+category = "strong"
+difficulty = "easy"
+tags = ["precision", "noise-filtering", "ids"]
+
+# =============================================================================
+# EXPECTED RECORDS
+# Only meaningful entities should be extracted.
+# =============================================================================
+
+# =============================================================================
+# NOT EXPECTED (quality gates)
+# Internal IDs should NOT become records
+# =============================================================================
+
+[[expected.not_present]]
+name_contains = "task-"
+reason = "Task IDs should not become records"
+
+[[expected.not_present]]
+name_contains = "worker_"
+reason = "Worker IDs should not become records"
+
+[[expected.not_present]]
+name_contains = "8gft4wpb"
+reason = "Random alphanumeric ID fragments should not become records"
+
+[[expected.not_present]]
+name_contains = "lux2wt3a"
+reason = "Random alphanumeric ID fragments should not become records"
+
+[[expected.not_present]]
+name_contains = "rzyengxt"
+reason = "Random alphanumeric ID fragments should not become records"
+
+[[expected.not_present]]
+name_contains = "w6wktiu2"
+reason = "Random alphanumeric ID fragments should not become records"
+
+[[expected.records]]
+type = "repo"
+name = "memex"
+
+[[expected.records]]
+type = "person"
+name = "Elena"
+
+[[expected.records]]
+type = "technology"
+name = "Leptos"
+
+# =============================================================================
+# TEST MEMOS
+# Contains internal IDs mixed with real entity references
+# =============================================================================
+
+[[memos]]
+content = """
+Working on task-8gft4wpb3jx65jydq35c in the memex repo.
+This task is about migrating to Leptos for the web UI.
+
+Elena is assigned to this task.
+"""
+
+[[memos]]
+content = """
+Worker worker_xyz789 completed task-lux2wt3a1kunpoqhdony.
+
+The task was to audit the production database. Created a worktree
+at task-rzyengxt5i2amvazgmxh for the investigation.
+"""
+
+[[memos]]
+content = """
+Context for task w6wktiu2rrauyyoxjstg:
+The Leptos migration is progressing well. Elena pushed updates
+to the memex repo today.
+"""

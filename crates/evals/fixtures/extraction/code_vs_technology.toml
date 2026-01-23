@@ -1,0 +1,100 @@
+# Extraction Test: Code Constructs vs Technology
+#
+# Tests that extraction can distinguish between:
+# - External technologies (PostgreSQL, React, Rust) → technology records
+# - Internal code constructs (MessageType enum, send_message fn) → NOT records
+#
+# This is a common failure mode where gpt-4o-mini creates technology records
+# for internal function names, enum variants, and struct names.
+#
+# QUALITY GATE: Precision test - extra records indicate poor filtering
+# If precision < 50%, the extractor is creating junk records from code details.
+#
+# CATEGORY: Quality gate - prevents low-quality extractions
+# DIFFICULTY: Medium - requires understanding what's "internal" vs "external"
+
+[meta]
+name = "code_vs_technology"
+description = "Distinguishes external technologies from internal code constructs"
+category = "strong"
+difficulty = "medium"
+tags = ["precision", "technology", "code-filtering"]
+
+# =============================================================================
+# EXPECTED RECORDS
+# Only external technologies should become records
+# Internal code constructs (MessageType, send_message, MessageHandler, etc.)
+# should NOT appear - they will show as "extra" records and hurt precision.
+# =============================================================================
+
+[[expected.records]]
+type = "technology"
+name = "PostgreSQL"
+
+[[expected.records]]
+type = "technology"
+name = "React"
+
+[[expected.records]]
+type = "technology"
+name = "Rust"
+
+[[expected.records]]
+type = "repo"
+name = "messaging-service"
+
+# =============================================================================
+# NOT EXPECTED (quality gates)
+# These internal code constructs should NOT be extracted
+# =============================================================================
+
+[[expected.not_present]]
+type = "technology"
+name_contains = "MessageType"
+reason = "Internal enum, not an external technology"
+
+[[expected.not_present]]
+type = "technology"
+name_contains = "send_message"
+reason = "Internal function name, not an external technology"
+
+[[expected.not_present]]
+type = "technology"
+name_contains = "MessageHandler"
+reason = "Internal class/struct, not an external technology"
+
+[[expected.not_present]]
+type = "technology"
+name_contains = "check_messages"
+reason = "Internal function name, not an external technology"
+
+[[expected.not_present]]
+name_contains = "enum"
+reason = "Code construct keyword, not a meaningful entity"
+
+# =============================================================================
+# TEST MEMOS
+# Contains both external tech references and internal code details
+# =============================================================================
+
+[[memos]]
+content = """
+The messaging-service uses PostgreSQL for persistence and React for the UI.
+
+Implementation notes from today's work:
+- Added MessageType enum with variants: Text, Image, System
+- Created send_message() function to handle outgoing messages
+- The MessageHandler struct processes incoming messages
+- Added check_messages() for polling new messages
+"""
+
+[[memos]]
+content = """
+Tech stack for messaging-service:
+- Backend: Rust with Actix
+- Database: PostgreSQL
+- Frontend: React with TypeScript
+
+The codebase has good separation between the MessageType definitions
+and the actual message handling logic in MessageHandler.
+"""

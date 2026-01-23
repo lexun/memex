@@ -1,0 +1,124 @@
+# Extraction Test: Repositories vs File Paths
+#
+# Tests that extraction can distinguish between:
+# - Actual repositories (github.com/org/repo-name) → repo records
+# - File paths within repos (src/main.rs, .github/workflows/ci.yml) → NOT records
+# - Directories within repos (packages/, modules/) → NOT records
+#
+# This is a common failure mode where the LLM creates repo records for
+# individual files or directories mentioned in memos.
+#
+# QUALITY GATE: Precision test - extra repo records from paths = poor filtering
+#
+# CATEGORY: Quality gate - prevents path-as-repo errors
+# DIFFICULTY: Medium - requires understanding repo vs path semantics
+
+[meta]
+name = "repo_vs_paths"
+description = "Distinguishes actual repositories from file/directory paths"
+category = "strong"
+difficulty = "medium"
+tags = ["precision", "repo", "path-filtering"]
+
+# =============================================================================
+# EXPECTED RECORDS
+# Only actual repositories should become repo records.
+# =============================================================================
+
+# =============================================================================
+# NOT EXPECTED (quality gates)
+# File paths and directories should NOT be extracted as repos
+# =============================================================================
+
+[[expected.not_present]]
+type = "repo"
+name_contains = ".github"
+reason = "Directory path, not a repository"
+
+[[expected.not_present]]
+type = "repo"
+name_contains = ".yml"
+reason = "File extension indicates a file, not a repo"
+
+[[expected.not_present]]
+type = "repo"
+name_contains = ".nix"
+reason = "File extension indicates a file, not a repo"
+
+[[expected.not_present]]
+type = "repo"
+name_contains = "terraform/"
+reason = "Directory path with trailing slash, not a repo"
+
+[[expected.not_present]]
+type = "repo"
+name_contains = "modules/"
+reason = "Directory path, not a repo"
+
+[[expected.not_present]]
+type = "repo"
+name_contains = "packages/"
+reason = "Directory path, not a repo"
+
+[[expected.not_present]]
+type = "repo"
+name_contains = "crates/"
+reason = "Directory path within repo, not a repo itself"
+
+[[expected.not_present]]
+type = "repo"
+name_contains = ".rs"
+reason = "File extension indicates a source file, not a repo"
+
+[[expected.records]]
+type = "repo"
+name = "infra"
+
+[[expected.records]]
+type = "repo"
+name = "memex"
+
+[[expected.records]]
+type = "technology"
+name = "OpenTofu"
+
+[[expected.records]]
+type = "technology"
+name = "GitHub Actions"
+
+# =============================================================================
+# TEST MEMOS
+# Contains both repo references and file/directory paths
+# =============================================================================
+
+[[memos]]
+content = """
+The infra repository contains our infrastructure-as-code. Key components:
+
+- terraform/ directory has OpenTofu configurations for DigitalOcean
+- .github/workflows/build-image.yml handles CI for NixOS images
+- flake.nix defines the development environment
+
+The repo uses OpenTofu (not Terraform) for all cloud provisioning.
+"""
+
+[[memos]]
+content = """
+In the memex repository, the structure is:
+
+- crates/atlas/src/store.rs - main database operations
+- crates/cli/src/daemon.rs - daemon implementation
+- modules/nixos/ - NixOS module definitions
+- packages/ - custom Nix package overlays
+
+The .github/workflows/ci.yml runs tests on every PR.
+"""
+
+[[memos]]
+content = """
+Repos we maintain:
+- infra: Infrastructure provisioning with OpenTofu
+- memex: Knowledge management system
+
+Both use GitHub Actions for CI/CD.
+"""

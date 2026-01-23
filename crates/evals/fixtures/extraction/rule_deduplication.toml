@@ -1,0 +1,95 @@
+# Extraction Test: Rule Deduplication
+#
+# Tests that extraction creates ONE rule record per policy, not multiple
+# variations. When the same rule is mentioned with different wordings,
+# it should be recognized as the same rule.
+#
+# Common failure: Creating "Squash merge only", "Always squash merging",
+# and "Squash or Rebase Strategy" as three separate rules.
+#
+# CATEGORY: Quality gate - prevents rule proliferation
+# DIFFICULTY: Hard - requires semantic understanding of rule equivalence
+
+[meta]
+name = "rule_deduplication"
+description = "Consolidates equivalent rules instead of creating duplicates"
+category = "weak"  # Hard problem, used to measure improvement
+difficulty = "hard"
+tags = ["deduplication", "rules", "semantic-matching"]
+
+# =============================================================================
+# EXPECTED RECORDS
+# One rule per policy, not multiple variations
+# The exact name may vary - we care about having ONE rule, not the exact name
+# =============================================================================
+
+[[expected.records]]
+type = "rule"
+name = "Squash merge to main"
+# Could also be "Always squash merge" or similar - just ONE rule about squashing
+
+[[expected.records]]
+type = "rule"
+name = "Single-line commit messages"
+optional = true  # Name may vary, constraint below is the real test
+
+[[expected.records]]
+type = "repo"
+name = "memex"
+
+# =============================================================================
+# CONSTRAINTS
+# Should not create multiple rules for the same policy
+# =============================================================================
+
+[[expected.constraints]]
+type = "max_count"
+record_type = "rule"
+name_pattern = "squash"
+max = 1
+reason = "All squash-related mentions should consolidate to one rule"
+
+[[expected.constraints]]
+type = "max_count"
+record_type = "rule"
+name_pattern = "commit"
+max = 1
+reason = "All commit format mentions should consolidate to one rule"
+
+[[expected.constraints]]
+type = "max_count"
+record_type = "rule"
+name_pattern = "merge"
+max = 1
+reason = "All merge strategy mentions should consolidate to one rule"
+
+# =============================================================================
+# TEST MEMOS
+# Same rules described with different wordings across memos
+# =============================================================================
+
+[[memos]]
+content = """
+Git workflow for the memex repo:
+- Always use squash merge when merging to main
+- Keep commit messages to a single line
+"""
+
+[[memos]]
+content = """
+PR merged! Used squash and merge as per our policy.
+The squash merge keeps main history clean.
+"""
+
+[[memos]]
+content = """
+Reminder: We use a squash-only merge strategy. Never create merge commits.
+Also, commit messages should be single-line only (no multi-line bodies).
+"""
+
+[[memos]]
+content = """
+Updated CLAUDE.md with git rules:
+- Squash or rebase, never regular merge
+- Single-line commit messages, under 50 chars
+"""
