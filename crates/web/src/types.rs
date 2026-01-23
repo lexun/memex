@@ -125,3 +125,10 @@ pub struct DashboardStats {
     pub tasks: usize,
     pub memos: usize,
 }
+
+/// Record detail response including related records
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RecordDetail {
+    pub record: Record,
+    pub related: Vec<Record>,
+}

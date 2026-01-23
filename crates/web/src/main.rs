@@ -43,8 +43,9 @@ async fn main() {
         // Workers
         .route("/api/workers", get(api_list_workers))
         .route("/api/workers/:id", get(api_get_worker))
-        // Records by type
+        // Records by type and single record
         .route("/api/records/:record_type", get(api_list_records_by_type))
+        .route("/api/record/:id", get(api_get_record))
         // Memos
         .route("/api/memos", get(api_list_memos))
         // Events
@@ -361,20 +362,7 @@ async fn api_list_records_by_type(
                 .as_array()
                 .unwrap_or(&vec![])
                 .iter()
-                .filter_map(|v| {
-                    Some(memex_web::types::Record {
-                        id: extract_id(v.get("id")),
-                        record_type: v.get("record_type")?.as_str()?.to_string(),
-                        name: v.get("name")?.as_str()?.to_string(),
-                        description: v
-                            .get("description")
-                            .and_then(|d| d.as_str())
-                            .map(|s| s.to_string()),
-                        content: v.get("content").cloned().unwrap_or(serde_json::Value::Null),
-                        created_at: v.get("created_at")?.as_str()?.to_string(),
-                        updated_at: v.get("updated_at")?.as_str()?.to_string(),
-                    })
-                })
+                .filter_map(|v| parse_record(v))
                 .collect();
 
             Ok(axum::Json(records))
@@ -384,6 +372,82 @@ async fn api_list_records_by_type(
             Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+#[cfg(feature = "ssr")]
+fn parse_record(v: &serde_json::Value) -> Option<memex_web::types::Record> {
+    Some(memex_web::types::Record {
+        id: extract_id(v.get("id")),
+        record_type: v.get("record_type")?.as_str()?.to_string(),
+        name: v.get("name")?.as_str()?.to_string(),
+        description: v
+            .get("description")
+            .and_then(|d| d.as_str())
+            .map(|s| s.to_string()),
+        content: v.get("content").cloned().unwrap_or(serde_json::Value::Null),
+        created_at: v.get("created_at")?.as_str()?.to_string(),
+        updated_at: v.get("updated_at")?.as_str()?.to_string(),
+    })
+}
+
+#[cfg(feature = "ssr")]
+async fn api_get_record(
+    axum::extract::State(client): axum::extract::State<IpcClient>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<axum::Json<memex_web::types::RecordDetail>, axum::http::StatusCode> {
+    use serde_json::json;
+
+    // Get the record
+    let record_result = client.request("get_record", json!({ "id": id })).await;
+
+    let record_value = match record_result {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Failed to get record {}: {}", id, e);
+            return Err(axum::http::StatusCode::NOT_FOUND);
+        }
+    };
+
+    let record = match parse_record(&record_value) {
+        Some(r) => r,
+        None => {
+            tracing::error!("Failed to parse record {}", id);
+            return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Get related records via edges
+    let edges_result = client
+        .request("list_edges", json!({ "id": id, "direction": "both" }))
+        .await;
+
+    let mut related: Vec<memex_web::types::Record> = Vec::new();
+
+    if let Ok(edges_value) = edges_result {
+        if let Some(edges) = edges_value.as_array() {
+            for edge in edges {
+                // Get the other record ID (either source or target depending on direction)
+                let other_id = if edge.get("source").and_then(|s| s.as_str()) == Some(&id) {
+                    edge.get("target").and_then(|t| t.as_str())
+                } else {
+                    edge.get("source").and_then(|s| s.as_str())
+                };
+
+                if let Some(other_id) = other_id {
+                    if let Ok(other_value) = client
+                        .request("get_record", json!({ "id": other_id }))
+                        .await
+                    {
+                        if let Some(other_record) = parse_record(&other_value) {
+                            related.push(other_record);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(axum::Json(memex_web::types::RecordDetail { record, related }))
 }
 
 #[cfg(feature = "ssr")]

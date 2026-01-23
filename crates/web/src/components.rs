@@ -2,8 +2,9 @@
 
 use leptos::*;
 use leptos_router::*;
+use pulldown_cmark::{html, Options, Parser};
 
-use crate::types::{DashboardStats, Event, MemoView, Record, Task, TaskDetail, Worker};
+use crate::types::{DashboardStats, Event, MemoView, Record, RecordDetail, Task, TaskDetail, Worker};
 
 // =============================================================================
 // Layout Components
@@ -159,6 +160,43 @@ pub fn Loading() -> impl IntoView {
             "Loading"
         </div>
     }
+}
+
+/// Markdown rendering component
+#[component]
+pub fn Markdown(
+    /// The markdown content to render
+    #[prop(into)]
+    content: String,
+    /// Optional additional CSS classes
+    #[prop(optional, into)]
+    class: String,
+) -> impl IntoView {
+    let html = render_markdown(&content);
+    let class_name = if class.is_empty() {
+        "markdown-content".to_string()
+    } else {
+        format!("markdown-content {}", class)
+    };
+
+    view! {
+        <div class=class_name inner_html=html></div>
+    }
+}
+
+/// Render markdown to HTML string
+fn render_markdown(markdown: &str) -> String {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+
+    let parser = Parser::new_ext(markdown, options);
+    let mut html_output = String::new();
+    html::push_html(&mut html_output, parser);
+    html_output
 }
 
 /// Stats card component
@@ -1026,8 +1064,9 @@ fn RecordCardGrid(records: Vec<Record>) -> impl IntoView {
             {records
                 .into_iter()
                 .map(|r| {
+                    let href = format!("/records/{}", r.id);
                     view! {
-                        <div class="card">
+                        <a href=href class="card card-link">
                             <div class="card-title">{r.name}</div>
                             {r
                                 .description
@@ -1036,13 +1075,194 @@ fn RecordCardGrid(records: Vec<Record>) -> impl IntoView {
                                 })}
 
                             <div class="card-meta">{r.created_at}</div>
-                        </div>
+                        </a>
                     }
                 })
                 .collect_view()}
 
         </div>
     }
+}
+
+/// Generic record detail page component
+#[component]
+pub fn RecordDetailPage() -> impl IntoView {
+    let params = use_params_map();
+    let record_id = move || params.with(|p| p.get("id").cloned().unwrap_or_default());
+
+    let record_detail = create_resource(record_id, |id| async move { fetch_record_detail(&id).await });
+
+    view! {
+        <Layout title="Record".to_string() active_section="".to_string()>
+            <Suspense fallback=move || view! { <Loading/> }>
+                {move || {
+                    record_detail
+                        .get()
+                        .map(|result| {
+                            match result {
+                                Ok(detail) => view! { <RecordDetailContent detail=detail/> }.into_view(),
+                                Err(e) => {
+                                    view! {
+                                        <div class="detail-header">
+                                            <a href="javascript:history.back()" class="back-link">
+                                                "\u{2190} Back"
+                                            </a>
+                                        </div>
+                                        <div class="error">"Error loading record: " {e}</div>
+                                    }
+                                        .into_view()
+                                }
+                            }
+                        })
+                }}
+
+            </Suspense>
+        </Layout>
+    }
+}
+
+#[component]
+fn RecordDetailContent(detail: RecordDetail) -> impl IntoView {
+    let record = detail.record;
+    let related = detail.related;
+
+    // Get back link based on record type
+    let back_link = format!("/{}", get_plural_section(&record.record_type));
+    let type_badge_class = format!("badge badge-type {}", record.record_type);
+
+    // Extract markdown content from the JSON content field
+    let content_markdown = extract_content_markdown(&record.content);
+
+    view! {
+        <div class="detail-header">
+            <a href=back_link class="back-link">"\u{2190} Back"</a>
+            <h1 style="margin-top: 0.5rem;">{&record.name}</h1>
+            <div class="detail-meta">
+                <span class=type_badge_class>{&record.record_type}</span>
+            </div>
+        </div>
+
+        <div class="detail-grid">
+            <div class="detail-main">
+                {record
+                    .description
+                    .as_ref()
+                    .map(|desc| {
+                        view! {
+                            <div class="card">
+                                <h3>"Description"</h3>
+                                <p>{desc.clone()}</p>
+                            </div>
+                        }
+                    })}
+
+                {content_markdown
+                    .map(|md| {
+                        view! {
+                            <div class="card">
+                                <h3>"Content"</h3>
+                                <Markdown content=md/>
+                            </div>
+                        }
+                    })}
+
+                {(!related.is_empty())
+                    .then(|| {
+                        view! {
+                            <div class="card">
+                                <h3>"Related Records"</h3>
+                                <div class="related-records">
+                                    {related
+                                        .iter()
+                                        .map(|r| {
+                                            let href = format!("/records/{}", r.id);
+                                            let type_class = format!("badge badge-type {}", r.record_type);
+                                            view! {
+                                                <a href=href class="related-record-link">
+                                                    <span class=type_class>{&r.record_type}</span>
+                                                    " "
+                                                    {&r.name}
+                                                </a>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </div>
+                            </div>
+                        }
+                    })}
+            </div>
+
+            <div class="detail-sidebar">
+                <div class="card">
+                    <h3>"Details"</h3>
+                    <dl class="detail-list">
+                        <dt>"ID"</dt>
+                        <dd>
+                            <code>{&record.id}</code>
+                        </dd>
+                        <dt>"Type"</dt>
+                        <dd>{&record.record_type}</dd>
+                        <dt>"Created"</dt>
+                        <dd>{&record.created_at}</dd>
+                        <dt>"Updated"</dt>
+                        <dd>{&record.updated_at}</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+/// Get plural section name for back link
+fn get_plural_section(record_type: &str) -> &'static str {
+    match record_type {
+        "person" => "people",
+        "team" => "teams",
+        "company" => "companies",
+        "project" => "projects",
+        "repo" => "repos",
+        "rule" => "rules",
+        "skill" => "skills",
+        "document" => "documents",
+        "technology" => "technologies",
+        _ => "records",
+    }
+}
+
+/// Extract markdown content from the JSON content field
+fn extract_content_markdown(content: &serde_json::Value) -> Option<String> {
+    // Try to extract as string first (for simple text content)
+    if let Some(s) = content.as_str() {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+
+    // Try to extract a "text" or "content" field from an object
+    if let Some(obj) = content.as_object() {
+        // Try common field names for markdown content
+        for field in &["text", "content", "body", "markdown", "description"] {
+            if let Some(s) = obj.get(*field).and_then(|v| v.as_str()) {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+
+        // If no known field, format as pretty JSON for display
+        if !obj.is_empty() {
+            return Some(format!("```json\n{}\n```", serde_json::to_string_pretty(&content).unwrap_or_default()));
+        }
+    }
+
+    // For arrays, format as JSON
+    if let Some(arr) = content.as_array() {
+        if !arr.is_empty() {
+            return Some(format!("```json\n{}\n```", serde_json::to_string_pretty(&content).unwrap_or_default()));
+        }
+    }
+
+    None
 }
 
 /// People page
@@ -1326,6 +1546,10 @@ async fn fetch_worker(id: &str) -> Result<Worker, String> {
 
 async fn fetch_records_by_type(record_type: &str) -> Result<Vec<Record>, String> {
     fetch_json(&format!("/api/records/{}", record_type)).await
+}
+
+async fn fetch_record_detail(id: &str) -> Result<RecordDetail, String> {
+    fetch_json(&format!("/api/record/{}", id)).await
 }
 
 async fn fetch_memos() -> Result<Vec<MemoView>, String> {

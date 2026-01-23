@@ -29,6 +29,9 @@ dirs = { version = "5", optional = true }
 # Client-side HTTP
 gloo-net = { version = "0.5", optional = true }
 
+# Markdown rendering
+pulldown-cmark = "0.10"
+
 [features]
 hydrate = ["leptos/hydrate", "leptos_meta/hydrate", "leptos_router/hydrate", "gloo-net"]
 ssr = [
