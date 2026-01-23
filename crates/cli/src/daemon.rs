@@ -2925,6 +2925,8 @@ async fn handle_migrate_tasks_to_records(stores: &Stores) -> Result<serde_json::
         let content = TaskContent {
             status,
             priority: forge_task.priority,
+            impact: atlas::Impact::from_priority(forge_task.priority),
+            urgency: atlas::Urgency::default(),
             project: forge_task.project.clone(),
             completed_at: forge_task.completed_at.clone(),
         };

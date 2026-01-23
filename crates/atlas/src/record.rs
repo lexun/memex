@@ -86,8 +86,12 @@ pub enum RecordType {
     /// A technology, tool, framework, or service (databases, cloud services, etc.)
     Technology,
     /// A task - a unit of work with lifecycle and completion semantics
-    /// Content fields: { status, priority, project, completed_at }
+    /// Content fields: { status, impact, urgency, project, completed_at }
     Task,
+    /// A goal - a high-level objective that contains sub-goals and tasks
+    /// Forms a tree structure: goals -> sub-goals -> tasks
+    /// Content fields: { impact, urgency, status }
+    Goal,
     /// An agent message - communication between agents (Coordinator, workers, Primary Claude)
     /// Content fields: { message_type, read, read_at }
     Message,
@@ -121,6 +125,7 @@ impl std::fmt::Display for RecordType {
             RecordType::Document => write!(f, "document"),
             RecordType::Technology => write!(f, "technology"),
             RecordType::Task => write!(f, "task"),
+            RecordType::Goal => write!(f, "goal"),
             RecordType::Message => write!(f, "message"),
             RecordType::McpServer => write!(f, "mcp_server"),
             RecordType::Thread => write!(f, "thread"),
@@ -144,6 +149,7 @@ impl std::str::FromStr for RecordType {
             "document" => Ok(RecordType::Document),
             "technology" => Ok(RecordType::Technology),
             "task" => Ok(RecordType::Task),
+            "goal" => Ok(RecordType::Goal),
             "message" => Ok(RecordType::Message),
             "mcp_server" => Ok(RecordType::McpServer),
             "thread" => Ok(RecordType::Thread),
@@ -528,6 +534,156 @@ impl ContextAssembly {
 // Task-specific types: Tasks are records with workflow semantics
 // =============================================================================
 
+/// Impact rating for task/goal importance
+///
+/// Measures how much completing this task/goal matters to the overall objective.
+/// Higher impact items contribute more significantly to goals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Impact {
+    /// Critical impact - essential for success
+    Critical,
+    /// High impact - significantly contributes to goals
+    High,
+    /// Medium impact - moderate contribution (default)
+    Medium,
+    /// Low impact - nice to have but not essential
+    Low,
+    /// Minimal impact - very minor contribution
+    Minimal,
+}
+
+impl Default for Impact {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
+impl std::fmt::Display for Impact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Impact::Critical => write!(f, "critical"),
+            Impact::High => write!(f, "high"),
+            Impact::Medium => write!(f, "medium"),
+            Impact::Low => write!(f, "low"),
+            Impact::Minimal => write!(f, "minimal"),
+        }
+    }
+}
+
+impl std::str::FromStr for Impact {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "critical" => Ok(Impact::Critical),
+            "high" => Ok(Impact::High),
+            "medium" => Ok(Impact::Medium),
+            "low" => Ok(Impact::Low),
+            "minimal" => Ok(Impact::Minimal),
+            _ => Err(format!("Unknown impact level: {}", s)),
+        }
+    }
+}
+
+impl Impact {
+    /// Convert to numeric score for sorting (higher = more important)
+    pub fn score(&self) -> i32 {
+        match self {
+            Impact::Critical => 5,
+            Impact::High => 4,
+            Impact::Medium => 3,
+            Impact::Low => 2,
+            Impact::Minimal => 1,
+        }
+    }
+
+    /// Convert from legacy priority (0=critical, 3=low)
+    pub fn from_priority(priority: i32) -> Self {
+        match priority {
+            0 => Impact::Critical,
+            1 => Impact::High,
+            2 => Impact::Medium,
+            3 => Impact::Low,
+            _ => Impact::Minimal,
+        }
+    }
+}
+
+/// Urgency rating for time-sensitivity
+///
+/// Measures how time-sensitive a task/goal is.
+/// Urgency can change over time as deadlines approach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Urgency {
+    /// Immediate - needs attention right now
+    Immediate,
+    /// Soon - should be addressed within days
+    Soon,
+    /// Normal - standard timeline (default)
+    Normal,
+    /// Later - can be deferred without issue
+    Later,
+    /// Someday - no time pressure
+    Someday,
+}
+
+impl Default for Urgency {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+impl std::fmt::Display for Urgency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Urgency::Immediate => write!(f, "immediate"),
+            Urgency::Soon => write!(f, "soon"),
+            Urgency::Normal => write!(f, "normal"),
+            Urgency::Later => write!(f, "later"),
+            Urgency::Someday => write!(f, "someday"),
+        }
+    }
+}
+
+impl std::str::FromStr for Urgency {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "immediate" => Ok(Urgency::Immediate),
+            "soon" => Ok(Urgency::Soon),
+            "normal" => Ok(Urgency::Normal),
+            "later" => Ok(Urgency::Later),
+            "someday" => Ok(Urgency::Someday),
+            _ => Err(format!("Unknown urgency level: {}", s)),
+        }
+    }
+}
+
+impl Urgency {
+    /// Convert to numeric score for sorting (higher = more urgent)
+    pub fn score(&self) -> i32 {
+        match self {
+            Urgency::Immediate => 5,
+            Urgency::Soon => 4,
+            Urgency::Normal => 3,
+            Urgency::Later => 2,
+            Urgency::Someday => 1,
+        }
+    }
+}
+
+/// Calculate effective priority from impact and urgency
+///
+/// Returns a score where higher = should be done first.
+/// Uses Eisenhower matrix style weighting: impact matters most, urgency breaks ties.
+pub fn calculate_priority(impact: Impact, urgency: Urgency) -> i32 {
+    // Impact weighted 2x relative to urgency
+    impact.score() * 2 + urgency.score()
+}
+
 /// Task status for workflow lifecycle
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -584,18 +740,38 @@ impl std::str::FromStr for TaskStatus {
 /// - name: task title
 /// - description: optional detailed description
 /// - content: TaskContent (serialized as JSON)
+///
+/// Tasks can be part of a goal hierarchy using the `part_of` edge relation.
+/// Priority is derived from impact + urgency + position in goal tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskContent {
     /// Current workflow status
     pub status: TaskStatus,
-    /// Priority (lower = higher priority: 0=critical, 1=high, 2=medium, 3=low)
+
+    /// Legacy priority (lower = higher priority: 0=critical, 1=high, 2=medium, 3=low)
+    /// Deprecated: use impact/urgency instead. Kept for backward compatibility.
+    #[serde(default = "default_priority")]
     pub priority: i32,
+
+    /// Impact rating - how much this task matters
+    #[serde(default)]
+    pub impact: Impact,
+
+    /// Urgency rating - how time-sensitive this task is
+    #[serde(default)]
+    pub urgency: Urgency,
+
     /// Optional project grouping
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+
     /// When the task was completed (if applicable)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<Datetime>,
+}
+
+fn default_priority() -> i32 {
+    2 // medium
 }
 
 impl Default for TaskContent {
@@ -603,6 +779,8 @@ impl Default for TaskContent {
         Self {
             status: TaskStatus::default(),
             priority: 2, // medium
+            impact: Impact::default(),
+            urgency: Urgency::default(),
             project: None,
             completed_at: None,
         }
@@ -615,10 +793,29 @@ impl TaskContent {
         Self::default()
     }
 
-    /// Set priority
+    /// Set priority (legacy - prefer with_impact and with_urgency)
     pub fn with_priority(mut self, priority: i32) -> Self {
         self.priority = priority;
+        // Also set impact from priority for consistency
+        self.impact = Impact::from_priority(priority);
         self
+    }
+
+    /// Set impact rating
+    pub fn with_impact(mut self, impact: Impact) -> Self {
+        self.impact = impact;
+        self
+    }
+
+    /// Set urgency rating
+    pub fn with_urgency(mut self, urgency: Urgency) -> Self {
+        self.urgency = urgency;
+        self
+    }
+
+    /// Get effective priority score (higher = should be done first)
+    pub fn effective_priority(&self) -> i32 {
+        calculate_priority(self.impact, self.urgency)
     }
 
     /// Set project
@@ -655,6 +852,249 @@ pub mod task_relations {
     pub const BLOCKED_BY: &str = "blocked_by";
     /// Tasks are related (informational link)
     pub const RELATES_TO: &str = "relates_to";
+}
+
+// =============================================================================
+// Goal-specific types: Goals form hierarchical task maps
+// =============================================================================
+
+/// Goal status for tracking progress toward objectives
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    /// Goal is defined but not yet being worked on
+    NotStarted,
+    /// Goal has active sub-goals or tasks
+    InProgress,
+    /// Goal is achieved
+    Achieved,
+    /// Goal was abandoned or deprioritized
+    Abandoned,
+}
+
+impl Default for GoalStatus {
+    fn default() -> Self {
+        Self::NotStarted
+    }
+}
+
+impl std::fmt::Display for GoalStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GoalStatus::NotStarted => write!(f, "not_started"),
+            GoalStatus::InProgress => write!(f, "in_progress"),
+            GoalStatus::Achieved => write!(f, "achieved"),
+            GoalStatus::Abandoned => write!(f, "abandoned"),
+        }
+    }
+}
+
+impl std::str::FromStr for GoalStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "not_started" => Ok(GoalStatus::NotStarted),
+            "in_progress" => Ok(GoalStatus::InProgress),
+            "achieved" => Ok(GoalStatus::Achieved),
+            "abandoned" => Ok(GoalStatus::Abandoned),
+            _ => Err(format!("Unknown goal status: {}", s)),
+        }
+    }
+}
+
+/// Helper struct for goal content fields stored in Record.content
+///
+/// Goal records use Record with:
+/// - record_type: "goal"
+/// - name: goal title/objective
+/// - description: optional detailed description
+/// - content: GoalContent (serialized as JSON)
+///
+/// Goals form a tree structure using `part_of` edges:
+/// - Root goals have no parent (trunk of the tree)
+/// - Sub-goals link to parent goals via `part_of`
+/// - Tasks link to goals via `part_of`
+///
+/// Work flows from leaves (tasks) toward trunk (root goals).
+/// Completing all children advances the parent goal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoalContent {
+    /// Current status of the goal
+    #[serde(default)]
+    pub status: GoalStatus,
+
+    /// Impact rating - how important is achieving this goal
+    #[serde(default)]
+    pub impact: Impact,
+
+    /// Urgency rating - how time-sensitive is this goal
+    #[serde(default)]
+    pub urgency: Urgency,
+
+    /// Optional target/deadline for the goal
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_date: Option<Datetime>,
+
+    /// When the goal was achieved (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub achieved_at: Option<Datetime>,
+}
+
+impl Default for GoalContent {
+    fn default() -> Self {
+        Self {
+            status: GoalStatus::default(),
+            impact: Impact::default(),
+            urgency: Urgency::default(),
+            target_date: None,
+            achieved_at: None,
+        }
+    }
+}
+
+impl GoalContent {
+    /// Create new goal content with default values
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set impact rating
+    pub fn with_impact(mut self, impact: Impact) -> Self {
+        self.impact = impact;
+        self
+    }
+
+    /// Set urgency rating
+    pub fn with_urgency(mut self, urgency: Urgency) -> Self {
+        self.urgency = urgency;
+        self
+    }
+
+    /// Set status
+    pub fn with_status(mut self, status: GoalStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    /// Set target date
+    pub fn with_target_date(mut self, target: Datetime) -> Self {
+        self.target_date = Some(target);
+        self
+    }
+
+    /// Get effective priority score (higher = should be done first)
+    pub fn effective_priority(&self) -> i32 {
+        calculate_priority(self.impact, self.urgency)
+    }
+
+    /// Convert to JSON Value for storage in Record.content
+    pub fn to_json(&self) -> JsonValue {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    /// Parse from Record.content JSON
+    pub fn from_json(value: &JsonValue) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
+/// Goal relation constants
+pub mod goal_relations {
+    /// Sub-goal/task is part of this goal (child -> parent)
+    pub const PART_OF: &str = "part_of";
+    /// Goal depends on another goal being achieved first
+    pub const DEPENDS_ON: &str = "depends_on";
+}
+
+// =============================================================================
+// Personal ordering: Per-person priority views over goals/tasks
+// =============================================================================
+
+/// Personal ordering content for per-person task/goal prioritization
+///
+/// Different people may have different priority orderings over the same
+/// goal tree. A PersonalOrdering record stores one person's view of what
+/// matters most to them.
+///
+/// PersonalOrdering uses Record with:
+/// - record_type: "document" (or could add a new type)
+/// - name: "{person_name}'s priorities" or similar
+/// - content: PersonalOrderingContent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalOrderingContent {
+    /// The person this ordering belongs to (record ID)
+    pub person_id: String,
+
+    /// Ordered list of goal/task IDs from highest to lowest priority
+    /// Items earlier in the list take precedence
+    #[serde(default)]
+    pub priority_order: Vec<String>,
+
+    /// Override impact ratings for specific items
+    /// Key: goal/task ID, Value: personal impact rating
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub impact_overrides: std::collections::HashMap<String, Impact>,
+
+    /// Override urgency ratings for specific items
+    /// Key: goal/task ID, Value: personal urgency rating
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub urgency_overrides: std::collections::HashMap<String, Urgency>,
+}
+
+impl PersonalOrderingContent {
+    /// Create a new personal ordering for a person
+    pub fn new(person_id: impl Into<String>) -> Self {
+        Self {
+            person_id: person_id.into(),
+            priority_order: Vec::new(),
+            impact_overrides: std::collections::HashMap::new(),
+            urgency_overrides: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Add an item to the priority order
+    pub fn with_priority(mut self, item_id: impl Into<String>) -> Self {
+        self.priority_order.push(item_id.into());
+        self
+    }
+
+    /// Override impact for an item
+    pub fn with_impact_override(mut self, item_id: impl Into<String>, impact: Impact) -> Self {
+        self.impact_overrides.insert(item_id.into(), impact);
+        self
+    }
+
+    /// Override urgency for an item
+    pub fn with_urgency_override(mut self, item_id: impl Into<String>, urgency: Urgency) -> Self {
+        self.urgency_overrides.insert(item_id.into(), urgency);
+        self
+    }
+
+    /// Get effective priority for an item, considering overrides
+    pub fn effective_priority_for(&self, item_id: &str, base_impact: Impact, base_urgency: Urgency) -> i32 {
+        let impact = self.impact_overrides.get(item_id).copied().unwrap_or(base_impact);
+        let urgency = self.urgency_overrides.get(item_id).copied().unwrap_or(base_urgency);
+
+        // Position in priority_order adds bonus (earlier = higher)
+        let position_bonus = self.priority_order
+            .iter()
+            .position(|id| id == item_id)
+            .map(|pos| (self.priority_order.len() - pos) as i32)
+            .unwrap_or(0);
+
+        calculate_priority(impact, urgency) + position_bonus
+    }
+
+    /// Convert to JSON Value for storage in Record.content
+    pub fn to_json(&self) -> JsonValue {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    /// Parse from Record.content JSON
+    pub fn from_json(value: &JsonValue) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
 }
 
 // =============================================================================
@@ -1520,6 +1960,8 @@ impl TaskView {
         let content = TaskContent {
             status: self.status,
             priority: self.priority,
+            impact: Impact::from_priority(self.priority),
+            urgency: Urgency::default(),
             project: self.project.clone(),
             completed_at: self.completed_at.clone(),
         };
@@ -1745,5 +2187,130 @@ mod tests {
 
         let people = assembly.people();
         assert_eq!(people.len(), 0);
+    }
+
+    #[test]
+    fn test_impact_from_str() {
+        use super::Impact;
+        assert_eq!("critical".parse::<Impact>().unwrap(), Impact::Critical);
+        assert_eq!("high".parse::<Impact>().unwrap(), Impact::High);
+        assert_eq!("medium".parse::<Impact>().unwrap(), Impact::Medium);
+        assert_eq!("low".parse::<Impact>().unwrap(), Impact::Low);
+        assert_eq!("minimal".parse::<Impact>().unwrap(), Impact::Minimal);
+        assert!("invalid".parse::<Impact>().is_err());
+    }
+
+    #[test]
+    fn test_impact_from_priority() {
+        use super::Impact;
+        assert_eq!(Impact::from_priority(0), Impact::Critical);
+        assert_eq!(Impact::from_priority(1), Impact::High);
+        assert_eq!(Impact::from_priority(2), Impact::Medium);
+        assert_eq!(Impact::from_priority(3), Impact::Low);
+        assert_eq!(Impact::from_priority(4), Impact::Minimal);
+        assert_eq!(Impact::from_priority(99), Impact::Minimal);
+    }
+
+    #[test]
+    fn test_urgency_from_str() {
+        use super::Urgency;
+        assert_eq!("immediate".parse::<Urgency>().unwrap(), Urgency::Immediate);
+        assert_eq!("soon".parse::<Urgency>().unwrap(), Urgency::Soon);
+        assert_eq!("normal".parse::<Urgency>().unwrap(), Urgency::Normal);
+        assert_eq!("later".parse::<Urgency>().unwrap(), Urgency::Later);
+        assert_eq!("someday".parse::<Urgency>().unwrap(), Urgency::Someday);
+        assert!("invalid".parse::<Urgency>().is_err());
+    }
+
+    #[test]
+    fn test_calculate_priority() {
+        use super::{calculate_priority, Impact, Urgency};
+
+        // Critical + Immediate should be highest priority
+        let high = calculate_priority(Impact::Critical, Urgency::Immediate);
+        // Minimal + Someday should be lowest
+        let low = calculate_priority(Impact::Minimal, Urgency::Someday);
+        assert!(high > low);
+
+        // Impact should matter more than urgency
+        let high_impact_low_urgency = calculate_priority(Impact::Critical, Urgency::Someday);
+        let low_impact_high_urgency = calculate_priority(Impact::Minimal, Urgency::Immediate);
+        assert!(high_impact_low_urgency > low_impact_high_urgency);
+    }
+
+    #[test]
+    fn test_goal_status_from_str() {
+        use super::GoalStatus;
+        assert_eq!("not_started".parse::<GoalStatus>().unwrap(), GoalStatus::NotStarted);
+        assert_eq!("in_progress".parse::<GoalStatus>().unwrap(), GoalStatus::InProgress);
+        assert_eq!("achieved".parse::<GoalStatus>().unwrap(), GoalStatus::Achieved);
+        assert_eq!("abandoned".parse::<GoalStatus>().unwrap(), GoalStatus::Abandoned);
+        assert!("invalid".parse::<GoalStatus>().is_err());
+    }
+
+    #[test]
+    fn test_goal_content_builder() {
+        use super::{GoalContent, GoalStatus, Impact, Urgency};
+
+        let content = GoalContent::new()
+            .with_impact(Impact::High)
+            .with_urgency(Urgency::Soon)
+            .with_status(GoalStatus::InProgress);
+
+        assert_eq!(content.impact, Impact::High);
+        assert_eq!(content.urgency, Urgency::Soon);
+        assert_eq!(content.status, GoalStatus::InProgress);
+    }
+
+    #[test]
+    fn test_goal_content_json_roundtrip() {
+        use super::{GoalContent, GoalStatus, Impact, Urgency};
+
+        let content = GoalContent::new()
+            .with_impact(Impact::Critical)
+            .with_urgency(Urgency::Immediate);
+
+        let json = content.to_json();
+        let parsed = GoalContent::from_json(&json).unwrap();
+
+        assert_eq!(parsed.impact, content.impact);
+        assert_eq!(parsed.urgency, content.urgency);
+        assert_eq!(parsed.status, content.status);
+    }
+
+    #[test]
+    fn test_task_content_with_impact_urgency() {
+        use super::{Impact, TaskContent, Urgency};
+
+        let content = TaskContent::new()
+            .with_impact(Impact::High)
+            .with_urgency(Urgency::Soon);
+
+        assert_eq!(content.impact, Impact::High);
+        assert_eq!(content.urgency, Urgency::Soon);
+        assert!(content.effective_priority() > 0);
+    }
+
+    #[test]
+    fn test_personal_ordering() {
+        use super::{Impact, PersonalOrderingContent, Urgency};
+
+        let ordering = PersonalOrderingContent::new("user123")
+            .with_priority("task1")
+            .with_priority("task2")
+            .with_impact_override("task3", Impact::Critical);
+
+        assert_eq!(ordering.person_id, "user123");
+        assert_eq!(ordering.priority_order.len(), 2);
+
+        // Task1 should have higher effective priority than task2 due to position
+        let prio1 = ordering.effective_priority_for("task1", Impact::Medium, Urgency::Normal);
+        let prio2 = ordering.effective_priority_for("task2", Impact::Medium, Urgency::Normal);
+        assert!(prio1 > prio2);
+
+        // Task3 should have high priority due to impact override
+        let prio3 = ordering.effective_priority_for("task3", Impact::Low, Urgency::Normal);
+        let prio_no_override = ordering.effective_priority_for("task4", Impact::Low, Urgency::Normal);
+        assert!(prio3 > prio_no_override);
     }
 }

@@ -30,7 +30,15 @@ pub use handler::{handle_event_command, handle_knowledge_command, handle_memo_co
 pub use memo::{Memo, MemoAuthority, MemoSource};
 pub use record::{
     ContextAssembly, EdgeRelation, Record, RecordEdge, RecordType,
+    // Task types
     TaskContent, TaskStatus, TaskView, TaskNoteView, TaskDependencyView,
+    // Impact/urgency ratings (replacing flat priority)
+    Impact, Urgency, calculate_priority,
+    // Goal hierarchy types
+    GoalContent, GoalStatus, goal_relations,
+    // Personal ordering for per-person priorities
+    PersonalOrderingContent,
+    // Message types
     MessageContent, MessageType, MessageView,
     ThreadContent, ThreadSource, EntryContent, EntryRole,
     TASK_NOTE_RELATION, task_relations,

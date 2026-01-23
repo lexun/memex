@@ -1752,6 +1752,8 @@ impl Store {
         let content = TaskContent {
             status: TaskStatus::Pending,
             priority,
+            impact: crate::record::Impact::from_priority(priority),
+            urgency: crate::record::Urgency::default(),
             project: project.map(|s| s.to_string()),
             completed_at: None,
         };

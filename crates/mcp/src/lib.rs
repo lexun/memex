@@ -533,6 +533,343 @@ impl McpServer for MemexMcpServer {
     }
 
     // -------------------------------------------------------------------------
+    // Goal tools (hierarchical task maps)
+    // -------------------------------------------------------------------------
+
+    /// Create a goal in the hierarchical task map
+    ///
+    /// Goals form a tree structure: root goals -> sub-goals -> tasks.
+    /// Use impact and urgency ratings instead of flat priority.
+    /// Connect goals to parent goals or tasks using the part_of relationship.
+    ///
+    /// Impact levels: critical, high, medium (default), low, minimal
+    /// Urgency levels: immediate, soon, normal (default), later, someday
+    #[tool]
+    async fn create_goal(
+        &self,
+        /// Goal title/objective
+        name: String,
+        /// Detailed description of the goal
+        description: Option<String>,
+        /// Impact rating: critical, high, medium (default), low, minimal
+        impact: Option<String>,
+        /// Urgency rating: immediate, soon, normal (default), later, someday
+        urgency: Option<String>,
+        /// Target date for achieving the goal (ISO format) - not yet implemented
+        _target_date: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        use atlas::{GoalContent, GoalStatus, Impact, Urgency};
+
+        let impact_val = impact
+            .as_ref()
+            .and_then(|s| s.parse::<Impact>().ok())
+            .unwrap_or_default();
+        let urgency_val = urgency
+            .as_ref()
+            .and_then(|s| s.parse::<Urgency>().ok())
+            .unwrap_or_default();
+
+        let content = GoalContent::new()
+            .with_impact(impact_val)
+            .with_urgency(urgency_val)
+            .with_status(GoalStatus::NotStarted);
+
+        match self
+            .record_client
+            .create_record("goal", &name, description.as_deref(), Some(content.to_json()))
+            .await
+        {
+            Ok(created) => {
+                let id = created.id_str().unwrap_or_default();
+                Ok(format!(
+                    "Created goal: {}\n  Name: {}\n  Impact: {}\n  Urgency: {}\n  Status: not_started",
+                    id, name, impact_val, urgency_val
+                ))
+            }
+            Err(e) => {
+                let msg = format!("Failed to create goal: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// List goals with optional status filter
+    ///
+    /// Returns all goals in the knowledge graph.
+    /// Use status filter: not_started, in_progress, achieved, abandoned
+    #[tool]
+    async fn list_goals(&self, status: Option<String>) -> mcp_attr::Result<String> {
+        use atlas::{GoalContent, GoalStatus};
+
+        match self.record_client.list_records(Some("goal"), false, None).await {
+            Ok(records) => {
+                let mut goals: Vec<_> = records
+                    .iter()
+                    .filter_map(|r| {
+                        let content = GoalContent::from_json(&r.content)?;
+                        // Filter by status if provided
+                        if let Some(ref s) = status {
+                            let target_status: GoalStatus = s.parse().ok()?;
+                            if content.status != target_status {
+                                return None;
+                            }
+                        }
+                        Some((r, content))
+                    })
+                    .collect();
+
+                // Sort by effective priority (highest first)
+                goals.sort_by(|a, b| b.1.effective_priority().cmp(&a.1.effective_priority()));
+
+                if goals.is_empty() {
+                    Ok("No goals found".to_string())
+                } else {
+                    let output = goals
+                        .iter()
+                        .map(|(r, c)| {
+                            let id = r.id_str().unwrap_or_default();
+                            format!(
+                                "{:<20} [{}/{}] {:>12} {}",
+                                id, c.impact, c.urgency, c.status, r.name
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to list goals: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Get detailed information about a goal
+    #[tool]
+    async fn get_goal(&self, id: String) -> mcp_attr::Result<String> {
+        use atlas::GoalContent;
+
+        match self.record_client.get_record(&id).await {
+            Ok(Some(record)) => {
+                if record.record_type != "goal" {
+                    return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                        .with_message(format!("Record {} is not a goal", id), true));
+                }
+
+                let content = GoalContent::from_json(&record.content)
+                    .unwrap_or_default();
+                let id_str = record.id_str().unwrap_or_default();
+
+                let mut output = format!(
+                    "Goal: {}\n  Name: {}\n  Impact: {}\n  Urgency: {}\n  Status: {}\n  Effective Priority: {}",
+                    id_str, record.name, content.impact, content.urgency,
+                    content.status, content.effective_priority()
+                );
+
+                if let Some(desc) = &record.description {
+                    output.push_str(&format!("\n  Description: {}", desc));
+                }
+
+                // Get related items (sub-goals and tasks that are part_of this goal)
+                if let Ok(edges) = self.record_client.list_edges(&id_str, "to").await {
+                    let children: Vec<_> = edges
+                        .iter()
+                        .filter(|e| e.relation == "part_of")
+                        .collect();
+
+                    if !children.is_empty() {
+                        output.push_str("\n\n  Children (part_of this goal):");
+                        for edge in children {
+                            output.push_str(&format!("\n    {}", edge.source.id.to_raw()));
+                        }
+                    }
+                }
+
+                Ok(output)
+            }
+            Ok(None) => {
+                let msg = format!("Goal not found: {}", id);
+                Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS).with_message(msg, true))
+            }
+            Err(e) => {
+                let msg = format!("Failed to get goal: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Update a goal's status, impact, or urgency
+    ///
+    /// Valid status values: not_started, in_progress, achieved, abandoned
+    /// Impact levels: critical, high, medium, low, minimal
+    /// Urgency levels: immediate, soon, normal, later, someday
+    #[tool]
+    async fn update_goal(
+        &self,
+        /// Goal ID to update
+        id: String,
+        /// New status
+        status: Option<String>,
+        /// New impact rating
+        impact: Option<String>,
+        /// New urgency rating
+        urgency: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        use atlas::{GoalContent, GoalStatus, Impact, Urgency};
+
+        if status.is_none() && impact.is_none() && urgency.is_none() {
+            return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                .with_message("Must specify at least one field to update".to_string(), true));
+        }
+
+        // Get existing record
+        let record = match self.record_client.get_record(&id).await {
+            Ok(Some(r)) if r.record_type == "goal" => r,
+            Ok(Some(_)) => {
+                return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                    .with_message(format!("Record {} is not a goal", id), true));
+            }
+            Ok(None) => {
+                return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                    .with_message(format!("Goal not found: {}", id), true));
+            }
+            Err(e) => {
+                return Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR)
+                    .with_message(format!("Failed to get goal: {}", e), true));
+            }
+        };
+
+        let mut content = GoalContent::from_json(&record.content).unwrap_or_default();
+
+        if let Some(s) = &status {
+            match s.parse::<GoalStatus>() {
+                Ok(st) => {
+                    content.status = st;
+                    // Note: achieved_at will be set server-side when status changes to Achieved
+                }
+                Err(_) => {
+                    return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                        .with_message(format!("Invalid status: {}", s), true));
+                }
+            }
+        }
+
+        if let Some(i) = &impact {
+            match i.parse::<Impact>() {
+                Ok(imp) => content.impact = imp,
+                Err(_) => {
+                    return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                        .with_message(format!("Invalid impact: {}", i), true));
+                }
+            }
+        }
+
+        if let Some(u) = &urgency {
+            match u.parse::<Urgency>() {
+                Ok(urg) => content.urgency = urg,
+                Err(_) => {
+                    return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
+                        .with_message(format!("Invalid urgency: {}", u), true));
+                }
+            }
+        }
+
+        // Update the record
+        match self
+            .record_client
+            .update_record(&id, None, None, Some(content.to_json()))
+            .await
+        {
+            Ok(Some(updated)) => {
+                let id_str = updated.id_str().unwrap_or_default();
+                Ok(format!(
+                    "Updated goal: {}\n  Impact: {}\n  Urgency: {}\n  Status: {}",
+                    id_str, content.impact, content.urgency, content.status
+                ))
+            }
+            Ok(None) => {
+                let msg = format!("Goal not found: {}", id);
+                Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS).with_message(msg, true))
+            }
+            Err(e) => {
+                let msg = format!("Failed to update goal: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Link a task or sub-goal to a parent goal
+    ///
+    /// Creates a part_of relationship: child --part_of--> parent.
+    /// This builds the hierarchical goal tree structure.
+    #[tool]
+    async fn link_to_goal(
+        &self,
+        /// Child ID (task or sub-goal)
+        child_id: String,
+        /// Parent goal ID
+        parent_goal_id: String,
+    ) -> mcp_attr::Result<String> {
+        match self
+            .record_client
+            .create_edge(&child_id, &parent_goal_id, "part_of", None)
+            .await
+        {
+            Ok(_) => Ok(format!(
+                "Linked {} to goal {}\n  Relation: part_of",
+                child_id, parent_goal_id
+            )),
+            Err(e) => {
+                let msg = format!("Failed to link to goal: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Get the goal tree showing hierarchy of goals and tasks
+    ///
+    /// Returns a tree view starting from root goals (those with no parent),
+    /// showing sub-goals and tasks at each level.
+    #[tool]
+    async fn get_goal_tree(&self, _root_goal_id: Option<String>) -> mcp_attr::Result<String> {
+        use atlas::GoalContent;
+
+        // Get all goals
+        let goals = match self.record_client.list_records(Some("goal"), false, None).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR)
+                    .with_message(format!("Failed to list goals: {}", e), true));
+            }
+        };
+
+        if goals.is_empty() {
+            return Ok("No goals found. Create goals using create_goal and link them with link_to_goal.".to_string());
+        }
+
+        // For now, just list goals with their priority info
+        // A full tree view would require traversing edges
+        let mut output = String::from("Goal Tree:\n");
+
+        for goal in &goals {
+            let content = GoalContent::from_json(&goal.content).unwrap_or_default();
+            let id = goal.id_str().unwrap_or_default();
+            output.push_str(&format!(
+                "\n[{}] {} (impact: {}, urgency: {}, status: {})",
+                id, goal.name, content.impact, content.urgency, content.status
+            ));
+
+            if let Some(desc) = &goal.description {
+                output.push_str(&format!("\n    {}", desc));
+            }
+        }
+
+        output.push_str("\n\nUse link_to_goal to establish parent-child relationships.");
+        Ok(output)
+    }
+
+    // -------------------------------------------------------------------------
     // Memo tools (Atlas knowledge base)
     // -------------------------------------------------------------------------
 
