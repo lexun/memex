@@ -24,7 +24,7 @@ use atlas::{
     Record, RecordType, Store as AtlasStore,
     TaskView, TaskNoteView, TaskDependencyView,
 };
-use cortex::{WorkerConfig, WorkerId, WorkerManager, WorkerState, WorkerStatus};
+use cortex::{ShellReloadResult, WorkerConfig, WorkerId, WorkerManager, WorkerState, WorkerStatus};
 use db::Database;
 use forge::{DbWorker, Store as ForgeStore, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
@@ -647,7 +647,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "cortex_remove_worker" => handle_cortex_remove_worker(request, stores).await,
         "cortex_worker_transcript" => handle_cortex_worker_transcript(request, &stores.workers).await,
         "cortex_validate_shell" => handle_cortex_validate_shell(request, &stores.workers).await,
-        "cortex_reload_shell" => handle_cortex_reload_shell(request, &stores.workers).await,
+        "cortex_reload_shell" => handle_cortex_reload_shell(request, stores).await,
         "cortex_get_coordinator" => handle_cortex_get_coordinator(stores).await,
 
         // Vibetree operations (worktree management)
@@ -3328,16 +3328,23 @@ struct ReloadShellParams {
 /// clears the worker's session so it starts fresh with the new environment.
 async fn handle_cortex_reload_shell(
     request: &Request,
-    workers: &WorkerManager,
+    stores: &Arc<Stores>,
 ) -> Result<serde_json::Value, IpcError> {
     let params: ReloadShellParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
     let worker_id = WorkerId::from_string(&params.worker_id);
-    let result = workers
+    let result = stores.workers
         .reload_shell(&worker_id, params.clear_session)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // If session was cleared, persist to database
+    if let ShellReloadResult::Success { session_cleared: true, .. } = &result {
+        if let Err(e) = stores.forge.update_worker_session(&params.worker_id, None).await {
+            tracing::warn!("Failed to persist session clear to DB: {}", e);
+        }
+    }
 
     Ok(serde_json::to_value(result).unwrap())
 }
@@ -3470,7 +3477,7 @@ async fn handle_cortex_send_message_async(
     tokio::spawn(async move {
         let result = stores_clone.workers.send_message(&worker_id, &message).await;
 
-        let response_value = match result {
+        let response_value = match &result {
             Ok(response) => json!({
                 "result": response.result,
                 "is_error": response.is_error,
@@ -3484,6 +3491,42 @@ async fn handle_cortex_send_message_async(
                 "duration_ms": 0,
             }),
         };
+
+        // Persist session_id and status to database (same as sync handler)
+        if let Ok(response) = &result {
+            if let Some(ref session_id) = response.session_id {
+                if let Err(e) = stores_clone.forge.update_worker_session(&worker_id.0, Some(session_id)).await {
+                    tracing::warn!("Failed to persist worker session to DB: {}", e);
+                }
+            }
+
+            // Update status in database
+            let status = stores_clone.workers.status(&worker_id).await.ok();
+            if let Some(status) = status {
+                let state_str = match &status.state {
+                    WorkerState::Starting => "starting",
+                    WorkerState::Ready => "ready",
+                    WorkerState::Working => "working",
+                    WorkerState::Idle => "idle",
+                    WorkerState::Stopped => "stopped",
+                    WorkerState::Error(_) => "error",
+                };
+                let error_msg = match &status.state {
+                    WorkerState::Error(msg) => Some(msg.as_str()),
+                    _ => None,
+                };
+                if let Err(e) = stores_clone.forge.update_worker_status(
+                    &worker_id.0,
+                    state_str,
+                    error_msg,
+                    status.current_task.as_deref(),
+                    status.messages_sent as i64,
+                    status.messages_received as i64,
+                ).await {
+                    tracing::warn!("Failed to persist worker status to DB: {}", e);
+                }
+            }
+        }
 
         // Store the result
         let mut responses = stores_clone.async_responses.write().await;
