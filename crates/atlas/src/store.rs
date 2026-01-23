@@ -2450,6 +2450,232 @@ impl Store {
         let messages: Vec<Record> = response.take(0).context("Failed to parse messages")?;
         Ok(messages)
     }
+
+    // ========== Thread/Entry Operations (Transcript Capture) ==========
+
+    /// Create a new thread for transcript capture
+    ///
+    /// Threads group conversation entries (e.g., Claude session transcripts).
+    /// Returns the created thread record.
+    pub async fn create_thread(
+        &self,
+        name: &str,
+        source: crate::record::ThreadSource,
+        session_id: Option<&str>,
+        cwd: Option<&str>,
+        task_id: Option<&str>,
+        worker_id: Option<&str>,
+    ) -> Result<Record> {
+        use crate::record::{RecordType, ThreadContent};
+        use surrealdb::sql::Datetime;
+
+        let mut content = ThreadContent::new(source);
+        if let Some(sid) = session_id {
+            content = content.with_session_id(sid);
+        }
+        if let Some(path) = cwd {
+            content = content.with_cwd(path);
+        }
+        if let Some(tid) = task_id {
+            content = content.with_task_id(tid);
+        }
+        if let Some(wid) = worker_id {
+            content = content.with_worker_id(wid);
+        }
+        content = content.with_started_at(Datetime::default());
+
+        let record = Record::new(RecordType::Thread, name)
+            .with_content(content.to_json());
+
+        self.create_record(record).await
+    }
+
+    /// Create a new entry within a thread
+    ///
+    /// Entries are individual turns in a conversation.
+    /// Returns the created entry record and links it to the thread.
+    pub async fn create_entry(
+        &self,
+        thread_id: &str,
+        role: crate::record::EntryRole,
+        turn_number: i32,
+        content_text: &str,
+        tokens: Option<i32>,
+        duration_ms: Option<i64>,
+        model: Option<&str>,
+        tools_used: Vec<String>,
+    ) -> Result<Record> {
+        use crate::record::{RecordType, EntryContent};
+        use surrealdb::sql::Datetime;
+
+        // Create a brief summary for the entry name (first 50 chars of content)
+        let name = if content_text.len() > 50 {
+            format!("{}...", &content_text[..47])
+        } else {
+            content_text.to_string()
+        };
+
+        let mut entry_content = EntryContent::new(role, turn_number)
+            .with_timestamp(Datetime::default())
+            .with_thread_id(thread_id)
+            .with_tool_calls(tools_used.len() as i32)
+            .with_tools_used(tools_used);
+
+        if let Some(t) = tokens {
+            entry_content = entry_content.with_tokens(t);
+        }
+        if let Some(d) = duration_ms {
+            entry_content = entry_content.with_duration_ms(d);
+        }
+        if let Some(m) = model {
+            entry_content = entry_content.with_model(m);
+        }
+
+        let record = Record::new(RecordType::Entry, &name)
+            .with_description(content_text)
+            .with_content(entry_content.to_json());
+
+        let entry = self.create_record(record).await?;
+        let entry_id = entry.id_str().expect("entry should have id");
+
+        // Create "contains" edge from thread to entry
+        self.create_edge(thread_id, &entry_id, EdgeRelation::Contains, None).await?;
+
+        // Update thread's entry_count
+        let sql = r#"
+            UPDATE type::thing('record', $thread_id) SET
+                content.entry_count = content.entry_count + 1,
+                updated_at = time::now()
+        "#;
+        let _ = self.db.client()
+            .query(sql)
+            .bind(("thread_id", thread_id.to_string()))
+            .await;
+
+        Ok(entry)
+    }
+
+    /// Get a thread by ID with its entries
+    pub async fn get_thread_with_entries(
+        &self,
+        thread_id: &str,
+        limit: Option<usize>,
+    ) -> Result<(Option<Record>, Vec<Record>)> {
+        // Get the thread record
+        let thread = self.get_record(thread_id).await?;
+
+        // Get entries in this thread, ordered by turn number
+        let limit_clause = limit.map(|l| format!(" LIMIT {}", l)).unwrap_or_default();
+        let query = format!(
+            "SELECT * FROM record WHERE record_type = 'entry' AND deleted_at IS NONE AND content.thread_id = $thread_id ORDER BY content.turn_number ASC{}",
+            limit_clause
+        );
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("thread_id", thread_id.to_string()))
+            .await
+            .context("Failed to query thread entries")?;
+
+        let entries: Vec<Record> = response.take(0).context("Failed to parse entries")?;
+        Ok((thread, entries))
+    }
+
+    /// List threads with optional filters
+    pub async fn list_threads(
+        &self,
+        worker_id: Option<&str>,
+        task_id: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Record>> {
+        let mut query = String::from(
+            "SELECT * FROM record WHERE record_type = 'thread' AND deleted_at IS NONE"
+        );
+
+        if worker_id.is_some() {
+            query.push_str(" AND content.worker_id = $worker_id");
+        }
+        if task_id.is_some() {
+            query.push_str(" AND content.task_id = $task_id");
+        }
+
+        query.push_str(" ORDER BY created_at DESC");
+
+        if let Some(n) = limit {
+            query.push_str(&format!(" LIMIT {}", n));
+        }
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .bind(("worker_id", worker_id.map(|s| s.to_string())))
+            .bind(("task_id", task_id.map(|s| s.to_string())))
+            .await
+            .context("Failed to query threads")?;
+
+        let threads: Vec<Record> = response.take(0).context("Failed to parse threads")?;
+        Ok(threads)
+    }
+
+    /// Get thread by worker ID (most recent)
+    pub async fn get_thread_by_worker(&self, worker_id: &str) -> Result<Option<Record>> {
+        let query = "SELECT * FROM record WHERE record_type = 'thread' AND deleted_at IS NONE AND content.worker_id = $worker_id ORDER BY created_at DESC LIMIT 1";
+
+        let mut response = self
+            .db
+            .client()
+            .query(query)
+            .bind(("worker_id", worker_id.to_string()))
+            .await
+            .context("Failed to query thread by worker")?;
+
+        let threads: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(threads.into_iter().next())
+    }
+
+    /// Update thread to mark it as ended
+    pub async fn end_thread(&self, thread_id: &str) -> Result<Option<Record>> {
+        use surrealdb::sql::Datetime;
+
+        let sql = r#"
+            UPDATE type::thing('record', $id) SET
+                content.ended_at = $ended_at,
+                updated_at = time::now()
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("id", thread_id.to_string()))
+            .bind(("ended_at", Datetime::default().to_string()))
+            .await
+            .context("Failed to end thread")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
+    /// Update thread with token count
+    pub async fn update_thread_tokens(&self, thread_id: &str, tokens: i64) -> Result<()> {
+        let sql = r#"
+            UPDATE type::thing('record', $id) SET
+                content.total_tokens = (content.total_tokens ?? 0) + $tokens,
+                updated_at = time::now()
+        "#;
+
+        let _ = self.db.client()
+            .query(sql)
+            .bind(("id", thread_id.to_string()))
+            .bind(("tokens", tokens))
+            .await
+            .context("Failed to update thread tokens")?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

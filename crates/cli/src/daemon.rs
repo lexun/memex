@@ -23,6 +23,7 @@ use atlas::{
     Event, EventSource, Extractor, MemoSource, MultiStepExtractor, QueryDecomposer,
     Record, RecordType, Store as AtlasStore,
     TaskView, TaskNoteView, TaskDependencyView,
+    ThreadSource, EntryRole,
 };
 use cortex::{ShellReloadResult, WorkerConfig, WorkerId, WorkerManager, WorkerState, WorkerStatus};
 use db::Database;
@@ -649,7 +650,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "cortex_worker_status" => handle_cortex_worker_status(request, &stores.workers).await,
         "cortex_list_workers" => handle_cortex_list_workers(&stores.workers).await,
         "cortex_remove_worker" => handle_cortex_remove_worker(request, stores).await,
-        "cortex_worker_transcript" => handle_cortex_worker_transcript(request, &stores.workers).await,
+        "cortex_worker_transcript" => handle_cortex_worker_transcript(request, stores).await,
         "cortex_validate_shell" => handle_cortex_validate_shell(request, &stores.workers).await,
         "cortex_reload_shell" => handle_cortex_reload_shell(request, stores).await,
         "cortex_get_coordinator" => handle_cortex_get_coordinator(stores).await,
@@ -3154,13 +3155,27 @@ async fn handle_cortex_create_worker(
 
     // Persist to database
     let db_worker = DbWorker::new(&worker_id.0, &params.cwd)
-        .with_model(params.model.unwrap_or_default())
-        .with_system_prompt(params.system_prompt.unwrap_or_default())
+        .with_model(params.model.clone().unwrap_or_default())
+        .with_system_prompt(params.system_prompt.clone().unwrap_or_default())
         .with_mcp_config(mcp_config_json);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
         tracing::warn!("Failed to persist worker to DB: {}", e);
         // Continue anyway - worker is created in memory
+    }
+
+    // Create a Thread record for transcript capture
+    let thread_name = format!("Worker {} session", &worker_id.0);
+    if let Err(e) = stores.atlas.create_thread(
+        &thread_name,
+        ThreadSource::CortexWorker,
+        None,  // session_id will be set after first message
+        Some(&params.cwd),
+        None,  // task_id - will be linked via dispatch_task if applicable
+        Some(&worker_id.0),
+    ).await {
+        tracing::warn!("Failed to create thread for worker {}: {}", worker_id.0, e);
+        // Continue anyway - transcript capture is non-critical
     }
 
     Ok(json!(worker_id.0))
@@ -3181,6 +3196,16 @@ async fn handle_cortex_send_message(
 
     let worker_id = WorkerId::from_string(&params.worker_id);
 
+    // Get the thread for this worker before sending message
+    let thread = stores.atlas.get_thread_by_worker(&params.worker_id).await.ok().flatten();
+    let thread_id = thread.as_ref().and_then(|t| t.id_str());
+
+    // Get current turn number from thread
+    let turn_number = thread.as_ref()
+        .and_then(|t| t.content.get("entry_count"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+
     let response = stores.workers
         .send_message(&worker_id, &params.message)
         .await
@@ -3190,6 +3215,39 @@ async fn handle_cortex_send_message(
     if let Some(ref session_id) = response.session_id {
         if let Err(e) = stores.forge.update_worker_session(&params.worker_id, Some(session_id)).await {
             tracing::warn!("Failed to persist worker session to DB: {}", e);
+        }
+    }
+
+    // Create Entry records for transcript capture
+    if let Some(ref tid) = thread_id {
+        // Create user entry (the prompt)
+        if let Err(e) = stores.atlas.create_entry(
+            tid,
+            EntryRole::User,
+            turn_number,
+            &params.message,
+            None,  // tokens not available for user input
+            None,  // no duration for user input
+            None,  // no model for user input
+            vec![],
+        ).await {
+            tracing::warn!("Failed to create user entry for thread {}: {}", tid, e);
+        }
+
+        // Create assistant entry (the response)
+        // Extract tools used from response if possible (we can enhance this later)
+        let tools_used: Vec<String> = vec![];  // TODO: parse from response.result if needed
+        if let Err(e) = stores.atlas.create_entry(
+            tid,
+            EntryRole::Assistant,
+            turn_number + 1,
+            &response.result,
+            None,  // tokens - could be parsed from response metadata
+            Some(response.duration_ms as i64),
+            None,  // model - could come from worker config
+            tools_used,
+        ).await {
+            tracing::warn!("Failed to create assistant entry for thread {}: {}", tid, e);
         }
     }
 
@@ -3242,6 +3300,15 @@ async fn handle_cortex_remove_worker(
 
     let worker_id = WorkerId::from_string(&params.worker_id);
 
+    // End the thread for this worker (mark as ended)
+    if let Ok(Some(thread)) = stores.atlas.get_thread_by_worker(&params.worker_id).await {
+        if let Some(thread_id) = thread.id_str() {
+            if let Err(e) = stores.atlas.end_thread(&thread_id).await {
+                tracing::warn!("Failed to end thread for worker {}: {}", params.worker_id, e);
+            }
+        }
+    }
+
     // Remove from in-memory manager
     stores.workers
         .remove(&worker_id)
@@ -3266,19 +3333,55 @@ struct TranscriptParams {
 /// Get the conversation transcript for a worker
 async fn handle_cortex_worker_transcript(
     request: &Request,
-    workers: &WorkerManager,
+    stores: &Arc<Stores>,
 ) -> Result<serde_json::Value, IpcError> {
     let params: TranscriptParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
     let worker_id = WorkerId::from_string(&params.worker_id);
 
-    let transcript = workers
+    // First, try to get persistent transcript from database
+    if let Ok(Some(thread)) = stores.atlas.get_thread_by_worker(&params.worker_id).await {
+        if let Some(thread_id) = thread.id_str() {
+            if let Ok((_, entries)) = stores.atlas.get_thread_with_entries(&thread_id, params.limit).await {
+                // Convert Entry records to TranscriptEntry format for API compatibility
+                let transcript: Vec<serde_json::Value> = entries.iter().map(|entry| {
+                    let content = &entry.content;
+                    let role = content.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let is_user = role == "user";
+
+                    json!({
+                        "timestamp": entry.created_at.to_string(),
+                        "prompt": if is_user { entry.description.clone().unwrap_or_default() } else { String::new() },
+                        "response": if !is_user { entry.description.clone() } else { None::<String> },
+                        "is_error": false,
+                        "duration_ms": content.get("duration_ms").and_then(|v| v.as_i64()).unwrap_or(0),
+                        "role": role,
+                        "turn_number": content.get("turn_number").and_then(|v| v.as_i64()).unwrap_or(0),
+                    })
+                }).collect();
+
+                if !transcript.is_empty() {
+                    return Ok(json!({
+                        "source": "database",
+                        "thread_id": thread_id,
+                        "entries": transcript,
+                    }));
+                }
+            }
+        }
+    }
+
+    // Fall back to in-memory transcript
+    let transcript = stores.workers
         .transcript(&worker_id, params.limit)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
-    Ok(serde_json::to_value(transcript).unwrap())
+    Ok(json!({
+        "source": "memory",
+        "entries": transcript,
+    }))
 }
 
 #[derive(Deserialize)]

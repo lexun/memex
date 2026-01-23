@@ -32,6 +32,7 @@ pub use record::{
     ContextAssembly, EdgeRelation, Record, RecordEdge, RecordType,
     TaskContent, TaskStatus, TaskView, TaskNoteView, TaskDependencyView,
     MessageContent, MessageType, MessageView,
+    ThreadContent, ThreadSource, EntryContent, EntryRole,
     TASK_NOTE_RELATION, task_relations,
 };
 pub use record_extraction::{
