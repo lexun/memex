@@ -94,6 +94,12 @@ pub enum RecordType {
     /// An MCP (Model Context Protocol) server configuration
     /// Content fields: { command, args, env }
     McpServer,
+    /// A conversation thread - groups related entries (e.g., Claude session transcripts)
+    /// Content fields: { source, session_id, started_at, ended_at, metadata }
+    Thread,
+    /// A single entry within a thread (e.g., a message turn in a conversation)
+    /// Content fields: { role, turn_number, tool_calls, tokens, timestamp }
+    Entry,
 }
 
 impl Default for RecordType {
@@ -117,6 +123,8 @@ impl std::fmt::Display for RecordType {
             RecordType::Task => write!(f, "task"),
             RecordType::Message => write!(f, "message"),
             RecordType::McpServer => write!(f, "mcp_server"),
+            RecordType::Thread => write!(f, "thread"),
+            RecordType::Entry => write!(f, "entry"),
         }
     }
 }
@@ -138,6 +146,8 @@ impl std::str::FromStr for RecordType {
             "task" => Ok(RecordType::Task),
             "message" => Ok(RecordType::Message),
             "mcp_server" => Ok(RecordType::McpServer),
+            "thread" => Ok(RecordType::Thread),
+            "entry" => Ok(RecordType::Entry),
             _ => Err(format!("Unknown record type: {}", s)),
         }
     }
@@ -223,6 +233,12 @@ pub enum EdgeRelation {
     /// Repo/project uses MCP server
     /// Links repos/projects to their configured MCP servers
     UsesServer,
+    /// Thread contains entry, project contains document
+    /// Links container records to their contents
+    Contains,
+    /// Thread/entry captures context from session
+    /// Links transcript records to their source (repo, task, worker)
+    CapturesFrom,
     /// Generic association
     RelatedTo,
 }
@@ -247,6 +263,8 @@ impl std::fmt::Display for EdgeRelation {
             EdgeRelation::AddressedTo => write!(f, "addressed_to"),
             EdgeRelation::SentFrom => write!(f, "sent_from"),
             EdgeRelation::UsesServer => write!(f, "uses_server"),
+            EdgeRelation::Contains => write!(f, "contains"),
+            EdgeRelation::CapturesFrom => write!(f, "captures_from"),
             EdgeRelation::RelatedTo => write!(f, "related_to"),
         }
     }
@@ -268,6 +286,8 @@ impl std::str::FromStr for EdgeRelation {
             "addressed_to" => Ok(EdgeRelation::AddressedTo),
             "sent_from" => Ok(EdgeRelation::SentFrom),
             "uses_server" => Ok(EdgeRelation::UsesServer),
+            "contains" => Ok(EdgeRelation::Contains),
+            "captures_from" => Ok(EdgeRelation::CapturesFrom),
             "related_to" => Ok(EdgeRelation::RelatedTo),
             _ => Err(format!("Unknown edge relation: {}", s)),
         }
@@ -982,6 +1002,346 @@ impl ProjectContent {
             record_id: record_id.into(),
             order: None,
         });
+        self
+    }
+
+    /// Convert to JSON Value for storage in Record.content
+    pub fn to_json(&self) -> JsonValue {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    /// Parse from Record.content JSON
+    pub fn from_json(value: &JsonValue) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
+// =============================================================================
+// Thread-specific types: Threads group conversation entries for transcript capture
+// =============================================================================
+
+/// Source of a conversation thread
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadSource {
+    /// Claude Code CLI session
+    ClaudeCode,
+    /// Cortex worker session
+    CortexWorker,
+    /// API conversation
+    Api,
+    /// Imported from external source
+    Import,
+    /// Unknown or unspecified source
+    Unknown,
+}
+
+impl Default for ThreadSource {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+impl std::fmt::Display for ThreadSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ThreadSource::ClaudeCode => write!(f, "claude_code"),
+            ThreadSource::CortexWorker => write!(f, "cortex_worker"),
+            ThreadSource::Api => write!(f, "api"),
+            ThreadSource::Import => write!(f, "import"),
+            ThreadSource::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+impl std::str::FromStr for ThreadSource {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "claude_code" => Ok(ThreadSource::ClaudeCode),
+            "cortex_worker" => Ok(ThreadSource::CortexWorker),
+            "api" => Ok(ThreadSource::Api),
+            "import" => Ok(ThreadSource::Import),
+            "unknown" => Ok(ThreadSource::Unknown),
+            _ => Err(format!("Unknown thread source: {}", s)),
+        }
+    }
+}
+
+/// Helper struct for thread content fields stored in Record.content
+///
+/// Thread records use Record with:
+/// - record_type: "thread"
+/// - name: thread title/summary (e.g., "Implement feature X")
+/// - description: optional detailed description of the conversation
+/// - content: ThreadContent (serialized as JSON)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadContent {
+    /// Source of this thread (claude_code, cortex_worker, api, etc.)
+    pub source: ThreadSource,
+    /// Session ID from the source (e.g., Claude Code session ID)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// When the conversation started
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<Datetime>,
+    /// When the conversation ended (None if still active)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<Datetime>,
+    /// Total number of entries in this thread
+    #[serde(default)]
+    pub entry_count: i32,
+    /// Total tokens used in this thread (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<i64>,
+    /// Working directory or context path (for Claude Code sessions)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Associated task ID (if thread is related to a task)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Associated worker ID (for Cortex worker threads)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    /// Custom metadata (source-specific data)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<JsonValue>,
+}
+
+impl Default for ThreadContent {
+    fn default() -> Self {
+        Self {
+            source: ThreadSource::default(),
+            session_id: None,
+            started_at: None,
+            ended_at: None,
+            entry_count: 0,
+            total_tokens: None,
+            cwd: None,
+            task_id: None,
+            worker_id: None,
+            metadata: None,
+        }
+    }
+}
+
+impl ThreadContent {
+    /// Create new thread content with default values
+    pub fn new(source: ThreadSource) -> Self {
+        Self {
+            source,
+            ..Default::default()
+        }
+    }
+
+    /// Set session ID
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Set start time
+    pub fn with_started_at(mut self, started_at: Datetime) -> Self {
+        self.started_at = Some(started_at);
+        self
+    }
+
+    /// Set end time
+    pub fn with_ended_at(mut self, ended_at: Datetime) -> Self {
+        self.ended_at = Some(ended_at);
+        self
+    }
+
+    /// Set working directory
+    pub fn with_cwd(mut self, cwd: impl Into<String>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
+
+    /// Set task ID
+    pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
+        self.task_id = Some(task_id.into());
+        self
+    }
+
+    /// Set worker ID
+    pub fn with_worker_id(mut self, worker_id: impl Into<String>) -> Self {
+        self.worker_id = Some(worker_id.into());
+        self
+    }
+
+    /// Set custom metadata
+    pub fn with_metadata(mut self, metadata: JsonValue) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
+    /// Convert to JSON Value for storage in Record.content
+    pub fn to_json(&self) -> JsonValue {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    /// Parse from Record.content JSON
+    pub fn from_json(value: &JsonValue) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
+// =============================================================================
+// Entry-specific types: Entries are individual turns within a thread
+// =============================================================================
+
+/// Role of the entity in a conversation entry
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryRole {
+    /// User/human input
+    User,
+    /// Assistant/Claude response
+    Assistant,
+    /// System message or prompt
+    System,
+    /// Tool call or result
+    Tool,
+}
+
+impl Default for EntryRole {
+    fn default() -> Self {
+        Self::User
+    }
+}
+
+impl std::fmt::Display for EntryRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntryRole::User => write!(f, "user"),
+            EntryRole::Assistant => write!(f, "assistant"),
+            EntryRole::System => write!(f, "system"),
+            EntryRole::Tool => write!(f, "tool"),
+        }
+    }
+}
+
+impl std::str::FromStr for EntryRole {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "user" => Ok(EntryRole::User),
+            "assistant" => Ok(EntryRole::Assistant),
+            "system" => Ok(EntryRole::System),
+            "tool" => Ok(EntryRole::Tool),
+            _ => Err(format!("Unknown entry role: {}", s)),
+        }
+    }
+}
+
+/// Helper struct for entry content fields stored in Record.content
+///
+/// Entry records use Record with:
+/// - record_type: "entry"
+/// - name: brief summary of the entry (auto-generated or first line)
+/// - description: the actual content/text of the entry
+/// - content: EntryContent (serialized as JSON)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntryContent {
+    /// Role of this entry (user, assistant, system, tool)
+    pub role: EntryRole,
+    /// Turn number within the thread (0-indexed)
+    pub turn_number: i32,
+    /// Timestamp of this entry
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<Datetime>,
+    /// Number of tool calls in this entry (for assistant entries)
+    #[serde(default)]
+    pub tool_call_count: i32,
+    /// Names of tools called (for quick reference without parsing content)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_used: Vec<String>,
+    /// Token count for this entry (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<i32>,
+    /// Cache status (e.g., "hit", "miss", "write")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_status: Option<String>,
+    /// Model used for this entry (for assistant entries)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Duration in milliseconds (for assistant entries with timing)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    /// Reference to parent thread ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+}
+
+impl Default for EntryContent {
+    fn default() -> Self {
+        Self {
+            role: EntryRole::default(),
+            turn_number: 0,
+            timestamp: None,
+            tool_call_count: 0,
+            tools_used: Vec::new(),
+            tokens: None,
+            cache_status: None,
+            model: None,
+            duration_ms: None,
+            thread_id: None,
+        }
+    }
+}
+
+impl EntryContent {
+    /// Create new entry content
+    pub fn new(role: EntryRole, turn_number: i32) -> Self {
+        Self {
+            role,
+            turn_number,
+            ..Default::default()
+        }
+    }
+
+    /// Set timestamp
+    pub fn with_timestamp(mut self, timestamp: Datetime) -> Self {
+        self.timestamp = Some(timestamp);
+        self
+    }
+
+    /// Set tool call count
+    pub fn with_tool_calls(mut self, count: i32) -> Self {
+        self.tool_call_count = count;
+        self
+    }
+
+    /// Set tools used
+    pub fn with_tools_used(mut self, tools: Vec<String>) -> Self {
+        self.tools_used = tools;
+        self
+    }
+
+    /// Set token count
+    pub fn with_tokens(mut self, tokens: i32) -> Self {
+        self.tokens = Some(tokens);
+        self
+    }
+
+    /// Set model
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    /// Set duration
+    pub fn with_duration_ms(mut self, duration_ms: i64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    /// Set thread ID reference
+    pub fn with_thread_id(mut self, thread_id: impl Into<String>) -> Self {
+        self.thread_id = Some(thread_id.into());
         self
     }
 
