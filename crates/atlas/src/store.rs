@@ -360,13 +360,21 @@ impl Store {
         created.context("Entity creation returned no result")
     }
 
-    /// Find entity by name (exact match) within project
+    /// Find entity by name (case-insensitive match) within project
+    ///
+    /// When project is None, searches across all projects.
+    /// When project is Some, only matches entities in that project.
     pub async fn find_entity_by_name(
         &self,
         name: &str,
         project: Option<&str>,
     ) -> Result<Option<Entity>> {
-        let sql = "SELECT * FROM entity WHERE name = $name AND project = $project LIMIT 1";
+        // Use case-insensitive matching; when project is None, search all projects
+        let sql = if project.is_some() {
+            "SELECT * FROM entity WHERE string::lowercase(name) = string::lowercase($name) AND project = $project LIMIT 1"
+        } else {
+            "SELECT * FROM entity WHERE string::lowercase(name) = string::lowercase($name) LIMIT 1"
+        };
 
         let mut response = self
             .db
@@ -547,15 +555,26 @@ impl Store {
     }
 
     /// Get facts related to an entity by name
+    ///
+    /// First tries exact match (case-insensitive), then falls back to partial search.
+    /// This allows users to query with partial names or different casing.
     pub async fn get_facts_for_entity_name(
         &self,
         name: &str,
         project: Option<&str>,
     ) -> Result<Vec<Fact>> {
-        // First find the entity
+        // First try exact match (case-insensitive)
         let entity = self.find_entity_by_name(name, project).await?;
 
-        match entity {
+        if let Some(e) = entity {
+            let entity_id = e.id_str().unwrap_or_default();
+            return self.get_facts_for_entity(&entity_id).await;
+        }
+
+        // Fall back to partial search if exact match fails
+        let entities = self.search_entities_by_name(name, project, Some(1)).await?;
+
+        match entities.into_iter().next() {
             Some(e) => {
                 let entity_id = e.id_str().unwrap_or_default();
                 self.get_facts_for_entity(&entity_id).await

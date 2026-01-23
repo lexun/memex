@@ -583,4 +583,64 @@ mod tests {
         let filter = TemporalParser::parse("what is memex");
         assert!(filter.is_none());
     }
+
+    #[test]
+    fn test_temporal_parser_last_n_weeks() {
+        let filter = TemporalParser::parse("changes in the last 2 weeks").unwrap();
+        assert!(filter.start.is_some());
+        assert!(filter.end.is_some());
+        // End should be roughly now (within a day)
+        let now = chrono::Utc::now();
+        let end = filter.end.unwrap();
+        assert!((now - end).num_days() <= 1);
+    }
+
+    #[test]
+    fn test_temporal_parser_before_date() {
+        let filter = TemporalParser::parse("tasks before December").unwrap();
+        assert!(filter.start.is_none()); // Open-ended start
+        assert!(filter.end.is_some());
+    }
+
+    #[test]
+    fn test_temporal_parser_case_insensitive() {
+        // "TODAY" should work same as "today"
+        let filter1 = TemporalParser::parse("what happened TODAY");
+        let filter2 = TemporalParser::parse("what happened today");
+        assert!(filter1.is_some());
+        assert!(filter2.is_some());
+    }
+
+    #[test]
+    fn test_temporal_parser_last_month() {
+        let filter = TemporalParser::parse("progress last month").unwrap();
+        assert!(filter.start.is_some());
+        assert!(filter.end.is_some());
+        // Start should be before end
+        assert!(filter.start.unwrap() < filter.end.unwrap());
+    }
+
+    #[test]
+    fn test_parse_intent_aliases() {
+        // Test various aliases for intent types
+        assert_eq!(parse_intent("relationship"), QueryIntent::Relational);
+        assert_eq!(parse_intent("relation"), QueryIntent::Relational);
+        assert_eq!(parse_intent("procedure"), QueryIntent::Procedural);
+        assert_eq!(parse_intent("how-to"), QueryIntent::Procedural);
+        assert_eq!(parse_intent("time"), QueryIntent::Temporal);
+        assert_eq!(parse_intent("when"), QueryIntent::Temporal);
+        assert_eq!(parse_intent("enumerate"), QueryIntent::Enumerative);
+    }
+
+    #[test]
+    fn test_extract_json_with_whitespace() {
+        let input = r#"
+            ```json
+            {"keywords": ["test", "example"], "intent": "factual"}
+            ```
+        "#;
+        let extracted = extract_json(input);
+        assert!(extracted.contains("keywords"));
+        assert!(extracted.contains("test"));
+    }
 }
