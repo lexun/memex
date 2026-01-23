@@ -3653,19 +3653,23 @@ async fn handle_cortex_dispatch_task(
     };
 
     // 3. Assemble context if we have a record ID
-    let context_prompt = if let Some(ref record_id) = context_record_id {
+    let (context_prompt, mcp_server_configs) = if let Some(ref record_id) = context_record_id {
         match stores.atlas.assemble_context(record_id, 3).await {
             Ok(assembly) => {
                 let prompt = assembly.to_system_prompt();
-                if prompt.is_empty() { None } else { Some(prompt) }
+                let mcp_configs = assembly.mcp_server_configs();
+                (
+                    if prompt.is_empty() { None } else { Some(prompt) },
+                    mcp_configs
+                )
             }
             Err(e) => {
                 tracing::warn!("Failed to assemble context from {}: {}", record_id, e);
-                None
+                (None, vec![])
             }
         }
     } else {
-        None
+        (None, vec![])
     };
 
     // 4. Determine worktree path
@@ -3757,11 +3761,19 @@ async fn handle_cortex_dispatch_task(
         config = config.with_model(model);
     }
 
-    // Configure MCP - only Memex, not all user servers (avoids auth popups from Notion etc)
-    let memex_mcp_config = r#"{"mcpServers":{"memex":{"command":"memex","args":["mcp","serve"]}}}"#;
+    // Configure MCP servers from context assembly
+    // If no MCP servers found in context, fall back to memex-only
+    let mcp_server_list = if mcp_server_configs.is_empty() {
+        // Fallback: only Memex, not all user servers (avoids auth popups from Notion etc)
+        let memex_mcp_config = r#"{"mcpServers":{"memex":{"command":"memex","args":["mcp","serve"]}}}"#;
+        vec![memex_mcp_config.to_string()]
+    } else {
+        mcp_server_configs
+    };
+
     let mcp_config = cortex::WorkerMcpConfig {
         strict: true,
-        servers: vec![memex_mcp_config.to_string()],
+        servers: mcp_server_list,
     };
     // Serialize before moving into config
     let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
@@ -3983,19 +3995,23 @@ async fn dispatch_single_task(
     };
 
     // 3. Assemble context if we have a record ID
-    let context_prompt = if let Some(ref record_id) = context_record_id {
+    let (context_prompt, mcp_server_configs) = if let Some(ref record_id) = context_record_id {
         match stores.atlas.assemble_context(record_id, 3).await {
             Ok(assembly) => {
                 let prompt = assembly.to_system_prompt();
-                if prompt.is_empty() { None } else { Some(prompt) }
+                let mcp_configs = assembly.mcp_server_configs();
+                (
+                    if prompt.is_empty() { None } else { Some(prompt) },
+                    mcp_configs
+                )
             }
             Err(e) => {
                 tracing::warn!("Failed to assemble context from {}: {}", record_id, e);
-                None
+                (None, vec![])
             }
         }
     } else {
-        None
+        (None, vec![])
     };
 
     // 4. Create worktree using vibetree
@@ -4100,11 +4116,19 @@ async fn dispatch_single_task(
         config = config.with_model(model);
     }
 
-    // Configure MCP - only Memex, not all user servers (avoids auth popups from Notion etc)
-    let memex_mcp_config = r#"{"mcpServers":{"memex":{"command":"memex","args":["mcp","serve"]}}}"#;
+    // Configure MCP servers from context assembly
+    // If no MCP servers found in context, fall back to memex-only
+    let mcp_server_list = if mcp_server_configs.is_empty() {
+        // Fallback: only Memex, not all user servers (avoids auth popups from Notion etc)
+        let memex_mcp_config = r#"{"mcpServers":{"memex":{"command":"memex","args":["mcp","serve"]}}}"#;
+        vec![memex_mcp_config.to_string()]
+    } else {
+        mcp_server_configs
+    };
+
     let mcp_config = cortex::WorkerMcpConfig {
         strict: true,
-        servers: vec![memex_mcp_config.to_string()],
+        servers: mcp_server_list,
     };
     // Serialize before moving into config
     let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();

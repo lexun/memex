@@ -91,6 +91,9 @@ pub enum RecordType {
     /// An agent message - communication between agents (Coordinator, workers, Primary Claude)
     /// Content fields: { message_type, read, read_at }
     Message,
+    /// An MCP (Model Context Protocol) server configuration
+    /// Content fields: { command, args, env }
+    McpServer,
 }
 
 impl Default for RecordType {
@@ -113,6 +116,7 @@ impl std::fmt::Display for RecordType {
             RecordType::Technology => write!(f, "technology"),
             RecordType::Task => write!(f, "task"),
             RecordType::Message => write!(f, "message"),
+            RecordType::McpServer => write!(f, "mcp_server"),
         }
     }
 }
@@ -133,6 +137,7 @@ impl std::str::FromStr for RecordType {
             "technology" => Ok(RecordType::Technology),
             "task" => Ok(RecordType::Task),
             "message" => Ok(RecordType::Message),
+            "mcp_server" => Ok(RecordType::McpServer),
             _ => Err(format!("Unknown record type: {}", s)),
         }
     }
@@ -215,6 +220,9 @@ pub enum EdgeRelation {
     /// Message sent from an agent/worker
     /// Links messages to their sender for provenance
     SentFrom,
+    /// Repo/project uses MCP server
+    /// Links repos/projects to their configured MCP servers
+    UsesServer,
     /// Generic association
     RelatedTo,
 }
@@ -238,6 +246,7 @@ impl std::fmt::Display for EdgeRelation {
             EdgeRelation::AssignedTo => write!(f, "assigned_to"),
             EdgeRelation::AddressedTo => write!(f, "addressed_to"),
             EdgeRelation::SentFrom => write!(f, "sent_from"),
+            EdgeRelation::UsesServer => write!(f, "uses_server"),
             EdgeRelation::RelatedTo => write!(f, "related_to"),
         }
     }
@@ -258,6 +267,7 @@ impl std::str::FromStr for EdgeRelation {
             "assigned_to" => Ok(EdgeRelation::AssignedTo),
             "addressed_to" => Ok(EdgeRelation::AddressedTo),
             "sent_from" => Ok(EdgeRelation::SentFrom),
+            "uses_server" => Ok(EdgeRelation::UsesServer),
             "related_to" => Ok(EdgeRelation::RelatedTo),
             _ => Err(format!("Unknown edge relation: {}", s)),
         }
@@ -413,6 +423,25 @@ impl ContextAssembly {
     /// Get all tasks
     pub fn tasks(&self) -> Vec<&Record> {
         self.records_of_type(RecordType::Task)
+    }
+
+    /// Get all MCP servers
+    pub fn mcp_servers(&self) -> Vec<&Record> {
+        self.records_of_type(RecordType::McpServer)
+    }
+
+    /// Convert MCP server records to MCP config JSON strings
+    ///
+    /// Returns a vector of JSON config strings, one per MCP server.
+    /// These can be passed to worker MCP configuration.
+    pub fn mcp_server_configs(&self) -> Vec<String> {
+        self.mcp_servers()
+            .iter()
+            .filter_map(|record| {
+                let content = McpServerContent::from_json(&record.content)?;
+                Some(content.to_mcp_config_json(&record.name))
+            })
+            .collect()
     }
 
     /// Format the context assembly as a system prompt for agents
@@ -749,6 +778,91 @@ impl MessageContent {
         serde_json::from_value(value.clone()).ok()
     }
 }
+
+// =============================================================================
+// McpServer-specific types: MCP servers are records with config in content
+// =============================================================================
+
+/// Helper struct for MCP server content fields stored in Record.content
+///
+/// MCP server records use Record with:
+/// - record_type: "mcp_server"
+/// - name: human-readable server name (e.g., "Memex", "Filesystem")
+/// - description: optional description of what this server provides
+/// - content: McpServerContent (serialized as JSON)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerContent {
+    /// Command to run (e.g., "memex", "npx", "/usr/local/bin/mcp-server")
+    pub command: String,
+    /// Arguments to pass to the command
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Optional environment variables to set
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<serde_json::Map<String, JsonValue>>,
+}
+
+impl McpServerContent {
+    /// Create new MCP server content
+    pub fn new(command: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+            args: vec![],
+            env: None,
+        }
+    }
+
+    /// Set args
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.args = args;
+        self
+    }
+
+    /// Set environment variables
+    pub fn with_env(mut self, env: serde_json::Map<String, JsonValue>) -> Self {
+        self.env = Some(env);
+        self
+    }
+
+    /// Convert to JSON Value for storage in Record.content
+    pub fn to_json(&self) -> JsonValue {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    /// Parse from Record.content JSON
+    pub fn from_json(value: &JsonValue) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+
+    /// Convert to MCP server JSON config string
+    /// Returns the JSON string in the format expected by Claude Code's MCP config
+    pub fn to_mcp_config_json(&self, server_name: &str) -> String {
+        let mut server_config = serde_json::json!({
+            "command": self.command,
+        });
+
+        if !self.args.is_empty() {
+            server_config["args"] = serde_json::json!(self.args);
+        }
+
+        if let Some(ref env) = self.env {
+            if !env.is_empty() {
+                server_config["env"] = serde_json::json!(env);
+            }
+        }
+
+        serde_json::json!({
+            "mcpServers": {
+                server_name: server_config
+            }
+        })
+        .to_string()
+    }
+}
+
+// =============================================================================
+// Message view types
+// =============================================================================
 
 /// A view of a Message record for API compatibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
