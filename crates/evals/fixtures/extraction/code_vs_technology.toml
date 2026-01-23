@@ -45,32 +45,32 @@ name = "messaging-service"
 
 # =============================================================================
 # NOT EXPECTED (quality gates)
-# These internal code constructs should NOT be extracted
+# These internal code constructs should NOT be extracted as ANY type
 # =============================================================================
 
 [[expected.not_present]]
-type = "technology"
 name_contains = "MessageType"
-reason = "Internal enum, not an external technology"
+reason = "Internal enum, not a meaningful entity"
 
 [[expected.not_present]]
-type = "technology"
 name_contains = "send_message"
-reason = "Internal function name, not an external technology"
+reason = "Internal function name, not a meaningful entity"
 
 [[expected.not_present]]
-type = "technology"
 name_contains = "MessageHandler"
-reason = "Internal class/struct, not an external technology"
+reason = "Internal class/struct, not a meaningful entity"
 
 [[expected.not_present]]
-type = "technology"
 name_contains = "check_messages"
-reason = "Internal function name, not an external technology"
+reason = "Internal function name, not a meaningful entity"
 
 [[expected.not_present]]
 name_contains = "enum"
 reason = "Code construct keyword, not a meaningful entity"
+
+[[expected.not_present]]
+name_contains = "()"
+reason = "Function call syntax indicates code, not an entity"
 
 # =============================================================================
 # TEST MEMOS

@@ -120,34 +120,62 @@ impl<'a> MultiStepExtractor<'a> {
 
     /// Step 1: Extract entity mentions from the memo
     async fn extract_entities(&self, content: &str) -> Result<EntityExtractionResult> {
-        let prompt = r#"Analyze this memo and extract ALL entity mentions and relationships.
+        let prompt = r#"Analyze this memo and extract meaningful entity mentions and relationships.
 
 ENTITY TYPES (ONLY use these six types):
 - company: Organizations, businesses (e.g., "DataFlow Inc", "TechFlow")
 - team: Groups within companies (e.g., "Engineering Team", "Pipeline Team")
 - person: Individual people by name (e.g., "Sarah Kim", "Marcus Johnson")
   Note: Personal expertise like "Rust development" is an ATTRIBUTE of Person, not a separate entity
-- repo: Code repositories (e.g., "flowcore", "dataflow-core") - NEVER use "document" for repos
-- technology: Databases, frameworks, tools, cloud services - NEVER use "document"!
-  Examples: PostgreSQL, SurrealDB, MySQL, MongoDB, AWS RDS, React, Python, Rust
+- repo: Code repositories (e.g., "flowcore", "dataflow-core", "memex")
+  A repo is a top-level project, NOT a file or directory within a project
+- technology: External databases, frameworks, tools, cloud services
+  Examples: PostgreSQL, SurrealDB, MySQL, MongoDB, AWS RDS, React, Python, Rust, Leptos
 - rule: Policies and guidelines - use the rule CONTENT as the name
   Example: "PRs require two reviews" → name: "Two code reviews required"
 
-IMPORTANT - Do NOT create "skill" entities for personal expertise:
-- "Elena has Rust expertise" → Person record for Elena (expertise noted in context)
-- "Team knows React" → NOT a skill entity, just context about the team
+=== CRITICAL: WHAT TO IGNORE (DO NOT EXTRACT) ===
 
-CRITICAL:
-1. Extract EVERY item from lists separately
-2. PostgreSQL, SurrealDB, AWS RDS → type: "technology" (NEVER "document")
-3. "Rust" when used as a programming language/tool = technology
-4. For UPDATE detection: "switching from X to Y" → is_update=true, previous_value=X
+1. INTERNAL IDENTIFIERS - Never extract these as entities:
+   - Task IDs: task-abc123, task-8gft4wpb3jx65jydq35c, w6wktiu2rrauyyoxjstg
+   - Worker IDs: worker_xyz789, worker_abc123
+   - Any alphanumeric ID strings that look like system identifiers
+   - These are internal references, NOT meaningful entities
 
-RELATIONSHIPS - extract ALL mentioned:
-- member_of: Person → Team ("led by Alice" → Alice member_of Team, "with Bob as engineer" → Bob member_of Team)
-- belongs_to: Team → Company ("Team at Company" → Team belongs_to Company)
-- owns: Team → Repo ("Team owns repo-x" → Team owns repo-x) - CREATE FOR EACH REPO!
-- applies_to: Rule → Repo/Team ("applies to repo-x" → Rule applies_to repo-x)
+2. FILE PATHS AND DIRECTORIES - Never extract as repos:
+   - src/main.rs, crates/atlas/src/store.rs → IGNORE (files within a repo)
+   - .github/workflows/ci.yml → IGNORE (file path)
+   - terraform/, modules/, packages/ → IGNORE (directories)
+   - flake.nix, build-image.yml → IGNORE (individual files)
+   - Only extract the REPOSITORY NAME itself (e.g., "memex", "infra")
+
+3. INTERNAL CODE CONSTRUCTS - Never extract:
+   - Function names: send_message(), check_messages(), handle_request()
+   - Class/struct names: MessageHandler, UserService, DataProcessor
+   - Enum names: MessageType, Status, ErrorKind
+   - These are implementation details, not entities worth tracking
+
+4. VAGUE REFERENCES - Never extract:
+   - "production database" → too vague, not a specific technology
+   - "the API" → too vague, extract specific API name if mentioned
+   - "the service" → too vague
+
+=== WHAT TO EXTRACT ===
+
+Extract MEANINGFUL entities that would help someone understand:
+- What projects/repos exist
+- What technologies are being used
+- Who is involved and how teams are organized
+- What policies/rules govern the work
+
+RELATIONSHIPS - extract connections between meaningful entities using EXACTLY this format:
+{"source": "SourceEntity", "target": "TargetEntity", "relation": "relation_type"}
+
+Valid relation types:
+- member_of: Person → Team (e.g., "Alice is on the Engineering Team")
+- belongs_to: Team → Company (e.g., "Engineering belongs to Acme Corp")
+- owns: Team → Repo (e.g., "Platform Team owns the infra repo")
+- applies_to: Rule → Repo/Team (e.g., "Code review rule applies to main repo")
 
 For each entity:
 - name: The canonical name (for rules, use rule content not labels)
@@ -156,26 +184,34 @@ For each entity:
 - is_update: Is this describing a CHANGE? (switching from X to Y = update)
 - previous_value: If is_update=true, what's being replaced?
 
-Example 1 - Normal extraction:
+Example - Extraction with relationships:
+Memo: "The Platform Team at Acme Corp owns the infra repo. Alice leads the team."
 {
   "entities": [
-    {"name": "Pipeline Team", "entity_type": "team", "context": "owns repos", "is_update": false},
-    {"name": "dataflow-core", "entity_type": "repo", "context": "core pipeline", "is_update": false}
+    {"name": "Acme Corp", "entity_type": "company", "context": "parent company", "is_update": false},
+    {"name": "Platform Team", "entity_type": "team", "context": "owns infra repo", "is_update": false},
+    {"name": "Alice", "entity_type": "person", "context": "team lead", "is_update": false},
+    {"name": "infra", "entity_type": "repo", "context": "owned by Platform Team", "is_update": false}
   ],
   "relationships": [
-    {"source": "Pipeline Team", "target": "dataflow-core", "relation": "owns"}
+    {"source": "Platform Team", "target": "Acme Corp", "relation": "belongs_to"},
+    {"source": "Alice", "target": "Platform Team", "relation": "member_of"},
+    {"source": "Platform Team", "target": "infra", "relation": "owns"}
   ]
 }
 
-Example 2 - Update detection ("switching from PostgreSQL to SurrealDB"):
+Example - Filtering noise (task IDs, file paths, code constructs):
+Memo: "Working on task-abc123 in the memex repo. Added MessageHandler struct. Uses PostgreSQL."
 {
   "entities": [
-    {"name": "SurrealDB", "entity_type": "technology", "context": "new database", "is_update": true, "previous_value": "PostgreSQL"}
+    {"name": "memex", "entity_type": "repo", "context": "project being worked on", "is_update": false},
+    {"name": "PostgreSQL", "entity_type": "technology", "context": "database used", "is_update": false}
   ],
   "relationships": []
 }
+Note: task-abc123 (task ID) and MessageHandler (internal code) are correctly IGNORED.
 
-Be thorough - extract EVERY entity and EVERY relationship mentioned!"#;
+Focus on QUALITY over QUANTITY. Only extract entities that would be useful for understanding the project landscape."#;
 
         let response = self.llm
             .complete(prompt, content)

@@ -72,6 +72,10 @@ enum Commands {
         /// Use multi-step extraction pipeline for better updates
         #[arg(short, long)]
         multi_step: bool,
+
+        /// Output full results for human/LLM review (no pass/fail, just data)
+        #[arg(long)]
+        review: bool,
     },
 
     /// Run all extraction tests from a directory
@@ -201,8 +205,8 @@ async fn main() -> Result<()> {
             list_scenarios(scenarios_dir)?;
             Ok(())
         }
-        Commands::Extraction { fixture, clean, verbose, multi_step } => {
-            run_extraction_test(&socket_path, &fixture, clean, verbose, multi_step).await
+        Commands::Extraction { fixture, clean, verbose, multi_step, review } => {
+            run_extraction_test(&socket_path, &fixture, clean, verbose, multi_step, review).await
         }
         Commands::ExtractionSuite {
             fixtures_dir,
@@ -354,6 +358,7 @@ async fn run_extraction_test(
     clean: bool,
     verbose: bool,
     multi_step: bool,
+    review: bool,
 ) -> Result<()> {
     use atlas::{KnowledgeClient, MemoClient, RecordClient};
 
@@ -490,6 +495,12 @@ async fn run_extraction_test(
     println!("Found {} records, {} edges", extracted_records.len(), extracted_edges.len());
     println!();
 
+    // Review mode: output full data for human/LLM evaluation
+    if review {
+        print_review_output(&test, &extracted_records, &extracted_edges, &records);
+        return Ok(());
+    }
+
     // Evaluate
     let result = test.evaluate(&extracted_records, &extracted_edges);
     result.print_summary();
@@ -500,6 +511,83 @@ async fn run_extraction_test(
     }
 
     Ok(())
+}
+
+/// Print extraction results in a format suitable for human/LLM review
+fn print_review_output(
+    test: &ExtractionTest,
+    extracted_records: &[ExtractedRecord],
+    extracted_edges: &[ExtractedEdge],
+    full_records: &[atlas::Record],
+) {
+    println!("=== EXTRACTION REVIEW ===\n");
+    println!("Test: {} - {}", test.meta.name, test.meta.description);
+    println!();
+
+    // Print source memos
+    println!("## SOURCE MEMOS\n");
+    for (i, memo) in test.memos.iter().enumerate() {
+        println!("### Memo {}\n", i + 1);
+        println!("{}\n", memo.content);
+        println!("---\n");
+    }
+
+    // Print extracted records with full details
+    println!("## EXTRACTED RECORDS ({} total)\n", extracted_records.len());
+    for record in full_records {
+        let type_str = &record.record_type;
+        let name = &record.name;
+        let desc = record.description.as_deref().unwrap_or("(no description)");
+        println!("### [{}] {}\n", type_str.to_uppercase(), name);
+        println!("Description: {}\n", desc);
+        if !record.content.is_null() && record.content != serde_json::json!({}) {
+            println!("Content: {}\n", serde_json::to_string_pretty(&record.content).unwrap_or_default());
+        }
+        println!();
+    }
+
+    // Print extracted edges
+    if !extracted_edges.is_empty() {
+        println!("## EXTRACTED RELATIONSHIPS ({} total)\n", extracted_edges.len());
+        for edge in extracted_edges {
+            println!("- {} --[{}]--> {}", edge.from, edge.relation, edge.to);
+        }
+        println!();
+    }
+
+    // Print expected vs actual comparison
+    println!("## EXPECTED VS ACTUAL\n");
+    println!("### Expected Records:");
+    for er in &test.expected.records {
+        let optional = if er.optional { " (optional)" } else { "" };
+        println!("- [{}] {}{}", er.record_type, er.name, optional);
+    }
+    println!();
+
+    println!("### Actually Extracted:");
+    for er in extracted_records {
+        println!("- [{}] {}", er.record_type, er.name);
+    }
+    println!();
+
+    if !test.expected.edges.is_empty() {
+        println!("### Expected Edges:");
+        for ee in &test.expected.edges {
+            println!("- {} --[{}]--> {}", ee.from, ee.relation, ee.to);
+        }
+        println!();
+    }
+
+    // Print review questions
+    println!("## REVIEW QUESTIONS\n");
+    println!("Please evaluate the extraction quality:\n");
+    println!("1. **Completeness**: Are all important entities from the memos captured?");
+    println!("2. **Accuracy**: Are the record types correct? Are descriptions accurate?");
+    println!("3. **Noise**: Are there records that shouldn't exist (internal code, IDs, paths)?");
+    println!("4. **Relationships**: Do the edges correctly represent relationships from the text?");
+    println!("5. **Granularity**: Are records at the right level of detail (not too fine/coarse)?");
+    println!("6. **Usefulness**: Would these records help an agent understand the domain?\n");
+    println!("Rate overall quality: Poor / Fair / Good / Excellent");
 }
 
 /// Run all extraction tests from a directory
