@@ -2,6 +2,13 @@
 //!
 //! Defines the structure of test scenarios including actions to perform
 //! and queries to evaluate.
+//!
+//! ## Snapshot-Based Scenarios
+//!
+//! For testing against realistic data volumes, use `SnapshotScenario` which
+//! loads a pre-built knowledge base before applying incremental updates.
+
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -132,6 +139,157 @@ impl Scenario {
         });
         self
     }
+}
+
+/// A scenario that uses a snapshot as its baseline
+///
+/// Snapshot scenarios load a pre-built knowledge base, apply additional
+/// actions (like recording new memos), and then run queries to evaluate
+/// how well the system handles updates to existing knowledge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotScenario {
+    /// Unique name for the scenario
+    pub name: String,
+    /// Description of what this scenario tests
+    pub description: String,
+    /// Path to the snapshot file to load as baseline
+    pub snapshot_path: PathBuf,
+    /// Additional actions to perform after loading the snapshot
+    #[serde(default)]
+    pub updates: Vec<Action>,
+    /// Queries to run and evaluate
+    pub queries: Vec<Query>,
+}
+
+impl SnapshotScenario {
+    /// Create a new snapshot scenario
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        snapshot_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            snapshot_path: snapshot_path.into(),
+            updates: Vec::new(),
+            queries: Vec::new(),
+        }
+    }
+
+    /// Add an update action (memo, task, etc.)
+    pub fn update(mut self, action: Action) -> Self {
+        self.updates.push(action);
+        self
+    }
+
+    /// Add a memo recording update
+    pub fn record_memo(mut self, content: impl Into<String>) -> Self {
+        self.updates.push(Action::RecordMemo {
+            content: content.into(),
+            delay_secs: 0,
+        });
+        self
+    }
+
+    /// Add a query to evaluate
+    pub fn query(mut self, query: impl Into<String>, expected: ExpectedOutcome) -> Self {
+        self.queries.push(Query {
+            query: query.into(),
+            expected,
+        });
+        self
+    }
+}
+
+/// Built-in snapshot-based test scenarios
+pub fn builtin_snapshot_scenarios() -> Vec<SnapshotScenario> {
+    vec![
+        // Scenario: Query existing enterprise knowledge
+        SnapshotScenario::new(
+            "enterprise_team_lookup",
+            "Tests querying team structure from pre-built enterprise KB",
+            "fixtures/snapshots/enterprise_org.json",
+        )
+        .query(
+            "Who leads the Platform Team?",
+            ExpectedOutcome {
+                should_mention: vec!["Sarah Chen".to_string()],
+                should_not_mention: vec![],
+                answer_type: AnswerType::Factual,
+            },
+        )
+        .query(
+            "What repos does the SupplyFlow Team own?",
+            ExpectedOutcome {
+                should_mention: vec!["supplyflow-api".to_string(), "supplyflow-web".to_string()],
+                should_not_mention: vec!["platform-auth".to_string()],
+                answer_type: AnswerType::List,
+            },
+        ),
+
+        // Scenario: Update existing knowledge
+        SnapshotScenario::new(
+            "enterprise_knowledge_update",
+            "Tests applying updates to existing enterprise knowledge",
+            "fixtures/snapshots/enterprise_org.json",
+        )
+        .record_memo("Sarah Chen is transitioning to a new role. David Kim will be taking over as Platform Team lead starting next month.")
+        .query(
+            "Who leads the Platform Team?",
+            ExpectedOutcome {
+                should_mention: vec!["Sarah Chen".to_string(), "David Kim".to_string()],
+                should_not_mention: vec![],
+                answer_type: AnswerType::Summary,
+            },
+        ),
+
+        // Scenario: Query rules and context
+        SnapshotScenario::new(
+            "enterprise_rules_context",
+            "Tests that rules and context are properly assembled",
+            "fixtures/snapshots/enterprise_org.json",
+        )
+        .query(
+            "What are the authentication requirements?",
+            ExpectedOutcome {
+                should_mention: vec!["platform-auth".to_string(), "shared".to_string()],
+                should_not_mention: vec![],
+                answer_type: AnswerType::Explanation,
+            },
+        )
+        .query(
+            "What database should new services use?",
+            ExpectedOutcome {
+                should_mention: vec!["PostgreSQL".to_string(), "Redis".to_string()],
+                should_not_mention: vec![],
+                answer_type: AnswerType::Factual,
+            },
+        ),
+
+        // Scenario: Open source project rules
+        SnapshotScenario::new(
+            "oss_contribution_rules",
+            "Tests querying contribution guidelines from open source project",
+            "fixtures/snapshots/open_source_project.json",
+        )
+        .query(
+            "What do I need to include in a PR?",
+            ExpectedOutcome {
+                should_mention: vec!["tests".to_string()],
+                should_not_mention: vec![],
+                answer_type: AnswerType::List,
+            },
+        )
+        .query(
+            "How should I handle a breaking change?",
+            ExpectedOutcome {
+                should_mention: vec!["RFC".to_string()],
+                should_not_mention: vec![],
+                answer_type: AnswerType::Explanation,
+            },
+        ),
+    ]
 }
 
 /// Built-in test scenarios

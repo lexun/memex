@@ -1,6 +1,8 @@
 //! Test harness for running evaluation scenarios
 //!
 //! Sets up the environment, executes scenarios, and collects results.
+//! Supports both traditional scenarios and snapshot-based scenarios
+//! that load pre-built knowledge bases.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -9,7 +11,8 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::judge::{EvalResult, Judge};
-use crate::scenario::{Action, Scenario};
+use crate::scenario::{Action, Scenario, SnapshotScenario};
+use crate::snapshot::{Snapshot, SnapshotLoader};
 
 /// Results from running a scenario
 #[derive(Debug)]
@@ -289,5 +292,111 @@ impl TestHarness {
             .await
             .context("Failed to close task")?;
         Ok(())
+    }
+
+    // =========================================================================
+    // Snapshot-based scenario support
+    // =========================================================================
+
+    /// Run a snapshot-based scenario
+    ///
+    /// This loads a pre-built knowledge base from a snapshot file, applies
+    /// any update actions, and then runs queries to evaluate the results.
+    pub async fn run_snapshot_scenario(
+        &mut self,
+        scenario: &SnapshotScenario,
+        fixtures_dir: &Path,
+    ) -> Result<ScenarioResult> {
+        info!("Running snapshot scenario: {}", scenario.name);
+
+        // Clear task ID map for this scenario
+        self.task_ids.clear();
+
+        // Resolve snapshot path relative to fixtures directory
+        let snapshot_path = fixtures_dir.join(&scenario.snapshot_path);
+        info!("Loading snapshot: {}", snapshot_path.display());
+
+        // Load the snapshot
+        let snapshot = Snapshot::load(&snapshot_path)
+            .with_context(|| format!("Failed to load snapshot: {}", snapshot_path.display()))?;
+
+        info!(
+            "Snapshot loaded: {} ({} memos, {} records, {} edges)",
+            snapshot.meta.name,
+            snapshot.memos.len(),
+            snapshot.records.len(),
+            snapshot.edges.len()
+        );
+
+        // Apply snapshot to database
+        let loader = SnapshotLoader::new(&self.socket_path);
+        let load_result = loader.load(&snapshot).await?;
+        info!("Snapshot applied: {}", load_result);
+
+        if !load_result.success() {
+            tracing::warn!("Snapshot had {} errors during load", load_result.errors.len());
+            for err in &load_result.errors {
+                tracing::warn!("  - {}", err);
+            }
+        }
+
+        // Apply update actions
+        for action in &scenario.updates {
+            self.execute_action(action).await?;
+        }
+
+        // Small delay to ensure extraction completes
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Run queries and evaluate
+        let mut query_results = Vec::new();
+        for query in &scenario.queries {
+            let answer = self.query_knowledge(&query.query).await?;
+            let result = self
+                .judge
+                .evaluate(&query.query, &answer, &query.expected)
+                .await?;
+            query_results.push(result);
+        }
+
+        // Calculate pass/fail
+        let passed_count = query_results.iter().filter(|r| r.passed()).count();
+        let total_count = query_results.len();
+        let passed = passed_count == total_count;
+
+        Ok(ScenarioResult {
+            name: scenario.name.clone(),
+            query_results,
+            passed,
+            passed_count,
+            total_count,
+        })
+    }
+
+    /// Run multiple snapshot scenarios and generate a report
+    pub async fn run_snapshot_scenarios(
+        &mut self,
+        scenarios: &[SnapshotScenario],
+        fixtures_dir: &Path,
+    ) -> Result<EvalReport> {
+        let mut results = Vec::new();
+
+        for scenario in scenarios {
+            let result = self.run_snapshot_scenario(scenario, fixtures_dir).await?;
+            results.push(result);
+        }
+
+        let total_scenarios = results.len();
+        let passed_scenarios = results.iter().filter(|r| r.passed).count();
+        let total_queries: usize = results.iter().map(|r| r.total_count).sum();
+        let passed_queries: usize = results.iter().map(|r| r.passed_count).sum();
+
+        Ok(EvalReport {
+            scenarios: results,
+            total_scenarios,
+            passed_scenarios,
+            total_queries,
+            passed_queries,
+        })
     }
 }

@@ -1,0 +1,203 @@
+{
+  "meta": {
+    "name": "open_source_project",
+    "description": "An open source project with community contributors and well-documented rules",
+    "version": "1.0",
+    "tags": ["open-source", "community", "documentation"]
+  },
+  "memos": [
+    {
+      "content": "FastCache is an open source in-memory caching library. It's written in Rust and designed for high-throughput, low-latency workloads. Used by several major companies in production.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "The project is maintained by core maintainers: Elena Vasquez (lead), David Park, and Ana Santos. They review all PRs and make architectural decisions.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "CONTRIBUTION GUIDE: All PRs must include tests. Performance-sensitive changes require benchmarks. Breaking changes need an RFC discussion first.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "DECISION: We follow semantic versioning strictly. Any API change that breaks backward compatibility requires a major version bump, even if it's a bug fix.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "The fastcache-async crate provides async/await support. It wraps the core library with tokio runtime integration. Maintained alongside the main crate.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "We use miri for unsafe code validation and run fuzzing tests on every release candidate. Security issues should be reported via security@fastcache.dev.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "Recent contributor: Marcus Lee added LRU eviction optimization in v2.3.0. First-time contributor Jordan Kim fixed a race condition in the TTL handler.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "ARCHITECTURE: The core is split into three layers: Storage (raw memory management), Index (hash-based lookup), and API (public interface). Changes should respect layer boundaries.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    }
+  ],
+  "records": [
+    {
+      "record_type": "project",
+      "name": "FastCache",
+      "description": "High-performance in-memory caching library"
+    },
+    {
+      "record_type": "person",
+      "name": "Elena Vasquez",
+      "description": "Lead maintainer"
+    },
+    {
+      "record_type": "person",
+      "name": "David Park",
+      "description": "Core maintainer"
+    },
+    {
+      "record_type": "person",
+      "name": "Ana Santos",
+      "description": "Core maintainer"
+    },
+    {
+      "record_type": "person",
+      "name": "Marcus Lee",
+      "description": "Contributor"
+    },
+    {
+      "record_type": "person",
+      "name": "Jordan Kim",
+      "description": "First-time contributor"
+    },
+    {
+      "record_type": "repo",
+      "name": "fastcache",
+      "description": "Core caching library",
+      "content": {"language": "Rust", "license": "MIT"}
+    },
+    {
+      "record_type": "repo",
+      "name": "fastcache-async",
+      "description": "Async wrapper with tokio integration",
+      "content": {"language": "Rust", "license": "MIT"}
+    },
+    {
+      "record_type": "rule",
+      "name": "Tests required",
+      "description": "All PRs must include tests",
+      "content": {"severity": "required", "category": "quality"}
+    },
+    {
+      "record_type": "rule",
+      "name": "Benchmarks for perf changes",
+      "description": "Performance-sensitive changes require benchmarks",
+      "content": {"severity": "required", "category": "performance"}
+    },
+    {
+      "record_type": "rule",
+      "name": "RFC for breaking changes",
+      "description": "Breaking changes need RFC discussion first",
+      "content": {"severity": "required", "category": "process"}
+    },
+    {
+      "record_type": "rule",
+      "name": "Strict semver",
+      "description": "Follow semantic versioning strictly",
+      "content": {"severity": "required", "category": "versioning"}
+    },
+    {
+      "record_type": "rule",
+      "name": "Layer boundaries",
+      "description": "Respect Storage/Index/API layer boundaries",
+      "content": {"severity": "recommended", "category": "architecture"}
+    },
+    {
+      "record_type": "skill",
+      "name": "Miri validation",
+      "description": "Use miri for unsafe code validation"
+    },
+    {
+      "record_type": "skill",
+      "name": "Fuzz testing",
+      "description": "Run fuzzing tests on release candidates"
+    }
+  ],
+  "edges": [
+    {
+      "from": "Elena Vasquez",
+      "relation": "member_of",
+      "to": "FastCache"
+    },
+    {
+      "from": "David Park",
+      "relation": "member_of",
+      "to": "FastCache"
+    },
+    {
+      "from": "Ana Santos",
+      "relation": "member_of",
+      "to": "FastCache"
+    },
+    {
+      "from": "fastcache",
+      "relation": "belongs_to",
+      "to": "FastCache"
+    },
+    {
+      "from": "fastcache-async",
+      "relation": "belongs_to",
+      "to": "FastCache"
+    },
+    {
+      "from": "fastcache-async",
+      "relation": "depends_on",
+      "to": "fastcache"
+    },
+    {
+      "from": "Tests required",
+      "relation": "applies_to",
+      "to": "FastCache"
+    },
+    {
+      "from": "Benchmarks for perf changes",
+      "relation": "applies_to",
+      "to": "FastCache"
+    },
+    {
+      "from": "RFC for breaking changes",
+      "relation": "applies_to",
+      "to": "FastCache"
+    },
+    {
+      "from": "Strict semver",
+      "relation": "applies_to",
+      "to": "FastCache"
+    },
+    {
+      "from": "Layer boundaries",
+      "relation": "applies_to",
+      "to": "fastcache"
+    },
+    {
+      "from": "Miri validation",
+      "relation": "available_to",
+      "to": "FastCache"
+    },
+    {
+      "from": "Fuzz testing",
+      "relation": "available_to",
+      "to": "FastCache"
+    }
+  ],
+  "facts": [],
+  "entities": []
+}

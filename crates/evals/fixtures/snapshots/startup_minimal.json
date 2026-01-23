@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "name": "startup_minimal",
+    "description": "A small startup with minimal but essential knowledge base",
+    "version": "1.0",
+    "tags": ["startup", "minimal", "quick-test"]
+  },
+  "memos": [
+    {
+      "content": "NovaTech is an early-stage startup building AI-powered code review tools. Founded by Jamie Chen and Robin Torres.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "We use Rust for the core analysis engine and TypeScript for the VS Code extension. The backend is deployed on AWS.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "DECISION: We're using SQLite for local storage and DynamoDB for cloud sync. This keeps the VS Code extension fast while enabling team features.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    }
+  ],
+  "records": [
+    {
+      "record_type": "company",
+      "name": "NovaTech",
+      "description": "AI-powered code review startup"
+    },
+    {
+      "record_type": "person",
+      "name": "Jamie Chen",
+      "description": "Co-founder"
+    },
+    {
+      "record_type": "person",
+      "name": "Robin Torres",
+      "description": "Co-founder"
+    },
+    {
+      "record_type": "repo",
+      "name": "nova-core",
+      "description": "Core analysis engine",
+      "content": {"language": "Rust"}
+    },
+    {
+      "record_type": "repo",
+      "name": "nova-vscode",
+      "description": "VS Code extension",
+      "content": {"language": "TypeScript"}
+    }
+  ],
+  "edges": [
+    {
+      "from": "Jamie Chen",
+      "relation": "member_of",
+      "to": "NovaTech"
+    },
+    {
+      "from": "Robin Torres",
+      "relation": "member_of",
+      "to": "NovaTech"
+    },
+    {
+      "from": "nova-core",
+      "relation": "belongs_to",
+      "to": "NovaTech"
+    },
+    {
+      "from": "nova-vscode",
+      "relation": "belongs_to",
+      "to": "NovaTech"
+    },
+    {
+      "from": "nova-vscode",
+      "relation": "depends_on",
+      "to": "nova-core"
+    }
+  ],
+  "facts": [],
+  "entities": []
+}

@@ -1,0 +1,260 @@
+{
+  "meta": {
+    "name": "enterprise_org",
+    "description": "A mature enterprise organization with multiple teams, repos, and established knowledge",
+    "version": "1.0",
+    "tags": ["enterprise", "multi-team", "complex-relationships"]
+  },
+  "memos": [
+    {
+      "content": "Acme Corp is a B2B SaaS company founded in 2015. We build enterprise software for supply chain management. Our main products are SupplyFlow (inventory tracking) and LogiSync (logistics coordination).",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "The Platform Team is responsible for our core infrastructure. They maintain the shared services like authentication, API gateway, and observability. Sarah Chen leads the team.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "The SupplyFlow Team builds our flagship inventory management product. Marcus Williams is the tech lead. They use React for the frontend and Go for backend microservices.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "The LogiSync Team handles logistics coordination features. Led by Priya Patel. They recently migrated from a monolith to microservices architecture.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "DECISION: All teams must use the shared authentication service (platform-auth) rather than implementing their own auth. This ensures consistent security practices across products.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "DECISION: We're standardizing on PostgreSQL for relational data and Redis for caching. Each service should use these unless there's a documented exception approved by the Platform Team.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "The shared-libs repository contains common utilities used across all products. It includes logging helpers, error handling, and API client generators. Platform Team maintains it.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "We use trunk-based development with short-lived feature branches. All merges require at least one approval and passing CI. Feature flags are preferred over long-running branches.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "Security review is required for any changes to authentication, authorization, or data handling. The security-checklist.md in each repo documents what needs review.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    },
+    {
+      "content": "Alex Kim joined as a senior engineer on the SupplyFlow Team last month. Previously worked at Amazon on their inventory systems. Bringing expertise in distributed systems.",
+      "source_actor": "snapshot:loader",
+      "source_authority": "test"
+    }
+  ],
+  "records": [
+    {
+      "record_type": "company",
+      "name": "Acme Corp",
+      "description": "B2B SaaS company for supply chain management"
+    },
+    {
+      "record_type": "team",
+      "name": "Platform Team",
+      "description": "Core infrastructure and shared services"
+    },
+    {
+      "record_type": "team",
+      "name": "SupplyFlow Team",
+      "description": "Inventory management product team"
+    },
+    {
+      "record_type": "team",
+      "name": "LogiSync Team",
+      "description": "Logistics coordination product team"
+    },
+    {
+      "record_type": "person",
+      "name": "Sarah Chen",
+      "description": "Platform Team Lead"
+    },
+    {
+      "record_type": "person",
+      "name": "Marcus Williams",
+      "description": "SupplyFlow Tech Lead"
+    },
+    {
+      "record_type": "person",
+      "name": "Priya Patel",
+      "description": "LogiSync Team Lead"
+    },
+    {
+      "record_type": "person",
+      "name": "Alex Kim",
+      "description": "Senior Engineer, SupplyFlow Team"
+    },
+    {
+      "record_type": "repo",
+      "name": "platform-auth",
+      "description": "Shared authentication service",
+      "content": {"language": "Go", "team": "Platform Team"}
+    },
+    {
+      "record_type": "repo",
+      "name": "shared-libs",
+      "description": "Common utilities and helpers",
+      "content": {"language": "Go", "team": "Platform Team"}
+    },
+    {
+      "record_type": "repo",
+      "name": "supplyflow-api",
+      "description": "SupplyFlow backend services",
+      "content": {"language": "Go", "team": "SupplyFlow Team"}
+    },
+    {
+      "record_type": "repo",
+      "name": "supplyflow-web",
+      "description": "SupplyFlow React frontend",
+      "content": {"language": "TypeScript", "team": "SupplyFlow Team"}
+    },
+    {
+      "record_type": "repo",
+      "name": "logisync-api",
+      "description": "LogiSync backend services",
+      "content": {"language": "Go", "team": "LogiSync Team"}
+    },
+    {
+      "record_type": "rule",
+      "name": "Use shared auth",
+      "description": "All teams must use platform-auth for authentication",
+      "content": {"severity": "required", "category": "security"}
+    },
+    {
+      "record_type": "rule",
+      "name": "Database standards",
+      "description": "Use PostgreSQL for relational data, Redis for caching",
+      "content": {"severity": "required", "category": "infrastructure"}
+    },
+    {
+      "record_type": "rule",
+      "name": "Trunk-based development",
+      "description": "Short-lived feature branches, feature flags for long-running work",
+      "content": {"severity": "recommended", "category": "workflow"}
+    },
+    {
+      "record_type": "rule",
+      "name": "Security review required",
+      "description": "Changes to auth, authz, or data handling require security review",
+      "content": {"severity": "required", "category": "security"}
+    }
+  ],
+  "edges": [
+    {
+      "from": "Platform Team",
+      "relation": "belongs_to",
+      "to": "Acme Corp"
+    },
+    {
+      "from": "SupplyFlow Team",
+      "relation": "belongs_to",
+      "to": "Acme Corp"
+    },
+    {
+      "from": "LogiSync Team",
+      "relation": "belongs_to",
+      "to": "Acme Corp"
+    },
+    {
+      "from": "Sarah Chen",
+      "relation": "member_of",
+      "to": "Platform Team"
+    },
+    {
+      "from": "Marcus Williams",
+      "relation": "member_of",
+      "to": "SupplyFlow Team"
+    },
+    {
+      "from": "Priya Patel",
+      "relation": "member_of",
+      "to": "LogiSync Team"
+    },
+    {
+      "from": "Alex Kim",
+      "relation": "member_of",
+      "to": "SupplyFlow Team"
+    },
+    {
+      "from": "platform-auth",
+      "relation": "belongs_to",
+      "to": "Platform Team"
+    },
+    {
+      "from": "shared-libs",
+      "relation": "belongs_to",
+      "to": "Platform Team"
+    },
+    {
+      "from": "supplyflow-api",
+      "relation": "belongs_to",
+      "to": "SupplyFlow Team"
+    },
+    {
+      "from": "supplyflow-web",
+      "relation": "belongs_to",
+      "to": "SupplyFlow Team"
+    },
+    {
+      "from": "logisync-api",
+      "relation": "belongs_to",
+      "to": "LogiSync Team"
+    },
+    {
+      "from": "Use shared auth",
+      "relation": "applies_to",
+      "to": "Acme Corp"
+    },
+    {
+      "from": "Database standards",
+      "relation": "applies_to",
+      "to": "Acme Corp"
+    },
+    {
+      "from": "Trunk-based development",
+      "relation": "applies_to",
+      "to": "Acme Corp"
+    },
+    {
+      "from": "Security review required",
+      "relation": "applies_to",
+      "to": "platform-auth"
+    },
+    {
+      "from": "supplyflow-api",
+      "relation": "depends_on",
+      "to": "platform-auth"
+    },
+    {
+      "from": "supplyflow-api",
+      "relation": "depends_on",
+      "to": "shared-libs"
+    },
+    {
+      "from": "logisync-api",
+      "relation": "depends_on",
+      "to": "platform-auth"
+    },
+    {
+      "from": "logisync-api",
+      "relation": "depends_on",
+      "to": "shared-libs"
+    }
+  ],
+  "facts": [],
+  "entities": []
+}
