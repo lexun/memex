@@ -61,7 +61,12 @@
                 (craneLib.filterCargoSources path type)
                 # Also include .surql migration files and .html templates
                 || (pkgs.lib.hasSuffix ".surql" path)
-                || (pkgs.lib.hasSuffix ".html" path);
+                || (pkgs.lib.hasSuffix ".html" path)
+                # Include pre-built WASM bundle for embedded web UI
+                || (pkgs.lib.hasSuffix ".js" path && pkgs.lib.hasInfix "/web/pkg/" path)
+                || (pkgs.lib.hasSuffix ".wasm" path && pkgs.lib.hasInfix "/web/pkg/" path)
+                # Include CSS for web UI
+                || (pkgs.lib.hasSuffix ".css" path && pkgs.lib.hasInfix "/web/style/" path);
             };
             strictDeps = true;
 
@@ -141,6 +146,10 @@
                   git
                   surrealdb
                   zellij
+                  wasm-pack
+                  wasm-bindgen-cli
+                  binaryen # for wasm-opt
+                  lld # for WASM linking
                 ];
                 # Fix C++ standard library include path for RocksDB compilation
                 # The default libcxx include path is missing the c++/v1 subdirectory

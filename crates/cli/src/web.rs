@@ -5,20 +5,24 @@
 //! - Directory: People, Teams, Companies, Projects, Repos, Rules, Skills, Documents, Technologies
 //! - Activity: Memos, Threads, Events (inputs/event sourcing)
 //!
-//! The UI is built with Leptos and served as static files with API endpoints for data.
+//! The UI is built with Leptos and the WASM/JS bundle is embedded in the binary.
 
 use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
-    response::{Html, IntoResponse},
+    http::{header, StatusCode},
+    response::{Html, IntoResponse, Response},
     routing::get,
     Json, Router,
 };
-use tower_http::services::ServeDir;
 
 use crate::config::WebConfig;
+
+// Embedded WASM/JS assets - built by wasm-pack before cargo build
+const WASM_JS: &str = include_str!("../../web/pkg/memex_web.js");
+const WASM_BG: &[u8] = include_bytes!("../../web/pkg/memex_web_bg.wasm");
+const MAIN_CSS: &str = include_str!("../../web/style/main.css");
 
 /// Shared state for web handlers
 pub struct WebState {
@@ -27,13 +31,7 @@ pub struct WebState {
 }
 
 /// Build the web router
-pub fn build_router(state: Arc<WebState>, config: &WebConfig) -> Router {
-    // Determine static files path - look for the Leptos build output
-    let static_path = config
-        .static_path
-        .clone()
-        .unwrap_or_else(|| "target/site".to_string());
-
+pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
     Router::new()
         // API endpoints
         .route("/api/stats", get(api_stats))
@@ -44,13 +42,41 @@ pub fn build_router(state: Arc<WebState>, config: &WebConfig) -> Router {
         .route("/api/records/:record_type", get(api_list_records_by_type))
         .route("/api/memos", get(api_list_memos))
         .route("/api/events", get(api_list_events))
-        // Serve static files from Leptos build
-        .nest_service("/pkg", ServeDir::new(format!("{}/pkg", static_path)))
-        .nest_service("/style", ServeDir::new("crates/web/style"))
-        .nest_service("/assets", ServeDir::new(format!("{}/assets", static_path)))
+        // Serve embedded WASM/JS/CSS assets
+        .route("/pkg/memex_web.js", get(serve_wasm_js))
+        .route("/pkg/memex_web_bg.wasm", get(serve_wasm_bg))
+        .route("/style/main.css", get(serve_main_css))
         // Fallback to index.html for SPA routing
         .fallback(get(spa_fallback))
         .with_state(state)
+}
+
+// -----------------------------------------------------------------------------
+// Embedded asset handlers
+// -----------------------------------------------------------------------------
+
+async fn serve_wasm_js() -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/javascript")],
+        WASM_JS,
+    )
+        .into_response()
+}
+
+async fn serve_wasm_bg() -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/wasm")],
+        WASM_BG,
+    )
+        .into_response()
+}
+
+async fn serve_main_css() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/css")],
+        MAIN_CSS,
+    )
+        .into_response()
 }
 
 // -----------------------------------------------------------------------------

@@ -34,6 +34,7 @@ web-sys = { version = "0.3", optional = true, features = ["KeyboardEvent"] }
 pulldown-cmark = "0.10"
 
 [features]
+csr = ["leptos/csr", "leptos_meta/csr", "leptos_router/csr", "gloo-net", "web-sys"]
 hydrate = ["leptos/hydrate", "leptos_meta/hydrate", "leptos_router/hydrate", "gloo-net", "web-sys"]
 ssr = [
     "dep:axum",

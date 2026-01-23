@@ -5,13 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Memex</title>
     <link rel="stylesheet" href="/style/main.css"/>
-    <link data-trunk rel="rust" data-wasm-opt="z"/>
 </head>
 <body>
     <script type="module">
-        import init, { hydrate } from '/pkg/memex_web.js';
+        import init, { main } from '/pkg/memex_web.js';
         init('/pkg/memex_web_bg.wasm').then(() => {
-            hydrate();
+            main();
         });
     </script>
 </body>

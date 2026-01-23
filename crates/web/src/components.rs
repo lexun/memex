@@ -4,11 +4,11 @@ use leptos::*;
 use leptos_router::*;
 use pulldown_cmark::{html, Options, Parser};
 
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", feature = "csr"))]
 use leptos::spawn_local;
 
 // For SSR mode, we need a dummy spawn_local that does nothing
-#[cfg(not(feature = "hydrate"))]
+#[cfg(not(any(feature = "hydrate", feature = "csr")))]
 fn spawn_local<F>(_future: F)
 where
     F: std::future::Future<Output = ()> + 'static,
@@ -1835,7 +1835,7 @@ pub fn EventsPage() -> impl IntoView {
 // API Fetching Functions
 // =============================================================================
 
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", feature = "csr"))]
 async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
     use gloo_net::http::Request;
 
@@ -1851,7 +1851,7 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, Stri
     resp.json().await.map_err(|e| e.to_string())
 }
 
-#[cfg(not(feature = "hydrate"))]
+#[cfg(not(any(feature = "hydrate", feature = "csr")))]
 async fn fetch_json<T: serde::de::DeserializeOwned>(_url: &str) -> Result<T, String> {
     Err("SSR mode - data should be provided by server".to_string())
 }
@@ -1893,7 +1893,7 @@ async fn fetch_events() -> Result<Vec<Event>, String> {
 }
 
 /// Save record content via API
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", feature = "csr"))]
 async fn save_record_content(id: &str, content: &str) -> Result<(), String> {
     use gloo_net::http::Request;
 
@@ -1916,13 +1916,13 @@ async fn save_record_content(id: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(feature = "hydrate"))]
+#[cfg(not(any(feature = "hydrate", feature = "csr")))]
 async fn save_record_content(_id: &str, _content: &str) -> Result<(), String> {
     Err("SSR mode - cannot save".to_string())
 }
 
 /// Save a specific field of a record
-#[cfg(feature = "hydrate")]
+#[cfg(any(feature = "hydrate", feature = "csr"))]
 async fn save_record_field(id: &str, field: &str, value: &str) -> Result<(), String> {
     use gloo_net::http::Request;
 
@@ -1945,7 +1945,7 @@ async fn save_record_field(id: &str, field: &str, value: &str) -> Result<(), Str
     Ok(())
 }
 
-#[cfg(not(feature = "hydrate"))]
+#[cfg(not(any(feature = "hydrate", feature = "csr")))]
 async fn save_record_field(_id: &str, _field: &str, _value: &str) -> Result<(), String> {
     Err("SSR mode - cannot save".to_string())
 }
