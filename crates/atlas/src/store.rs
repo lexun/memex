@@ -2037,8 +2037,14 @@ impl Store {
     pub async fn add_task_note(&self, task_id: &str, content: &str) -> Result<Record> {
         use crate::record::{RecordType, TASK_NOTE_RELATION};
 
+        // Fetch the task to get its name for a meaningful note title
+        let task = self.get_record(task_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        let note_name = format!("Note on: {}", task.name);
+
         // Create a document record for the note
-        let note = Record::new(RecordType::Document, "task_note")
+        let note = Record::new(RecordType::Document, &note_name)
             .with_content(serde_json::json!({
                 "content": content,
                 "task_id": task_id
@@ -2080,8 +2086,14 @@ impl Store {
     ) -> Result<Record> {
         use crate::record::{RecordType, TASK_NOTE_RELATION};
 
+        // Fetch the task to get its name for a meaningful note title
+        let task = self.get_record(task_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        let note_name = format!("Note on: {}", task.name);
+
         // Create a document record for the note with preserved timestamps
-        let note = Record::new(RecordType::Document, "task_note")
+        let note = Record::new(RecordType::Document, &note_name)
             .with_content(serde_json::json!({
                 "content": content,
                 "task_id": task_id
@@ -2525,6 +2537,49 @@ mod tests {
         store.delete_record(&repo_id).await?;
         store.delete_record(&team_id).await?;
         println!("\nCleaned up test records");
+
+        Ok(())
+    }
+
+    /// Test that task notes get meaningful names based on task title
+    /// Run with: cargo test -p atlas task_note_naming -- --nocapture --ignored
+    #[tokio::test]
+    #[ignore] // Requires running database
+    async fn task_note_naming() -> Result<()> {
+        // Connect to local dev database
+        let config = DatabaseConfig::embedded(PathBuf::from("./.memex/db"));
+        let db = db::Database::connect(&config, "atlas", None).await?;
+        let store = Store::new(db);
+
+        // Create a test task
+        let task = Record::new(RecordType::Task, "Fix authentication bug")
+            .with_description("Users cannot log in with OAuth")
+            .with_content(json!({
+                "status": "in_progress",
+                "priority": 1
+            }));
+        let task = store.create_record(task).await?;
+        let task_id = task.id_str().expect("task should have id");
+        println!("Created task: {} - {}", task_id, task.name);
+
+        // Add a note to the task
+        let note = store.add_task_note(&task_id, "Found the issue in oauth.rs:42").await?;
+        let note_id = note.id_str().expect("note should have id");
+        println!("Created note: {} - {}", note_id, note.name);
+
+        // Verify the note has a meaningful name
+        assert_eq!(note.name, "Note on: Fix authentication bug",
+            "Note should have a meaningful name based on task title");
+        assert_eq!(note.record_type, "document",
+            "Note should be a Document record");
+
+        // Verify note content is stored correctly
+        assert_eq!(note.content["content"], "Found the issue in oauth.rs:42");
+        assert_eq!(note.content["task_id"], task_id);
+
+        // Clean up
+        store.delete_task(&task_id).await?;
+        println!("Cleaned up test task and note");
 
         Ok(())
     }
