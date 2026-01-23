@@ -219,8 +219,12 @@ async fn load_workers_from_db(stores: &Arc<Stores>) -> Result<()> {
         }
 
         tracing::info!(
-            "Loaded worker {} (session: {})",
+            "Loaded worker {} (task: {}, worktree: {}, msgs: {}/{}, session: {})",
             db_worker.worker_id,
+            db_worker.current_task.as_deref().unwrap_or("none"),
+            db_worker.worktree.as_deref().unwrap_or("none"),
+            db_worker.messages_sent,
+            db_worker.messages_received,
             db_worker.last_session_id.as_deref().unwrap_or("none")
         );
     }
@@ -3072,6 +3076,37 @@ async fn handle_test_import_forge_dependency(
 
 // ========== Cortex Handlers ==========
 
+/// Helper to persist full worker status to the database
+///
+/// This should be called after any operation that changes worker state
+/// to ensure the database reflects the current in-memory state.
+async fn persist_worker_status(stores: &Arc<Stores>, worker_id: &WorkerId) {
+    if let Ok(status) = stores.workers.status(worker_id).await {
+        let state_str = match &status.state {
+            WorkerState::Starting => "starting",
+            WorkerState::Ready => "ready",
+            WorkerState::Working => "working",
+            WorkerState::Idle => "idle",
+            WorkerState::Stopped => "stopped",
+            WorkerState::Error(_) => "error",
+        };
+        let error_msg = match &status.state {
+            WorkerState::Error(msg) => Some(msg.as_str()),
+            _ => None,
+        };
+        if let Err(e) = stores.forge.update_worker_status(
+            &worker_id.0,
+            state_str,
+            error_msg,
+            status.current_task.as_deref(),
+            status.messages_sent as i64,
+            status.messages_received as i64,
+        ).await {
+            tracing::warn!("Failed to persist worker status to DB: {}", e);
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct CreateWorkerParams {
     cwd: String,
@@ -3159,31 +3194,7 @@ async fn handle_cortex_send_message(
     }
 
     // Update status in database
-    let status = stores.workers.status(&worker_id).await.ok();
-    if let Some(status) = status {
-        let state_str = match &status.state {
-            WorkerState::Starting => "starting",
-            WorkerState::Ready => "ready",
-            WorkerState::Working => "working",
-            WorkerState::Idle => "idle",
-            WorkerState::Stopped => "stopped",
-            WorkerState::Error(_) => "error",
-        };
-        let error_msg = match &status.state {
-            WorkerState::Error(msg) => Some(msg.as_str()),
-            _ => None,
-        };
-        if let Err(e) = stores.forge.update_worker_status(
-            &params.worker_id,
-            state_str,
-            error_msg,
-            status.current_task.as_deref(),
-            status.messages_sent as i64,
-            status.messages_received as i64,
-        ).await {
-            tracing::warn!("Failed to persist worker status to DB: {}", e);
-        }
-    }
+    persist_worker_status(stores, &worker_id).await;
 
     Ok(json!({
         "result": response.result,
@@ -3415,10 +3426,11 @@ async fn handle_cortex_get_coordinator(
         .await
         .map_err(|e| IpcError::internal(format!("Failed to create coordinator: {}", e)))?;
 
-    // Persist to database (including MCP config so it survives daemon restart)
+    // Persist to database (including MCP config and worktree so it survives daemon restart)
     let db_worker = DbWorker::new(&worker_id.0, &cwd)
         .with_model("sonnet".to_string())
         .with_system_prompt(COORDINATOR_SYSTEM_PROMPT.to_string())
+        .with_worktree(cwd.clone())
         .with_mcp_config(mcp_config_json);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
@@ -3784,21 +3796,17 @@ async fn handle_cortex_dispatch_task(
         .await
         .map_err(|e| IpcError::internal(format!("Failed to create worker: {}", e)))?;
 
-    // 7. Create assigned_to edge (worker -> task)
-    // For now we'll record this in the worker status since workers aren't records
-    // In the future, workers could be records and we'd create a proper edge
-    {
-        let mut status = stores.workers.status(&worker_id).await
-            .map_err(|e| IpcError::internal(format!("Failed to get worker status: {}", e)))?;
-        status.current_task = Some(params.task_id.clone());
-        // Note: We can't update status directly, but the worker already has current_task set
-    }
+    // 7. Set task assignment in worker's in-memory status
+    stores.workers.set_current_task(&worker_id, Some(params.task_id.clone()))
+        .await
+        .map_err(|e| IpcError::internal(format!("Failed to set worker task: {}", e)))?;
 
-    // Persist worker to database with task reference
+    // Persist worker to database with task reference and worktree
     let db_worker = DbWorker::new(&worker_id.0, &worktree_path)
         .with_model(params.model.unwrap_or_default())
         .with_system_prompt(system_prompt)
         .with_current_task(Some(params.task_id.clone()))
+        .with_worktree(worktree_path.clone())
         .with_mcp_config(mcp_config_json);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
@@ -3823,9 +3831,13 @@ async fn handle_cortex_dispatch_task(
                         tracing::warn!("Failed to update worker session in DB: {}", e);
                     }
                 }
+                // Persist full worker status (state, current_task, message counts)
+                persist_worker_status(&stores_for_msg, &worker_id_for_msg).await;
             }
             Err(e) => {
                 tracing::warn!("Failed to send initial message to worker {}: {}", worker_id_for_msg.0, e);
+                // Still persist status on error so we capture the error state
+                persist_worker_status(&stores_for_msg, &worker_id_for_msg).await;
             }
         }
     });
@@ -4148,11 +4160,17 @@ async fn dispatch_single_task(
         }
     };
 
-    // 7. Persist worker to database
+    // Set task assignment in worker's in-memory status
+    if let Err(e) = stores.workers.set_current_task(&worker_id, Some(task_id.to_string())).await {
+        tracing::warn!("Failed to set worker task: {}", e);
+    }
+
+    // 7. Persist worker to database with task reference and worktree
     let db_worker = DbWorker::new(&worker_id.0, &worktree_path)
         .with_model(model.unwrap_or_default())
         .with_system_prompt(system_prompt)
         .with_current_task(Some(task_id.to_string()))
+        .with_worktree(worktree_path.clone())
         .with_mcp_config(mcp_config_json);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
@@ -4177,9 +4195,13 @@ async fn dispatch_single_task(
                         tracing::warn!("Failed to update worker session in DB: {}", e);
                     }
                 }
+                // Persist full worker status (state, current_task, message counts)
+                persist_worker_status(&stores_for_msg, &worker_id_for_msg).await;
             }
             Err(e) => {
                 tracing::warn!("Failed to send initial message to worker {}: {}", worker_id_for_msg.0, e);
+                // Still persist status on error so we capture the error state
+                persist_worker_status(&stores_for_msg, &worker_id_for_msg).await;
             }
         }
     });

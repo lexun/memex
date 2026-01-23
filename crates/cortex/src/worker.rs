@@ -663,6 +663,19 @@ impl WorkerManager {
         workers.values().map(|w| w.status.clone()).collect()
     }
 
+    /// Set the current task for a worker
+    ///
+    /// This updates the in-memory worker status with the task ID.
+    /// Use this when dispatching a worker to a task.
+    pub async fn set_current_task(&self, id: &WorkerId, task_id: Option<String>) -> Result<()> {
+        let mut workers = self.workers.write().await;
+        let worker = workers.get_mut(id).ok_or_else(|| {
+            CortexError::WorkerNotFound(id.to_string())
+        })?;
+        worker.status.current_task = task_id;
+        Ok(())
+    }
+
     /// Remove a worker
     pub async fn remove(&self, id: &WorkerId) -> Result<()> {
         let mut workers = self.workers.write().await;
@@ -950,5 +963,36 @@ mod tests {
                 assert_eq!(session_after, Some("test-session-123".to_string()));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_set_current_task() {
+        let manager = WorkerManager::new();
+        let config = WorkerConfig::new("/tmp");
+        let id = manager.create(config).await.unwrap();
+
+        // Initially no task assigned
+        let status = manager.status(&id).await.unwrap();
+        assert!(status.current_task.is_none());
+
+        // Set a task
+        manager.set_current_task(&id, Some("task-123".to_string())).await.unwrap();
+        let status = manager.status(&id).await.unwrap();
+        assert_eq!(status.current_task, Some("task-123".to_string()));
+
+        // Clear the task
+        manager.set_current_task(&id, None).await.unwrap();
+        let status = manager.status(&id).await.unwrap();
+        assert!(status.current_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_current_task_nonexistent_worker() {
+        let manager = WorkerManager::new();
+        let fake_id = WorkerId::new();
+
+        // Should error for non-existent worker
+        let result = manager.set_current_task(&fake_id, Some("task-123".to_string())).await;
+        assert!(result.is_err());
     }
 }

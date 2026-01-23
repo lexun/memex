@@ -43,6 +43,9 @@ pub struct WebConfig {
     /// Host to bind to (default: 127.0.0.1)
     #[serde(default = "default_web_host")]
     pub host: String,
+    /// Path to static files for the Leptos web UI (default: target/site)
+    #[serde(default)]
+    pub static_path: Option<String>,
 }
 
 fn default_web_enabled() -> bool {
@@ -63,6 +66,7 @@ impl Default for WebConfig {
             enabled: default_web_enabled(),
             port: default_web_port(),
             host: default_web_host(),
+            static_path: None,
         }
     }
 }

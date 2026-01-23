@@ -1,7 +1,7 @@
 use leptos::*;
 use leptos_meta::*;
 use leptos_router::*;
-use crate::components::{DashboardPage, TasksPage};
+use crate::components::*;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -14,9 +14,30 @@ pub fn App() -> impl IntoView {
 
         <Router>
             <Routes>
+                // Home/Dashboard
                 <Route path="/" view=DashboardPage/>
+
+                // Work section
                 <Route path="/tasks" view=TasksPage/>
-                // TODO: Add other routes (workers, people, teams, etc.)
+                <Route path="/tasks/:id" view=TaskDetailPage/>
+                <Route path="/workers" view=WorkersPage/>
+                <Route path="/workers/:id" view=WorkerDetailPage/>
+
+                // Directory section
+                <Route path="/people" view=PeoplePage/>
+                <Route path="/teams" view=TeamsPage/>
+                <Route path="/companies" view=CompaniesPage/>
+                <Route path="/projects" view=ProjectsPage/>
+                <Route path="/repos" view=ReposPage/>
+                <Route path="/rules" view=RulesPage/>
+                <Route path="/skills" view=SkillsPage/>
+                <Route path="/documents" view=DocumentsPage/>
+                <Route path="/technologies" view=TechnologiesPage/>
+
+                // Activity section
+                <Route path="/memos" view=MemosPage/>
+                <Route path="/threads" view=ThreadsPage/>
+                <Route path="/events" view=EventsPage/>
             </Routes>
         </Router>
     }

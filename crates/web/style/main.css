@@ -280,3 +280,216 @@ pre {
     border-radius: 4px;
     padding: 1rem;
 }
+
+/* Detail page layout */
+.detail-header {
+    margin-bottom: 1.5rem;
+}
+
+.back-link {
+    color: var(--fg-dim);
+    font-size: 0.85rem;
+}
+
+.back-link:hover {
+    color: var(--accent);
+}
+
+.detail-meta {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 300px;
+    gap: 1.5rem;
+}
+
+@media (max-width: 900px) {
+    .detail-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.detail-main,
+.detail-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.detail-list {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.5rem 1rem;
+}
+
+.detail-list dt {
+    color: var(--fg-dim);
+    font-size: 0.85rem;
+}
+
+.detail-list dd {
+    margin: 0;
+}
+
+/* Notes list */
+.notes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.note-item {
+    padding: 0.75rem;
+    background: var(--bg);
+    border-radius: 4px;
+    border-left: 3px solid var(--accent);
+}
+
+.note-item p {
+    white-space: pre-wrap;
+}
+
+/* Worker list */
+.worker-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.worker-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--bg);
+}
+
+.worker-list li:last-child {
+    border-bottom: none;
+}
+
+/* Additional badge types */
+.badge-project {
+    background: var(--purple);
+    color: var(--bg);
+}
+
+.badge-model {
+    background: var(--cyan);
+    color: var(--bg);
+}
+
+.badge-error {
+    background: var(--red);
+    color: var(--bg);
+}
+
+.badge-status.error {
+    background: var(--red);
+}
+
+.badge-status.working {
+    background: var(--accent);
+}
+
+.badge-status.idle {
+    background: var(--green);
+}
+
+/* Error banner */
+.error-banner {
+    background: rgba(247, 118, 142, 0.15);
+    border: 1px solid var(--red);
+    color: var(--red);
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 1.5rem;
+}
+
+/* Status grid for worker details */
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+}
+
+.status-item {
+    text-align: center;
+}
+
+.status-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.status-label {
+    color: var(--fg-dim);
+    font-size: 0.85rem;
+}
+
+/* Path display */
+.path-display {
+    display: block;
+    padding: 0.75rem;
+    background: var(--bg);
+    border-radius: 4px;
+    word-break: break-all;
+}
+
+/* Task link in worker detail */
+.task-link {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem;
+    background: var(--bg);
+    border-radius: 4px;
+    text-decoration: none;
+}
+
+.task-link:hover {
+    background: var(--bg-alt);
+}
+
+.link-arrow {
+    color: var(--accent);
+}
+
+/* Transcript placeholder */
+.transcript-placeholder {
+    border: 1px dashed var(--fg-dim);
+    background: transparent;
+}
+
+/* Code styling */
+code {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    background: var(--bg);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+}
+
+/* Loading state */
+.loading {
+    text-align: center;
+    padding: 3rem;
+    color: var(--fg-dim);
+}
+
+.loading::after {
+    content: '...';
+    animation: dots 1.5s steps(4, end) infinite;
+}
+
+@keyframes dots {
+    0%, 20% { content: ''; }
+    40% { content: '.'; }
+    60% { content: '..'; }
+    80%, 100% { content: '...'; }
+}
