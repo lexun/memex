@@ -1961,7 +1961,7 @@ impl McpServer for MemexMcpServer {
     #[tool]
     async fn list_records(
         &self,
-        /// Filter by record type (repo, team, person, company, initiative, rule, skill, document, task)
+        /// Filter by record type (repo, team, person, company, initiative, project, rule, skill, document, task)
         record_type: Option<String>,
         /// Include soft-deleted records
         include_deleted: Option<bool>,
@@ -2040,11 +2040,11 @@ impl McpServer for MemexMcpServer {
     /// Create a new record in the knowledge graph
     ///
     /// Records are typed objects that can be connected via edges.
-    /// Common types: repo, team, person, rule, skill
+    /// Common types: repo, team, person, project, rule, skill
     #[tool]
     async fn create_record(
         &self,
-        /// Record type (repo, team, person, company, initiative, rule, skill, document, task)
+        /// Record type (repo, team, person, company, initiative, project, rule, skill, document, task)
         record_type: String,
         /// Human-readable name for the record
         name: String,

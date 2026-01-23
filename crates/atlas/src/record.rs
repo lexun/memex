@@ -861,6 +861,142 @@ impl McpServerContent {
 }
 
 // =============================================================================
+// Project-specific types: Projects are hub records linking all project info
+// =============================================================================
+
+/// Standard document types for projects
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectDocumentType {
+    /// Why this project exists, what problem it solves
+    Vision,
+    /// How it's structured, component architecture
+    Architecture,
+    /// What it does, user-facing capabilities
+    Features,
+    /// What's planned, future features in priority order
+    Roadmap,
+    /// History of releases and changes
+    Changelog,
+    /// How people contribute
+    Contributing,
+    /// Custom/other document type
+    Other,
+}
+
+impl std::fmt::Display for ProjectDocumentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProjectDocumentType::Vision => write!(f, "vision"),
+            ProjectDocumentType::Architecture => write!(f, "architecture"),
+            ProjectDocumentType::Features => write!(f, "features"),
+            ProjectDocumentType::Roadmap => write!(f, "roadmap"),
+            ProjectDocumentType::Changelog => write!(f, "changelog"),
+            ProjectDocumentType::Contributing => write!(f, "contributing"),
+            ProjectDocumentType::Other => write!(f, "other"),
+        }
+    }
+}
+
+impl std::str::FromStr for ProjectDocumentType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "vision" => Ok(ProjectDocumentType::Vision),
+            "architecture" => Ok(ProjectDocumentType::Architecture),
+            "features" => Ok(ProjectDocumentType::Features),
+            "roadmap" => Ok(ProjectDocumentType::Roadmap),
+            "changelog" => Ok(ProjectDocumentType::Changelog),
+            "contributing" => Ok(ProjectDocumentType::Contributing),
+            "other" => Ok(ProjectDocumentType::Other),
+            _ => Err(format!("Unknown project document type: {}", s)),
+        }
+    }
+}
+
+/// A document associated with a project
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectDocument {
+    /// Type of document
+    pub doc_type: ProjectDocumentType,
+    /// Record ID of the document (points to a Document record)
+    pub record_id: String,
+    /// Display order for UI
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<i32>,
+}
+
+/// Helper struct for project content fields stored in Record.content
+///
+/// Project records use Record with:
+/// - record_type: "project"
+/// - name: project name
+/// - description: project overview/summary
+/// - content: ProjectContent (serialized as JSON)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectContent {
+    /// Git repository URL (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    /// Tools/technologies used (stored as strings, linked via edges to Technology records)
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// Standard project documents (vision, architecture, etc.)
+    #[serde(default)]
+    pub documents: Vec<ProjectDocument>,
+}
+
+impl Default for ProjectContent {
+    fn default() -> Self {
+        Self {
+            repo_url: None,
+            tools: Vec::new(),
+            documents: Vec::new(),
+        }
+    }
+}
+
+impl ProjectContent {
+    /// Create new project content with default values
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set repository URL
+    pub fn with_repo_url(mut self, repo_url: impl Into<String>) -> Self {
+        self.repo_url = Some(repo_url.into());
+        self
+    }
+
+    /// Add a tool/technology
+    pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
+        self.tools.push(tool.into());
+        self
+    }
+
+    /// Add a document
+    pub fn with_document(mut self, doc_type: ProjectDocumentType, record_id: impl Into<String>) -> Self {
+        self.documents.push(ProjectDocument {
+            doc_type,
+            record_id: record_id.into(),
+            order: None,
+        });
+        self
+    }
+
+    /// Convert to JSON Value for storage in Record.content
+    pub fn to_json(&self) -> JsonValue {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    /// Parse from Record.content JSON
+    pub fn from_json(value: &JsonValue) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
+// =============================================================================
 // Message view types
 // =============================================================================
 
