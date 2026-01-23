@@ -14,6 +14,7 @@ pub mod multi_step_extraction;
 pub mod query;
 pub mod record;
 pub mod record_extraction;
+pub mod schema;
 pub mod store;
 
 pub use cli::{EdgeCommand, EdgeRelationCli, EventCommand, KnowledgeCommand, MemoCommand, RecordCommand, RecordTypeCli};
@@ -49,4 +50,12 @@ pub use record_extraction::{
     RecordExtractor, RecordSummary,
 };
 pub use multi_step_extraction::MultiStepExtractor;
+pub use schema::{
+    // Flexible record types
+    FlexRecord, RecordKind, SemanticType, BuiltinType,
+    // Type schema for validation/UI
+    TypeSchema, FieldDef, FieldType, ValidationError,
+    // Migration helpers
+    parse_legacy_record_type, to_legacy_record_type, builtin_schemas,
+};
 pub use store::Store;
