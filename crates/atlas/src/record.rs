@@ -74,7 +74,9 @@ pub enum RecordType {
     Person,
     /// A company or organization
     Company,
-    /// A project initiative or epic
+    /// A long-running persistent endeavor (like "Memex" or "Acme Corp Website")
+    Project,
+    /// A time-bounded epic with start/end (like "Q1 2024 Launch" or "Migration to Kubernetes")
     Initiative,
     /// A rule or guideline (coding standards, preferences)
     Rule,
@@ -119,6 +121,7 @@ impl std::fmt::Display for RecordType {
             RecordType::Team => write!(f, "team"),
             RecordType::Person => write!(f, "person"),
             RecordType::Company => write!(f, "company"),
+            RecordType::Project => write!(f, "project"),
             RecordType::Initiative => write!(f, "initiative"),
             RecordType::Rule => write!(f, "rule"),
             RecordType::Skill => write!(f, "skill"),
@@ -143,6 +146,7 @@ impl std::str::FromStr for RecordType {
             "team" => Ok(RecordType::Team),
             "person" => Ok(RecordType::Person),
             "company" => Ok(RecordType::Company),
+            "project" => Ok(RecordType::Project),
             "initiative" => Ok(RecordType::Initiative),
             "rule" => Ok(RecordType::Rule),
             "skill" => Ok(RecordType::Skill),
