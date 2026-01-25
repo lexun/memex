@@ -730,6 +730,37 @@ impl WorkerManager {
         info!("Removed {} workers", count);
     }
 
+    /// Refresh a worker's session to restore MCP tool access
+    ///
+    /// This clears the worker's Claude session ID, causing it to start a fresh
+    /// session on the next message with properly configured MCP tools.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (session_cleared, current_state) where session_cleared is true
+    /// if there was a session to clear.
+    pub async fn refresh(&self, id: &WorkerId) -> Result<(bool, WorkerState)> {
+        let worker_arc = {
+            let workers = self.workers.read().await;
+            workers.get(id).cloned().ok_or_else(|| {
+                CortexError::WorkerNotFound(id.to_string())
+            })?
+        };
+
+        let mut worker = worker_arc.write().await;
+        let had_session = worker.last_session_id.is_some();
+        worker.last_session_id = None;
+        let state = worker.status.state.clone();
+
+        if had_session {
+            info!("Worker {} session cleared (refreshed)", id);
+        } else {
+            info!("Worker {} already had no session", id);
+        }
+
+        Ok((had_session, state))
+    }
+
     /// Get the conversation transcript for a worker
     pub async fn transcript(&self, id: &WorkerId, limit: Option<usize>) -> Result<Vec<TranscriptEntry>> {
         let worker_arc = {

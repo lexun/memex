@@ -272,15 +272,38 @@ async fn load_workers_from_db(stores: &Arc<Stores>) -> Result<()> {
         // Set state to Idle - orchestrator will decide what to do
         status.state = WorkerState::Idle;
 
-        // Load into WorkerManager
+        // IMPORTANT: Clear stale session IDs on daemon restart.
+        //
+        // Claude sessions reference MCP servers that were running in the previous
+        // daemon process. When we resume a stale session, those MCP connections
+        // are broken and Claude reports "No such tool available" errors.
+        //
+        // By clearing the session ID, workers start fresh with properly configured
+        // MCP tools when they receive their next message. The worker's configuration
+        // (cwd, model, system_prompt, mcp_config) is preserved, only the session
+        // context is reset.
+        let stale_session = db_worker.last_session_id.is_some();
+
+        // Load into WorkerManager without session ID to force fresh start
         if let Err(e) = stores.workers.load_worker(
             worker_id.clone(),
             config,
             status,
-            db_worker.last_session_id.clone(),
+            None, // Clear session - will start fresh on next message
         ).await {
             tracing::warn!("Failed to load worker {}: {}", db_worker.worker_id, e);
             continue;
+        }
+
+        // Also clear the session in database to keep it consistent
+        if stale_session {
+            if let Err(e) = stores.forge.update_worker_session(&db_worker.worker_id, None).await {
+                tracing::warn!(
+                    "Failed to clear stale session for worker {}: {}",
+                    db_worker.worker_id,
+                    e
+                );
+            }
         }
 
         tracing::info!(
@@ -290,7 +313,7 @@ async fn load_workers_from_db(stores: &Arc<Stores>) -> Result<()> {
             db_worker.worktree.as_deref().unwrap_or("none"),
             db_worker.messages_sent,
             db_worker.messages_received,
-            db_worker.last_session_id.as_deref().unwrap_or("none")
+            if stale_session { "cleared (stale)" } else { "none" }
         );
     }
 
@@ -890,6 +913,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "cortex_worker_transcript" => handle_cortex_worker_transcript(request, stores).await,
         "cortex_validate_shell" => handle_cortex_validate_shell(request, &stores.workers).await,
         "cortex_reload_shell" => handle_cortex_reload_shell(request, stores).await,
+        "cortex_refresh_worker" => handle_cortex_refresh_worker(request, stores).await,
         "cortex_get_coordinator" => handle_cortex_get_coordinator(stores).await,
 
         // Vibetree operations (worktree management)
@@ -3846,6 +3870,40 @@ async fn handle_cortex_reload_shell(
     }
 
     Ok(serde_json::to_value(result).unwrap())
+}
+
+/// Parameters for refreshing a worker
+#[derive(Debug, Deserialize)]
+struct RefreshWorkerParams {
+    worker_id: String,
+}
+
+/// Refresh a worker's session to restore MCP tool access
+async fn handle_cortex_refresh_worker(
+    request: &Request,
+    stores: &Arc<Stores>,
+) -> Result<serde_json::Value, IpcError> {
+    let params: RefreshWorkerParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let worker_id = WorkerId::from_string(&params.worker_id);
+    let (session_cleared, state) = stores.workers
+        .refresh(&worker_id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Persist session clear to database
+    if session_cleared {
+        if let Err(e) = stores.forge.update_worker_session(&params.worker_id, None).await {
+            tracing::warn!("Failed to persist session clear to DB: {}", e);
+        }
+    }
+
+    Ok(json!({
+        "worker_id": params.worker_id,
+        "session_cleared": session_cleared,
+        "state": format!("{:?}", state),
+    }))
 }
 
 /// Well-known Coordinator worker ID

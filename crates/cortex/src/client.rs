@@ -248,6 +248,32 @@ impl CortexClient {
         Ok(reload_result)
     }
 
+    /// Refresh a worker's session to restore MCP tool access
+    ///
+    /// This clears the worker's Claude session ID, causing it to start a fresh
+    /// session on the next message with properly configured MCP tools.
+    ///
+    /// # When to Use
+    ///
+    /// Use this when a worker reports "No such tool available" errors or other
+    /// signs that its MCP connection is broken. This commonly happens after:
+    /// - A daemon restart (sessions are automatically cleared, but this can help
+    ///   if issues persist)
+    /// - MCP server configuration changes
+    ///
+    /// # Returns
+    ///
+    /// A message indicating whether the session was cleared
+    pub async fn refresh_worker(&self, worker_id: &WorkerId) -> Result<RefreshWorkerResult> {
+        let params = json!({
+            "worker_id": worker_id.0,
+        });
+
+        let result = self.client.request("cortex_refresh_worker", params).await?;
+        let refresh_result: RefreshWorkerResult = serde_json::from_value(result)?;
+        Ok(refresh_result)
+    }
+
     /// Get or create the Coordinator worker
     ///
     /// The Coordinator is a long-running headless worker with a special system prompt
@@ -383,4 +409,15 @@ pub struct DispatchTasksResult {
     pub dispatched: usize,
     /// Number of failed dispatches
     pub failed: usize,
+}
+
+/// Result of refreshing a worker's session
+#[derive(Debug, Deserialize)]
+pub struct RefreshWorkerResult {
+    /// Worker ID that was refreshed
+    pub worker_id: String,
+    /// Whether the session was cleared (false if there was no session)
+    pub session_cleared: bool,
+    /// Current state of the worker
+    pub state: String,
 }

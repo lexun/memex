@@ -1814,6 +1814,49 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Refresh a worker's session to restore MCP tool access
+    ///
+    /// This clears the worker's Claude session ID, causing it to start a fresh
+    /// session on the next message with properly configured MCP tools.
+    ///
+    /// **When to use this:** If a worker reports "No such tool available" errors
+    /// or has broken MCP connections, use this to reset its session. This can
+    /// happen after daemon restarts (though sessions are automatically cleared
+    /// on restart) or when MCP servers become unavailable.
+    ///
+    /// The worker's configuration (cwd, model, system_prompt, mcp_config) is
+    /// preserved - only the session context is reset.
+    #[tool]
+    async fn cortex_refresh_worker(
+        &self,
+        /// Worker ID to refresh
+        worker_id: String,
+    ) -> mcp_attr::Result<String> {
+        let result = self.cortex_client.refresh_worker(&cortex::WorkerId::from_string(&worker_id)).await;
+
+        match result {
+            Ok(refresh_result) => {
+                let mut output = format!("Worker {} refreshed\n\n", worker_id);
+
+                if refresh_result.session_cleared {
+                    output.push_str("Session: Cleared successfully\n");
+                    output.push_str("The worker will start a fresh Claude session on the next message,\n");
+                    output.push_str("with properly configured MCP tools.\n");
+                } else {
+                    output.push_str("Session: Was already empty (no action needed)\n");
+                }
+
+                output.push_str(&format!("Current state: {}\n", refresh_result.state));
+
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to refresh worker: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     /// Validate the shell environment for a worker or directory
     ///
     /// Checks if the direnv/nix shell environment loads correctly. This is useful
