@@ -238,14 +238,14 @@ impl McpServer for MemexMcpServer {
 
     /// Update a task's status or priority
     ///
-    /// Valid status values: pending, in_progress, blocked, completed, cancelled
+    /// Valid status values: pending, in_progress, blocked, needs_discussion, completed, cancelled
     /// Priority: lower numbers = higher priority (0=critical, 1=high, 2=medium, 3=low)
     #[tool]
     async fn update_task(
         &self,
         /// Task ID to update
         id: String,
-        /// New status (pending, in_progress, blocked, completed, cancelled)
+        /// New status (pending, in_progress, blocked, needs_discussion, completed, cancelled)
         status: Option<String>,
         /// New priority level (0=critical, 1=high, 2=medium, 3=low)
         priority: Option<i32>,

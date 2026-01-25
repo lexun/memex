@@ -2976,6 +2976,7 @@ async fn handle_migrate_tasks_to_records(stores: &Stores) -> Result<serde_json::
             TaskStatus::Pending => atlas::TaskStatus::Pending,
             TaskStatus::InProgress => atlas::TaskStatus::InProgress,
             TaskStatus::Blocked => atlas::TaskStatus::Blocked,
+            TaskStatus::NeedsDiscussion => atlas::TaskStatus::NeedsDiscussion,
             TaskStatus::Completed => atlas::TaskStatus::Completed,
             TaskStatus::Cancelled => atlas::TaskStatus::Cancelled,
         };

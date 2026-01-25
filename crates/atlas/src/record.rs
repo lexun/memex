@@ -698,6 +698,8 @@ pub enum TaskStatus {
     InProgress,
     /// Task is blocked by something
     Blocked,
+    /// Task needs human discussion or decision before proceeding
+    NeedsDiscussion,
     /// Task has been completed successfully
     Completed,
     /// Task was cancelled or abandoned
@@ -716,6 +718,7 @@ impl std::fmt::Display for TaskStatus {
             TaskStatus::Pending => write!(f, "pending"),
             TaskStatus::InProgress => write!(f, "in_progress"),
             TaskStatus::Blocked => write!(f, "blocked"),
+            TaskStatus::NeedsDiscussion => write!(f, "needs_discussion"),
             TaskStatus::Completed => write!(f, "completed"),
             TaskStatus::Cancelled => write!(f, "cancelled"),
         }
@@ -730,6 +733,7 @@ impl std::str::FromStr for TaskStatus {
             "pending" => Ok(TaskStatus::Pending),
             "in_progress" => Ok(TaskStatus::InProgress),
             "blocked" => Ok(TaskStatus::Blocked),
+            "needs_discussion" => Ok(TaskStatus::NeedsDiscussion),
             "completed" => Ok(TaskStatus::Completed),
             "cancelled" => Ok(TaskStatus::Cancelled),
             _ => Err(format!("Unknown task status: {}", s)),

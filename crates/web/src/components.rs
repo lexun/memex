@@ -708,6 +708,7 @@ fn TaskFilters(
                     <option value="pending">"Pending"</option>
                     <option value="in_progress">"In Progress"</option>
                     <option value="blocked">"Blocked"</option>
+                    <option value="needs_discussion">"Needs Discussion"</option>
                     <option value="completed">"Completed"</option>
                     <option value="cancelled">"Cancelled"</option>
                 </select>

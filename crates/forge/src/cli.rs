@@ -28,7 +28,7 @@ pub enum TaskCommand {
         /// Filter by project
         #[arg(short, long)]
         project: Option<String>,
-        /// Filter by status (pending, in_progress, blocked, completed, cancelled)
+        /// Filter by status (pending, in_progress, blocked, needs_discussion, completed, cancelled)
         #[arg(short, long)]
         status: Option<String>,
     },
