@@ -30,6 +30,22 @@ use crate::types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerMcpConfig, Wor
 /// Maximum number of transcript entries to keep per worker
 const MAX_TRANSCRIPT_ENTRIES: usize = 50;
 
+/// Check if an error message indicates a session resume failure
+///
+/// Claude CLI returns specific error messages when a session cannot be resumed
+/// (e.g., session expired, invalid session ID, session not found).
+fn is_session_resume_failure(stderr: &str, stdout: &str) -> bool {
+    let combined = format!("{} {}", stderr, stdout).to_lowercase();
+    combined.contains("session") && (
+        combined.contains("not found") ||
+        combined.contains("expired") ||
+        combined.contains("invalid") ||
+        combined.contains("cannot resume") ||
+        combined.contains("unable to resume") ||
+        combined.contains("does not exist")
+    )
+}
+
 /// Find the claude binary path (async)
 ///
 /// Searches in order:
@@ -475,6 +491,9 @@ impl WorkerManager {
     ///
     /// This spawns a Claude process with `-p` mode, sends the message,
     /// and returns the response.
+    ///
+    /// If a session resume fails (e.g., session expired), the method automatically
+    /// clears the invalid session and retries without `--resume`.
     pub async fn send_message(&self, id: &WorkerId, message: &str) -> Result<WorkerResponse> {
         let start_time = Utc::now();
 
@@ -525,95 +544,131 @@ impl WorkerManager {
 
         // Phase 2: Build and run command (NO LOCK HELD - allows concurrent operations)
         // Note: direnv_env was cached at worker creation time to avoid blocking calls
+        // We may retry without session if resume fails
 
         let claude_path = find_claude_binary_async().await;
-        let mut cmd = Command::new(&claude_path);
-        cmd.arg("-p").arg(message);
-        cmd.arg("--output-format").arg("json");
-        cmd.current_dir(&cwd);
-
-        // Apply direnv environment (nix shell, etc.)
-        if !direnv_env.is_empty() {
-            cmd.envs(&direnv_env);
-        }
-
-        // Add model if specified
-        if let Some(ref model) = model {
-            cmd.arg("--model").arg(model);
-        }
-
-        // Add system prompt if specified (appends to default system prompt)
-        if let Some(ref prompt) = system_prompt {
-            cmd.arg("--append-system-prompt").arg(prompt);
-        }
-
-        // Skip permission prompts for automated use
-        cmd.arg("--dangerously-skip-permissions");
-
-        // Apply MCP configuration
-        // By default, workers are isolated (no inherited MCP servers)
         let mcp = mcp_config.unwrap_or_else(WorkerMcpConfig::none);
-        if mcp.strict {
-            // Use strict mode to ignore user's global MCP config
-            cmd.arg("--strict-mcp-config");
-        }
-        // Add any specified MCP server configs
-        for server_config in &mcp.servers {
-            cmd.arg("--mcp-config").arg(server_config);
-        }
 
-        // Add resume if we have a session
-        if let Some(ref session_id) = last_session_id {
-            cmd.arg("--resume").arg(session_id);
-        }
+        // Try with session first, retry without if session resume fails
+        let mut use_session_id = last_session_id.clone();
+        let mut retry_count = 0;
+        const MAX_RETRIES: u32 = 1; // Only retry once (without session)
 
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        loop {
+            let mut cmd = Command::new(&claude_path);
+            cmd.arg("-p").arg(message);
+            cmd.arg("--output-format").arg("json");
+            cmd.current_dir(&cwd);
 
-        debug!("Running claude for worker {}", id);
-
-        let output = cmd.output().await.map_err(|e| {
-            CortexError::WorkerStartFailed(format!("Failed to spawn claude: {}", e))
-        })?;
-
-        // Phase 3: Parse response (still no lock needed)
-        let (result, is_error, session_id, duration_ms) = if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let exit_code = output.status.code();
-
-            // Get signal info on Unix systems
-            #[cfg(unix)]
-            let signal = {
-                use std::os::unix::process::ExitStatusExt;
-                output.status.signal()
-            };
-            #[cfg(not(unix))]
-            let signal: Option<i32> = None;
-
-            // Build detailed error message
-            let error_msg = format!(
-                "exit_code={:?}, signal={:?}, stderr={}, stdout={}",
-                exit_code,
-                signal,
-                if stderr.is_empty() { "(empty)" } else { &stderr },
-                if stdout.is_empty() { "(empty)" } else { &stdout }
-            );
-
-            // Update worker state to error and update transcript
-            // Note: current_task is preserved - worker remains assigned to task even on error
-            {
-                let mut worker = worker_arc.write().await;
-                worker.status.state = WorkerState::Error(error_msg.clone());
-
-                // Update transcript entry with error
-                if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
-                    entry.response = Some(error_msg.clone());
-                    entry.is_error = true;
-                }
+            // Apply direnv environment (nix shell, etc.)
+            if !direnv_env.is_empty() {
+                cmd.envs(&direnv_env);
             }
-            return Err(CortexError::WorkerCommunicationFailed(error_msg));
-        } else {
+
+            // Add model if specified
+            if let Some(ref model) = model {
+                cmd.arg("--model").arg(model);
+            }
+
+            // Add system prompt if specified (appends to default system prompt)
+            if let Some(ref prompt) = system_prompt {
+                cmd.arg("--append-system-prompt").arg(prompt);
+            }
+
+            // Skip permission prompts for automated use
+            cmd.arg("--dangerously-skip-permissions");
+
+            // Apply MCP configuration
+            // By default, workers are isolated (no inherited MCP servers)
+            if mcp.strict {
+                // Use strict mode to ignore user's global MCP config
+                cmd.arg("--strict-mcp-config");
+            }
+            // Add any specified MCP server configs
+            for server_config in &mcp.servers {
+                cmd.arg("--mcp-config").arg(server_config);
+            }
+
+            // Add resume if we have a session
+            if let Some(ref session_id) = use_session_id {
+                debug!("Attempting to resume session {} for worker {}", session_id, id);
+                cmd.arg("--resume").arg(session_id);
+            }
+
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+
+            debug!("Running claude for worker {} (retry={})", id, retry_count);
+
+            let output = cmd.output().await.map_err(|e| {
+                CortexError::WorkerStartFailed(format!("Failed to spawn claude: {}", e))
+            })?;
+
+            // Phase 3: Parse response (still no lock needed)
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let exit_code = output.status.code();
+
+                // Check if this is a session resume failure and we can retry
+                if use_session_id.is_some() && retry_count < MAX_RETRIES && is_session_resume_failure(&stderr, &stdout) {
+                    warn!(
+                        "Session resume failed for worker {} (session={}), retrying without session: stderr={}, stdout={}",
+                        id,
+                        use_session_id.as_ref().unwrap(),
+                        if stderr.is_empty() { "(empty)" } else { &stderr },
+                        if stdout.is_empty() { "(empty)" } else { &stdout }
+                    );
+
+                    // Clear session and retry
+                    use_session_id = None;
+                    retry_count += 1;
+
+                    // Also clear the session from the worker state so it's not persisted
+                    // Use per-worker lock for better concurrency
+                    {
+                        let mut worker = worker_arc.write().await;
+                        worker.last_session_id = None;
+                        info!("Cleared invalid session for worker {}", id);
+                    }
+
+                    continue; // Retry the loop without session
+                }
+
+                // Get signal info on Unix systems
+                #[cfg(unix)]
+                let signal = {
+                    use std::os::unix::process::ExitStatusExt;
+                    output.status.signal()
+                };
+                #[cfg(not(unix))]
+                let signal: Option<i32> = None;
+
+                // Build detailed error message
+                let error_msg = format!(
+                    "exit_code={:?}, signal={:?}, stderr={}, stdout={}",
+                    exit_code,
+                    signal,
+                    if stderr.is_empty() { "(empty)" } else { &stderr },
+                    if stdout.is_empty() { "(empty)" } else { &stdout }
+                );
+
+                // Update worker state to error and update transcript
+                // Note: current_task is preserved - worker remains assigned to task even on error
+                {
+                    let mut worker = worker_arc.write().await;
+                    worker.status.state = WorkerState::Error(error_msg.clone());
+
+                    // Update transcript entry with error
+                    if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
+                        entry.response = Some(error_msg.clone());
+                        entry.is_error = true;
+                    }
+                }
+                return Err(CortexError::WorkerCommunicationFailed(error_msg));
+            }
+
+            // Success! Parse the response
             let stdout = String::from_utf8_lossy(&output.stdout);
 
             // Parse JSON response
@@ -638,36 +693,49 @@ impl WorkerManager {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            (result, is_error, session_id, duration_ms)
-        };
-
-        // Phase 4: Acquire per-worker lock again to update final state and transcript
-        // Note: current_task is preserved - worker remains assigned to task across messages
-        {
-            let mut worker = worker_arc.write().await;
-            // Store session ID for potential resume
-            if let Some(ref sid) = session_id {
-                worker.last_session_id = Some(sid.clone());
+            // Log session info for observability
+            if retry_count > 0 {
+                info!(
+                    "Worker {} successfully started fresh session after resume failure (new_session={})",
+                    id,
+                    session_id.as_deref().unwrap_or("none")
+                );
+            } else if use_session_id.is_some() {
+                debug!(
+                    "Worker {} successfully resumed session (session={})",
+                    id,
+                    use_session_id.as_ref().unwrap()
+                );
             }
 
-            worker.status.messages_received += 1;
-            worker.status.last_activity = Utc::now();
-            worker.status.state = WorkerState::Idle;
+            // Phase 4: Acquire per-worker lock again to update final state and transcript
+            // Note: current_task is preserved - worker remains assigned to task across messages
+            {
+                let mut worker = worker_arc.write().await;
+                // Store session ID for potential resume
+                if let Some(ref sid) = session_id {
+                    worker.last_session_id = Some(sid.clone());
+                }
 
-            // Update transcript entry with response
-            if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
-                entry.response = Some(result.clone());
-                entry.is_error = is_error;
-                entry.duration_ms = duration_ms;
+                worker.status.messages_received += 1;
+                worker.status.last_activity = Utc::now();
+                worker.status.state = WorkerState::Idle;
+
+                // Update transcript entry with response
+                if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
+                    entry.response = Some(result.clone());
+                    entry.is_error = is_error;
+                    entry.duration_ms = duration_ms;
+                }
             }
+
+            return Ok(WorkerResponse {
+                result,
+                is_error,
+                session_id,
+                duration_ms,
+            });
         }
-
-        Ok(WorkerResponse {
-            result,
-            is_error,
-            session_id,
-            duration_ms,
-        })
     }
 
     /// Get status of a worker

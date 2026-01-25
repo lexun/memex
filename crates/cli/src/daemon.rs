@@ -306,14 +306,16 @@ async fn load_workers_from_db(stores: &Arc<Stores>) -> Result<()> {
             }
         }
 
+        // Log with clear indication of session status
+        let session_status = if stale_session { "cleared (stale)" } else { "fresh start" };
         tracing::info!(
-            "Loaded worker {} (task: {}, worktree: {}, msgs: {}/{}, session: {})",
+            "Loaded worker {} - {} (task: {}, worktree: {}, msgs: {}/{})",
             db_worker.worker_id,
+            session_status,
             db_worker.current_task.as_deref().unwrap_or("none"),
             db_worker.worktree.as_deref().unwrap_or("none"),
             db_worker.messages_sent,
             db_worker.messages_received,
-            if stale_session { "cleared (stale)" } else { "none" }
         );
     }
 
