@@ -1,8 +1,1 @@
-# Ignore everything by default
 *
-
-# But keep the essential files for embedded WASM
-# These are built with: wasm-pack build crates/web --target web --out-dir pkg --no-default-features --features csr
-!.gitignore
-!memex_web.js
-!memex_web_bg.wasm
