@@ -1226,30 +1226,65 @@ pub fn WorkerDetailPage() -> impl IntoView {
 
     let worker = create_resource(worker_id.clone(), |id| async move { fetch_worker(&id).await });
 
-    // Create a signal for refresh trigger
-    #[allow(unused_variables)]
-    let (refresh_count, set_refresh_count) = create_signal(0u32);
+    // Create a signal for the transcript that SSE will update
+    let (transcript, set_transcript) = create_signal::<Option<WorkerTranscript>>(None);
 
-    // Create transcript resource that depends on worker_id and refresh_count
-    let transcript = create_resource(
-        move || (worker_id(), refresh_count.get()),
-        |(id, _)| async move { fetch_worker_transcript(&id).await },
-    );
-
-    // Auto-refresh every 5 seconds when component is mounted
+    // Set up SSE connection for real-time transcript updates (client-side only)
     #[cfg(any(feature = "hydrate", feature = "csr"))]
     {
-        use std::time::Duration;
-        let handle = set_interval_with_handle(
-            move || {
-                set_refresh_count.update(|n| *n = n.wrapping_add(1));
-            },
-            Duration::from_secs(5),
-        );
-        on_cleanup(move || {
-            if let Ok(h) = handle {
-                h.clear();
+        use wasm_bindgen::prelude::*;
+        use wasm_bindgen::JsCast;
+
+        // Use create_effect with a guard to only set up SSE once
+        let (sse_initialized, set_sse_initialized) = create_signal(false);
+
+        create_effect(move |_| {
+            // Only initialize SSE once
+            if sse_initialized.get() {
+                return;
             }
+
+            let id = worker_id();
+            if id.is_empty() {
+                return;
+            }
+
+            set_sse_initialized.set(true);
+
+            use web_sys::{EventSource, MessageEvent};
+
+            let url = format!("/api/workers/{}/transcript/stream", id);
+            let es = EventSource::new(&url).ok();
+            if let Some(event_source) = es.clone() {
+                let onmessage =
+                    Closure::<dyn Fn(MessageEvent)>::new(move |event: MessageEvent| {
+                        if let Some(data) = event.data().as_string() {
+                            if let Ok(transcript_data) =
+                                serde_json::from_str::<WorkerTranscript>(&data)
+                            {
+                                set_transcript.set(Some(transcript_data));
+                            }
+                        }
+                    });
+                event_source.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+                onmessage.forget();
+
+                let onerror = Closure::<dyn Fn()>::new(move || {
+                    leptos::logging::log!("SSE connection error - will auto-reconnect");
+                });
+                event_source.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+                onerror.forget();
+
+                leptos::logging::log!("SSE connection established for worker transcript");
+            }
+
+            // Clean up EventSource on unmount
+            on_cleanup(move || {
+                if let Some(event_source) = es {
+                    event_source.close();
+                    leptos::logging::log!("SSE connection closed");
+                }
+            });
         });
     }
 
@@ -1262,9 +1297,7 @@ pub fn WorkerDetailPage() -> impl IntoView {
                         .map(|result| {
                             match result {
                                 Ok(w) => {
-                                    let transcript_view = transcript
-                                        .get()
-                                        .and_then(|t_result| t_result.ok());
+                                    let transcript_view = transcript.get();
                                     view! { <WorkerDetailContent worker=w transcript=transcript_view/> }
                                         .into_view()
                                 }
@@ -1307,7 +1340,8 @@ fn TranscriptView(
                     <div class="transcript-header">
                         <h3>"Transcript"</h3>
                         <span class="transcript-meta">
-                            {entry_count} " entries \u{2022} " {source_label.to_string()} " \u{2022} live"
+                            {entry_count} " entries \u{2022} " {source_label.to_string()} " \u{2022} "
+                            <span class="live-indicator">"live"</span>
                         </span>
                     </div>
                     <div class="transcript-entries">
@@ -1328,7 +1362,7 @@ fn TranscriptView(
         _ => view! {
             <div class="card transcript-placeholder">
                 <h3>"Transcript"</h3>
-                <p class="card-meta">"No transcript entries yet."</p>
+                <p class="card-meta">"Connecting to live updates..."</p>
             </div>
         }
             .into_view(),
@@ -2253,10 +2287,6 @@ async fn fetch_memos() -> Result<Vec<MemoView>, String> {
 
 async fn fetch_events() -> Result<Vec<Event>, String> {
     fetch_json("/api/events").await
-}
-
-async fn fetch_worker_transcript(id: &str) -> Result<WorkerTranscript, String> {
-    fetch_json(&format!("/api/workers/{}/transcript", id)).await
 }
 
 /// Save record content via API

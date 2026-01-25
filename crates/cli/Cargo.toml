@@ -42,3 +42,5 @@ exec = "0.3"
 # Web server
 axum = "0.7"
 tower-http = { version = "0.5", features = ["fs", "cors"] }
+async-stream = "0.3"
+tokio-stream = "0.1"

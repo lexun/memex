@@ -7,15 +7,21 @@
 //!
 //! The UI is built with Leptos and the WASM/JS bundle is embedded in the binary.
 
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{Path, State},
     http::{header, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        Html, IntoResponse, Response,
+    },
     routing::get,
     Json, Router,
 };
+use futures::stream::Stream;
 
 use crate::config::WebConfig;
 
@@ -47,6 +53,7 @@ pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
         .route("/api/workers", get(api_list_workers))
         .route("/api/workers/:id", get(api_get_worker))
         .route("/api/workers/:id/transcript", get(api_get_worker_transcript))
+        .route("/api/workers/:id/transcript/stream", get(api_stream_worker_transcript))
         .route("/api/activity", get(api_get_activity_feed))
         .route("/api/records/:record_type", get(api_list_records_by_type))
         .route("/api/record/:id", get(api_get_record))
@@ -298,6 +305,130 @@ async fn api_get_worker_transcript(
             tracing::error!("Failed to get transcript for worker {}: {}", id, e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get transcript").into_response()
         }
+    }
+}
+
+/// SSE endpoint for streaming transcript updates
+///
+/// Clients connect to receive real-time transcript updates for a specific worker.
+/// The stream polls the transcript every second and sends updates when new entries appear.
+async fn api_stream_worker_transcript(
+    State(state): State<Arc<WebState>>,
+    Path(id): Path<String>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    tracing::info!("SSE client connected for worker {} transcript", id);
+
+    // Track the number of entries we've sent to detect new ones
+    let mut last_entry_count = 0usize;
+
+    // Create a stream that polls for transcript updates
+    let stream = async_stream::stream! {
+        // Send initial transcript immediately
+        let initial = get_transcript_for_sse(&state, &id).await;
+        last_entry_count = initial.entries.len();
+        if let Ok(json) = serde_json::to_string(&initial) {
+            yield Ok(Event::default().data(json));
+        }
+
+        // Poll every second for updates
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+
+            let transcript = get_transcript_for_sse(&state, &id).await;
+            let current_count = transcript.entries.len();
+
+            // Only send if there are new entries
+            if current_count != last_entry_count {
+                last_entry_count = current_count;
+                if let Ok(json) = serde_json::to_string(&transcript) {
+                    yield Ok(Event::default().data(json));
+                }
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+/// Helper to get transcript data for SSE
+async fn get_transcript_for_sse(state: &Arc<WebState>, id: &str) -> WorkerTranscriptView {
+    // First try to get persistent transcript from database
+    if let Ok(Some(thread)) = state.atlas.get_thread_by_worker(id).await {
+        if let Some(thread_id) = thread.id_str() {
+            if let Ok((_, entries)) = state.atlas.get_thread_with_entries(&thread_id, None).await {
+                let transcript: Vec<TranscriptEntryView> = entries
+                    .iter()
+                    .filter_map(|entry| {
+                        let content = &entry.content;
+                        let role = content
+                            .get("role")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let is_user = role == "user";
+
+                        Some(TranscriptEntryView {
+                            timestamp: entry.created_at.to_string(),
+                            prompt: if is_user {
+                                entry.description.clone().unwrap_or_default()
+                            } else {
+                                String::new()
+                            },
+                            response: if !is_user {
+                                entry.description.clone()
+                            } else {
+                                None
+                            },
+                            is_error: false,
+                            duration_ms: content
+                                .get("duration_ms")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                        })
+                    })
+                    .collect();
+
+                if !transcript.is_empty() {
+                    return WorkerTranscriptView {
+                        source: "database".to_string(),
+                        thread_id: Some(thread_id.to_string()),
+                        entries: transcript,
+                    };
+                }
+            }
+        }
+    }
+
+    // Fall back to in-memory transcript
+    let worker_id = cortex::WorkerId::from_string(id);
+    match state.workers.transcript(&worker_id, None).await {
+        Ok(entries) => {
+            let transcript: Vec<TranscriptEntryView> = entries
+                .iter()
+                .map(|e| TranscriptEntryView {
+                    timestamp: e.timestamp.to_rfc3339(),
+                    prompt: e.prompt.clone(),
+                    response: e.response.clone(),
+                    is_error: e.is_error,
+                    duration_ms: e.duration_ms,
+                })
+                .collect();
+
+            WorkerTranscriptView {
+                source: "memory".to_string(),
+                thread_id: None,
+                entries: transcript,
+            }
+        }
+        Err(_) => WorkerTranscriptView {
+            source: "error".to_string(),
+            thread_id: None,
+            entries: vec![],
+        },
     }
 }
 

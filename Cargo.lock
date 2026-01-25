@@ -1053,6 +1053,7 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "atlas",
  "axum",
  "carapace_spec_clap",
@@ -1076,6 +1077,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tokio",
+ "tokio-stream",
  "toml 0.8.23",
  "tower-http 0.5.2",
  "tracing",
@@ -3519,6 +3521,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 
