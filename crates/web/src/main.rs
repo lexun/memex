@@ -43,6 +43,8 @@ async fn main() {
         // Workers
         .route("/api/workers", get(api_list_workers))
         .route("/api/workers/:id", get(api_get_worker))
+        .route("/api/workers/:id/transcript", get(api_get_worker_transcript))
+        .route("/api/activity", get(api_get_activity_feed))
         // Records by type and single record
         .route("/api/records/:record_type", get(api_list_records_by_type))
         .route("/api/record/:id", get(api_get_record).put(api_update_record))
@@ -338,6 +340,144 @@ async fn api_get_worker(
             Err(axum::http::StatusCode::NOT_FOUND)
         }
     }
+}
+
+#[cfg(feature = "ssr")]
+async fn api_get_worker_transcript(
+    axum::extract::State(client): axum::extract::State<IpcClient>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<axum::Json<memex_web::types::WorkerTranscript>, axum::http::StatusCode> {
+    use serde_json::json;
+
+    let result = client
+        .request("cortex_worker_transcript", json!({ "worker_id": id }))
+        .await;
+
+    match result {
+        Ok(value) => {
+            let source = value
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let thread_id = value
+                .get("thread_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let entries: Vec<memex_web::types::TranscriptEntry> = value
+                .get("entries")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| {
+                            Some(memex_web::types::TranscriptEntry {
+                                timestamp: e.get("timestamp")?.as_str()?.to_string(),
+                                prompt: e
+                                    .get("prompt")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                response: e
+                                    .get("response")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                is_error: e
+                                    .get("is_error")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false),
+                                duration_ms: e
+                                    .get("duration_ms")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Ok(axum::Json(memex_web::types::WorkerTranscript {
+                source,
+                thread_id,
+                entries,
+            }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to get transcript for worker {}: {}", id, e);
+            Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[cfg(feature = "ssr")]
+async fn api_get_activity_feed(
+    axum::extract::State(client): axum::extract::State<IpcClient>,
+) -> Result<axum::Json<memex_web::types::ActivityFeed>, axum::http::StatusCode> {
+    use serde_json::json;
+
+    // Get all workers first
+    let workers_result = client.request("cortex_list_workers", json!({})).await;
+    let workers: Vec<serde_json::Value> = match workers_result {
+        Ok(v) => v.as_array().cloned().unwrap_or_default(),
+        Err(e) => {
+            tracing::error!("Failed to list workers for activity feed: {}", e);
+            return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let mut all_entries: Vec<memex_web::types::ActivityEntry> = Vec::new();
+
+    // Get transcript for each worker and combine entries
+    for worker in &workers {
+        let worker_id = worker.get("worker_id").and_then(|v| v.as_str()).unwrap_or("");
+        let worker_state = worker.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let current_task = worker
+            .get("current_task")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        if worker_id.is_empty() {
+            continue;
+        }
+
+        // Get transcript for this worker (limit to last 10 entries per worker)
+        let transcript_result = client
+            .request(
+                "cortex_worker_transcript",
+                json!({ "worker_id": worker_id, "limit": 10 }),
+            )
+            .await;
+
+        if let Ok(transcript_value) = transcript_result {
+            if let Some(entries_arr) = transcript_value.get("entries").and_then(|v| v.as_array()) {
+                for e in entries_arr {
+                    if let Some(timestamp) = e.get("timestamp").and_then(|v| v.as_str()) {
+                        all_entries.push(memex_web::types::ActivityEntry {
+                            worker_id: worker_id.to_string(),
+                            worker_state: worker_state.clone(),
+                            current_task: current_task.clone(),
+                            timestamp: timestamp.to_string(),
+                            prompt: e
+                                .get("prompt")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            response: e.get("response").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            is_error: e.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false),
+                            duration_ms: e.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by timestamp (newest first)
+    all_entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    // Limit total entries
+    all_entries.truncate(50);
+
+    Ok(axum::Json(memex_web::types::ActivityFeed { entries: all_entries }))
 }
 
 #[cfg(feature = "ssr")]

@@ -15,7 +15,10 @@ where
 {
 }
 
-use crate::types::{DashboardStats, Event, MemoView, Record, RecordDetail, Task, TaskDetail, Worker};
+use crate::types::{
+    ActivityEntry, ActivityFeed, DashboardStats, Event, MemoView, Record, RecordDetail, Task,
+    TaskDetail, TranscriptEntry, Worker, WorkerTranscript,
+};
 
 // =============================================================================
 // Layout Components
@@ -68,6 +71,7 @@ fn Sidebar(active_section: Option<String>) -> impl IntoView {
             <div class="sidebar-section-title">"Work"</div>
             <SidebarLink href="/tasks" icon="\u{2610}" label="Tasks" active=is_active("tasks")/>
             <SidebarLink href="/workers" icon="\u{2699}" label="Workers" active=is_active("workers")/>
+            <SidebarLink href="/activity" icon="\u{21BB}" label="Activity" active=is_active("activity")/>
         </div>
 
         <div class="sidebar-section">
@@ -1220,7 +1224,34 @@ pub fn WorkerDetailPage() -> impl IntoView {
     let params = use_params_map();
     let worker_id = move || params.with(|p| p.get("id").cloned().unwrap_or_default());
 
-    let worker = create_resource(worker_id, |id| async move { fetch_worker(&id).await });
+    let worker = create_resource(worker_id.clone(), |id| async move { fetch_worker(&id).await });
+
+    // Create a signal for refresh trigger
+    #[allow(unused_variables)]
+    let (refresh_count, set_refresh_count) = create_signal(0u32);
+
+    // Create transcript resource that depends on worker_id and refresh_count
+    let transcript = create_resource(
+        move || (worker_id(), refresh_count.get()),
+        |(id, _)| async move { fetch_worker_transcript(&id).await },
+    );
+
+    // Auto-refresh every 5 seconds when component is mounted
+    #[cfg(any(feature = "hydrate", feature = "csr"))]
+    {
+        use std::time::Duration;
+        let handle = set_interval_with_handle(
+            move || {
+                set_refresh_count.update(|n| *n = n.wrapping_add(1));
+            },
+            Duration::from_secs(5),
+        );
+        on_cleanup(move || {
+            if let Ok(h) = handle {
+                h.clear();
+            }
+        });
+    }
 
     view! {
         <Layout title="Worker".to_string() active_section="workers".to_string()>
@@ -1230,7 +1261,13 @@ pub fn WorkerDetailPage() -> impl IntoView {
                         .get()
                         .map(|result| {
                             match result {
-                                Ok(w) => view! { <WorkerDetailContent worker=w/> }.into_view(),
+                                Ok(w) => {
+                                    let transcript_view = transcript
+                                        .get()
+                                        .and_then(|t_result| t_result.ok());
+                                    view! { <WorkerDetailContent worker=w transcript=transcript_view/> }
+                                        .into_view()
+                                }
                                 Err(e) => {
                                     view! {
                                         <div class="detail-header">
@@ -1251,8 +1288,128 @@ pub fn WorkerDetailPage() -> impl IntoView {
     }
 }
 
+/// Transcript view component showing conversation history
 #[component]
-fn WorkerDetailContent(worker: Worker) -> impl IntoView {
+fn TranscriptView(
+    transcript: Option<WorkerTranscript>,
+    #[prop(optional)] _worker_id: String,
+) -> impl IntoView {
+    match transcript {
+        Some(t) if !t.entries.is_empty() => {
+            let source_label = match t.source.as_str() {
+                "database" => "persistent",
+                "memory" => "in-memory",
+                _ => &t.source,
+            };
+            let entry_count = t.entries.len();
+            view! {
+                <div class="card transcript-card">
+                    <div class="transcript-header">
+                        <h3>"Transcript"</h3>
+                        <span class="transcript-meta">
+                            {entry_count} " entries \u{2022} " {source_label.to_string()} " \u{2022} live"
+                        </span>
+                    </div>
+                    <div class="transcript-entries">
+                        {t
+                            .entries
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, entry)| {
+                                view! { <TranscriptEntryView entry=entry index=i/> }
+                            })
+                            .collect_view()}
+
+                    </div>
+                </div>
+            }
+                .into_view()
+        }
+        _ => view! {
+            <div class="card transcript-placeholder">
+                <h3>"Transcript"</h3>
+                <p class="card-meta">"No transcript entries yet."</p>
+            </div>
+        }
+            .into_view(),
+    }
+}
+
+/// Single transcript entry view
+#[component]
+fn TranscriptEntryView(entry: TranscriptEntry, index: usize) -> impl IntoView {
+    // Format the timestamp to show time only
+    let time_str = entry
+        .timestamp
+        .split('T')
+        .nth(1)
+        .and_then(|t| t.split('.').next())
+        .unwrap_or(&entry.timestamp)
+        .to_string();
+
+    // Truncate long prompts and responses for display
+    let prompt_preview = if entry.prompt.len() > 300 {
+        format!("{}...", &entry.prompt[..300])
+    } else {
+        entry.prompt.clone()
+    };
+
+    let response_preview = entry.response.as_ref().map(|r| {
+        if r.len() > 500 {
+            format!("{}...", &r[..500])
+        } else {
+            r.clone()
+        }
+    });
+
+    let duration_str = if entry.duration_ms > 0 {
+        format!("{}ms", entry.duration_ms)
+    } else {
+        "pending".to_string()
+    };
+
+    let entry_class = if entry.is_error {
+        "transcript-entry transcript-error"
+    } else {
+        "transcript-entry"
+    };
+
+    view! {
+        <div class=entry_class>
+            <div class="transcript-entry-header">
+                <span class="transcript-entry-number">"#" {index + 1}</span>
+                <span class="transcript-entry-time">{time_str}</span>
+                <span class="transcript-entry-duration">{duration_str}</span>
+            </div>
+            <div class="transcript-prompt">
+                <span class="transcript-label">"Prompt:"</span>
+                <pre class="transcript-content">{prompt_preview}</pre>
+            </div>
+            {response_preview
+                .map(|resp| {
+                    view! {
+                        <div class="transcript-response">
+                            <span class=if entry.is_error {
+                                "transcript-label transcript-error-label"
+                            } else {
+                                "transcript-label"
+                            }>
+                                {if entry.is_error { "Error:" } else { "Response:" }}
+                            </span>
+                            <pre class="transcript-content">{resp}</pre>
+                        </div>
+                    }
+                })}
+
+        </div>
+    }
+}
+
+#[component]
+fn WorkerDetailContent(
+    worker: Worker,
+    transcript: Option<WorkerTranscript>,
+) -> impl IntoView {
     let state_class = worker.state_class();
 
     view! {
@@ -1317,14 +1474,7 @@ fn WorkerDetailContent(worker: Worker) -> impl IntoView {
                     <code class="path-display">{&worker.cwd}</code>
                 </div>
 
-                <div class="card transcript-placeholder">
-                    <h3>"Transcript"</h3>
-                    <p class="card-meta">
-                        "Worker transcript is not yet available in the web UI. "
-                        "Use " <code>"memex cortex transcript " {&worker.id}</code>
-                        " to view the conversation history."
-                    </p>
-                </div>
+                <TranscriptView transcript=transcript _worker_id=worker.id.clone()/>
             </div>
 
             <div class="detail-sidebar">
@@ -1375,6 +1525,172 @@ fn WorkerDetailContent(worker: Worker) -> impl IntoView {
 
                 </div>
             </div>
+        </div>
+    }
+}
+
+/// Worker activity page showing combined transcript from all workers
+#[component]
+pub fn WorkerActivityPage() -> impl IntoView {
+    // Create a signal for refresh trigger
+    #[allow(unused_variables)]
+    let (refresh_count, set_refresh_count) = create_signal(0u32);
+
+    // Create activity feed resource that depends on refresh_count
+    let activity = create_resource(
+        move || refresh_count.get(),
+        |_| async move { fetch_activity_feed().await },
+    );
+
+    // Auto-refresh every 5 seconds when component is mounted
+    #[cfg(any(feature = "hydrate", feature = "csr"))]
+    {
+        use std::time::Duration;
+        let handle = set_interval_with_handle(
+            move || {
+                set_refresh_count.update(|n| *n = n.wrapping_add(1));
+            },
+            Duration::from_secs(5),
+        );
+        on_cleanup(move || {
+            if let Ok(h) = handle {
+                h.clear();
+            }
+        });
+    }
+
+    view! {
+        <Layout title="Worker Activity".to_string() active_section="activity".to_string()>
+            <Suspense fallback=move || view! { <Loading/> }>
+                {move || {
+                    activity
+                        .get()
+                        .map(|result| {
+                            match result {
+                                Ok(feed) => view! { <ActivityFeedView feed=feed/> }.into_view(),
+                                Err(e) => {
+                                    view! { <div class="error">"Error loading activity: " {e}</div> }
+                                        .into_view()
+                                }
+                            }
+                        })
+                }}
+
+            </Suspense>
+        </Layout>
+    }
+}
+
+/// Activity feed view component
+#[component]
+fn ActivityFeedView(feed: ActivityFeed) -> impl IntoView {
+    if feed.entries.is_empty() {
+        return view! {
+            <EmptyState message="No worker activity yet. Workers will appear here when they start processing messages."/>
+        }
+        .into_view();
+    }
+
+    view! {
+        <div class="activity-feed">
+            <div class="activity-header">
+                <span class="activity-count">{feed.entries.len()} " recent entries"</span>
+                <span class="activity-live">"Live updates enabled"</span>
+            </div>
+            <div class="activity-entries">
+                {feed
+                    .entries
+                    .into_iter()
+                    .map(|entry| view! { <ActivityEntryView entry=entry/> })
+                    .collect_view()}
+
+            </div>
+        </div>
+    }
+    .into_view()
+}
+
+/// Single activity entry view
+#[component]
+fn ActivityEntryView(entry: ActivityEntry) -> impl IntoView {
+    // Format the timestamp to show time only
+    let time_str = entry
+        .timestamp
+        .split('T')
+        .nth(1)
+        .and_then(|t| t.split('.').next())
+        .unwrap_or(&entry.timestamp)
+        .to_string();
+
+    // Truncate long prompts and responses for display
+    let prompt_preview = if entry.prompt.len() > 200 {
+        format!("{}...", &entry.prompt[..200])
+    } else {
+        entry.prompt.clone()
+    };
+
+    let response_preview = entry.response.as_ref().map(|r| {
+        if r.len() > 300 {
+            format!("{}...", &r[..300])
+        } else {
+            r.clone()
+        }
+    });
+
+    let duration_str = if entry.duration_ms > 0 {
+        format!("{}ms", entry.duration_ms)
+    } else {
+        "pending".to_string()
+    };
+
+    let entry_class = if entry.is_error {
+        "activity-entry activity-error"
+    } else {
+        "activity-entry"
+    };
+
+    let worker_href = format!("/workers/{}", entry.worker_id);
+
+    view! {
+        <div class=entry_class>
+            <div class="activity-entry-header">
+                <a href=worker_href class="activity-worker-link">
+                    <code>{&entry.worker_id}</code>
+                </a>
+                <span class=format!("badge badge-status {}", entry.worker_state)>
+                    {&entry.worker_state}
+                </span>
+                {entry
+                    .current_task
+                    .as_ref()
+                    .map(|task_id| {
+                        let task_href = format!("/tasks/{}", task_id);
+                        view! {
+                            <a href=task_href class="activity-task-link">
+                                "Task: " <code>{task_id.clone()}</code>
+                            </a>
+                        }
+                    })}
+
+                <span class="activity-time">{time_str}</span>
+                <span class="activity-duration">{duration_str}</span>
+            </div>
+            <div class="activity-prompt">
+                <pre class="activity-content">{prompt_preview}</pre>
+            </div>
+            {response_preview
+                .map(|resp| {
+                    view! {
+                        <div class="activity-response">
+                            <pre class=if entry.is_error {
+                                "activity-content activity-error-content"
+                            } else {
+                                "activity-content"
+                            }>{resp}</pre>
+                        </div>
+                    }
+                })}
+
         </div>
     }
 }
@@ -1919,6 +2235,10 @@ async fn fetch_worker(id: &str) -> Result<Worker, String> {
     fetch_json(&format!("/api/workers/{}", id)).await
 }
 
+async fn fetch_activity_feed() -> Result<ActivityFeed, String> {
+    fetch_json("/api/activity").await
+}
+
 async fn fetch_records_by_type(record_type: &str) -> Result<Vec<Record>, String> {
     fetch_json(&format!("/api/records/{}", record_type)).await
 }
@@ -1933,6 +2253,10 @@ async fn fetch_memos() -> Result<Vec<MemoView>, String> {
 
 async fn fetch_events() -> Result<Vec<Event>, String> {
     fetch_json("/api/events").await
+}
+
+async fn fetch_worker_transcript(id: &str) -> Result<WorkerTranscript, String> {
+    fetch_json(&format!("/api/workers/{}/transcript", id)).await
 }
 
 /// Save record content via API

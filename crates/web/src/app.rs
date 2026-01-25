@@ -22,6 +22,7 @@ pub fn App() -> impl IntoView {
                 <Route path="/tasks/:id" view=TaskDetailPage/>
                 <Route path="/workers" view=WorkersPage/>
                 <Route path="/workers/:id" view=WorkerDetailPage/>
+                <Route path="/activity" view=WorkerActivityPage/>
 
                 // Directory section
                 <Route path="/people" view=PeoplePage/>

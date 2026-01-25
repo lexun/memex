@@ -15,4 +15,4 @@ pub use client::TaskClient;
 pub use handler::handle_task_command;
 pub use store::Store;
 pub use task::{Task, TaskDependency, TaskId, TaskNote, TaskStatus};
-pub use worker::DbWorker;
+pub use worker::{from_surreal_datetime, DbWorker};

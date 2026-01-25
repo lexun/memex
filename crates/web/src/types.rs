@@ -132,3 +132,40 @@ pub struct RecordDetail {
     pub record: Record,
     pub related: Vec<Record>,
 }
+
+/// Transcript entry for worker conversation history
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TranscriptEntry {
+    pub timestamp: String,
+    pub prompt: String,
+    pub response: Option<String>,
+    pub is_error: bool,
+    pub duration_ms: u64,
+}
+
+/// Worker transcript response
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WorkerTranscript {
+    pub source: String,
+    pub thread_id: Option<String>,
+    pub entries: Vec<TranscriptEntry>,
+}
+
+/// Activity feed entry combining worker info with transcript entry
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ActivityEntry {
+    pub worker_id: String,
+    pub worker_state: String,
+    pub current_task: Option<String>,
+    pub timestamp: String,
+    pub prompt: String,
+    pub response: Option<String>,
+    pub is_error: bool,
+    pub duration_ms: u64,
+}
+
+/// Activity feed response
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ActivityFeed {
+    pub entries: Vec<ActivityEntry>,
+}

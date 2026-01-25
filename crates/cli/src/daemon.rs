@@ -27,7 +27,7 @@ use atlas::{
 };
 use cortex::{ShellReloadResult, WorkerConfig, WorkerId, WorkerManager, WorkerState, WorkerStatus};
 use db::Database;
-use forge::{DbWorker, Store as ForgeStore, TaskStatus};
+use forge::{from_surreal_datetime, DbWorker, Store as ForgeStore, TaskStatus};
 use ipc::{Error as IpcError, ErrorCode, Request, Response};
 use llm::LlmClient;
 use serde_json::json;
@@ -3526,9 +3526,11 @@ async fn handle_cortex_worker_transcript(
                     let content = &entry.content;
                     let role = content.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
                     let is_user = role == "user";
+                    // Convert SurrealDB Datetime to chrono DateTime for proper RFC 3339 serialization
+                    let timestamp = from_surreal_datetime(&entry.created_at);
 
                     json!({
-                        "timestamp": entry.created_at.to_string(),
+                        "timestamp": timestamp,
                         "prompt": if is_user { entry.description.clone().unwrap_or_default() } else { String::new() },
                         "response": if !is_user { entry.description.clone() } else { None::<String> },
                         "is_error": false,
