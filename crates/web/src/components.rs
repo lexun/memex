@@ -1174,7 +1174,8 @@ fn WorkersTable(workers: Vec<Worker>) -> impl IntoView {
                                         .current_task
                                         .as_ref()
                                         .map(|task_id| {
-                                            let task_href = format!("/tasks/{}", task_id);
+                                            // Worker task IDs are Atlas record IDs, not Forge task IDs
+                                            let task_href = format!("/records/{}", task_id);
                                             view! {
                                                 <a href=task_href>
                                                     <code>{task_id}</code>
@@ -1544,7 +1545,8 @@ fn WorkerDetailContent(
                         .current_task
                         .as_ref()
                         .map(|task_id| {
-                            let href = format!("/tasks/{}", task_id);
+                            // Worker task IDs are Atlas record IDs, not Forge task IDs
+                            let href = format!("/records/{}", task_id);
                             view! {
                                 <a href=href class="task-link">
                                     <code>{task_id.clone()}</code>
@@ -1698,7 +1700,8 @@ fn ActivityEntryView(entry: ActivityEntry) -> impl IntoView {
                     .current_task
                     .as_ref()
                     .map(|task_id| {
-                        let task_href = format!("/tasks/{}", task_id);
+                        // Worker task IDs are Atlas record IDs, not Forge task IDs
+                        let task_href = format!("/records/{}", task_id);
                         view! {
                             <a href=task_href class="activity-task-link">
                                 "Task: " <code>{task_id.clone()}</code>
