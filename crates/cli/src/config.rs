@@ -21,6 +21,9 @@ pub struct Config {
 pub struct DaemonConfig {
     pub socket_path: Option<PathBuf>,
     pub pid_file: Option<PathBuf>,
+    /// Worker health monitor configuration
+    #[serde(default)]
+    pub health_monitor: HealthMonitorConfig,
 }
 
 impl Default for DaemonConfig {
@@ -28,6 +31,43 @@ impl Default for DaemonConfig {
         Self {
             socket_path: None,
             pid_file: None,
+            health_monitor: HealthMonitorConfig::default(),
+        }
+    }
+}
+
+/// Configuration for the worker health monitor
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthMonitorConfig {
+    /// Enable the health monitor background task (default: true)
+    #[serde(default = "default_health_enabled")]
+    pub enabled: bool,
+    /// How often to check worker health, in seconds (default: 30)
+    #[serde(default = "default_health_check_interval")]
+    pub check_interval_secs: u64,
+    /// Worker inactivity threshold before alerting coordinator, in seconds (default: 300 = 5 minutes)
+    #[serde(default = "default_health_inactivity_threshold")]
+    pub inactivity_threshold_secs: u64,
+}
+
+fn default_health_enabled() -> bool {
+    true
+}
+
+fn default_health_check_interval() -> u64 {
+    30 // 30 seconds
+}
+
+fn default_health_inactivity_threshold() -> u64 {
+    300 // 5 minutes
+}
+
+impl Default for HealthMonitorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_health_enabled(),
+            check_interval_secs: default_health_check_interval(),
+            inactivity_threshold_secs: default_health_inactivity_threshold(),
         }
     }
 }
@@ -162,6 +202,9 @@ pub fn get_config_value(config: &Config, key: &str) -> Option<String> {
     match key {
         "daemon.socket_path" => config.daemon.socket_path.as_ref().map(|p| p.display().to_string()),
         "daemon.pid_file" => config.daemon.pid_file.as_ref().map(|p| p.display().to_string()),
+        "daemon.health_monitor.enabled" => Some(config.daemon.health_monitor.enabled.to_string()),
+        "daemon.health_monitor.check_interval_secs" => Some(config.daemon.health_monitor.check_interval_secs.to_string()),
+        "daemon.health_monitor.inactivity_threshold_secs" => Some(config.daemon.health_monitor.inactivity_threshold_secs.to_string()),
         "database.path" => config.database.path.as_ref().map(|p| p.display().to_string()),
         "database.url" => config.database.url.clone(),
         "database.namespace" => config.database.namespace.clone(),
@@ -183,6 +226,12 @@ pub fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(
     match key {
         "daemon.socket_path" => config.daemon.socket_path = Some(PathBuf::from(value)),
         "daemon.pid_file" => config.daemon.pid_file = Some(PathBuf::from(value)),
+        "daemon.health_monitor.enabled" => config.daemon.health_monitor.enabled = value.parse()
+            .with_context(|| format!("Invalid boolean value: {}", value))?,
+        "daemon.health_monitor.check_interval_secs" => config.daemon.health_monitor.check_interval_secs = value.parse()
+            .with_context(|| format!("Invalid integer value: {}", value))?,
+        "daemon.health_monitor.inactivity_threshold_secs" => config.daemon.health_monitor.inactivity_threshold_secs = value.parse()
+            .with_context(|| format!("Invalid integer value: {}", value))?,
         "database.path" => config.database.path = Some(PathBuf::from(value)),
         "database.url" => config.database.url = Some(value.to_string()),
         "database.namespace" => config.database.namespace = Some(value.to_string()),

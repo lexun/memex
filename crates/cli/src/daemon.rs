@@ -92,6 +92,8 @@ You are the Coordinator - a dedicated agent responsible for managing worker orch
    - Workers that are stuck on something unclear
    - Merge conflicts or test failures
 
+6. **Handle Health Alerts**: The daemon sends health alerts when workers appear stuck or unhealthy. See the "Health Alert Handling" section below for details.
+
 ## What You Do NOT Do
 
 - Talk directly to the user (only through Primary Claude or by creating tasks)
@@ -104,6 +106,40 @@ You are the Coordinator - a dedicated agent responsible for managing worker orch
 - Check for messages at the start of each work cycle: `check_messages(recipient="coordinator")`
 - Send status updates to Primary Claude: `send_agent_message(sender="coordinator", recipient="primary", message_type="status", ...)`
 - When you need clarification: `send_agent_message(sender="coordinator", recipient="primary", message_type="request", ...)`
+
+## Health Alert Handling
+
+The daemon monitors worker health and sends alerts via the message queue. Health alerts have `message_type: "health_alert"` and contain JSON with:
+- `worker_id`: Which worker triggered the alert
+- `alert_type`: One of `inactive_working`, `inactive_idle`, or `error_state`
+- `description`: Human-readable explanation
+- `current_task`: Task ID the worker is assigned to (if any)
+- `last_activity`: When the worker was last active
+- `inactive_secs`: How long the worker has been inactive
+
+**Responding to Health Alerts:**
+
+1. **inactive_working**: Worker appears stuck while processing a message
+   - First, check `cortex_worker_transcript` to see what they were doing
+   - If they seem genuinely stuck, try sending a follow-up message to prompt them
+   - If no response after another check cycle, consider removing and re-dispatching the task
+   - Escalate to Primary if the pattern repeats
+
+2. **inactive_idle**: Worker has been idle for a long time
+   - This may be intentional if no guidance to keep workers busy
+   - If you have tasks to dispatch, assign one to this worker
+   - If worker was supposed to be working, check their transcript for issues
+
+3. **error_state**: Worker encountered an error
+   - Check `cortex_worker_status` for the error details
+   - Determine if it's recoverable (retry) or needs escalation
+   - Consider removing the worker and re-dispatching its task
+   - Record findings as a memo for future reference
+
+**Don't kill workers arbitrarily** - health alerts are informational. Use your judgment:
+- Long-running legitimate work (big refactors, complex tasks) may exceed thresholds
+- Check transcript to understand what the worker is doing before taking action
+- When in doubt, ping the worker or escalate to Primary rather than killing
 
 ## Async Messaging Pattern
 
@@ -132,12 +168,13 @@ This pattern is essential for efficient orchestration - you can dispatch multipl
 ## Work Loop
 
 Each cycle:
-1. Check for new messages/guidance
+1. Check for new messages/guidance (including health alerts)
 2. List current workers and their status
-3. If workers finished, review their work
-4. If guidance says to keep N workers busy, dispatch tasks until you have N active workers
-5. Record any significant decisions or findings as memos
-6. Go idle if no guidance or no ready tasks
+3. Handle any health alerts appropriately
+4. If workers finished, review their work
+5. If guidance says to keep N workers busy, dispatch tasks until you have N active workers
+6. Record any significant decisions or findings as memos
+7. Go idle if no guidance or no ready tasks
 
 ## Git Workflow
 
@@ -157,6 +194,7 @@ You have access to all Memex MCP tools including:
 - `cortex_worker_transcript` - see worker conversation
 - `cortex_send_message` - send message to a worker (use run_in_background=true for async)
 - `cortex_get_response` - get response from async message
+- `cortex_remove_worker` - remove a worker (use after reviewing their work or if stuck)
 - `vibetree_merge` - merge worktree branches
 - `ready_tasks` - get tasks ready to work on
 - `send_agent_message` / `check_messages` - inter-agent communication
@@ -461,12 +499,31 @@ impl Daemon {
             None
         };
 
+        // Start health monitor if enabled
+        let health_handle = if self.config.daemon.health_monitor.enabled {
+            let stores_for_health = Arc::clone(&stores);
+            let check_interval = self.config.daemon.health_monitor.check_interval_secs;
+            let inactivity_threshold = self.config.daemon.health_monitor.inactivity_threshold_secs;
+
+            Some(tokio::spawn(async move {
+                run_health_monitor(stores_for_health, check_interval, inactivity_threshold).await;
+            }))
+        } else {
+            tracing::info!("Worker health monitor disabled");
+            None
+        };
+
         // Write PID file
         let pid_info = PidInfo::new(process::id(), &self.socket_path);
         write_pid_file(&self.pid_path, &pid_info)?;
 
         // Run the IPC server
         let result = self.run_server(listener, stores).await;
+
+        // Abort health monitor if running
+        if let Some(handle) = health_handle {
+            handle.abort();
+        }
 
         // Abort web server if running
         if let Some(handle) = web_handle {
@@ -515,6 +572,155 @@ impl Daemon {
                 tracing::error!("Failed to remove socket file: {}", e);
             }
         }
+    }
+}
+
+/// Worker health alert sent to coordinator via agent message queue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerHealthAlert {
+    /// Worker ID that triggered the alert
+    pub worker_id: String,
+    /// Type of health issue detected
+    pub alert_type: HealthAlertType,
+    /// Human-readable description
+    pub description: String,
+    /// Worker's current state
+    pub state: String,
+    /// Task the worker is assigned to (if any)
+    pub current_task: Option<String>,
+    /// When the worker was last active
+    pub last_activity: chrono::DateTime<chrono::Utc>,
+    /// How long the worker has been inactive (in seconds)
+    pub inactive_secs: u64,
+}
+
+/// Types of health alerts
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthAlertType {
+    /// Worker has been inactive beyond the threshold while in Working state
+    InactiveWorking,
+    /// Worker has been idle beyond the threshold
+    InactiveIdle,
+    /// Worker is in an error state
+    ErrorState,
+}
+
+/// Background task that monitors worker health and sends alerts to coordinator
+async fn run_health_monitor(
+    stores: Arc<Stores>,
+    check_interval_secs: u64,
+    inactivity_threshold_secs: u64,
+) {
+    let check_interval = Duration::from_secs(check_interval_secs);
+    let inactivity_threshold = chrono::Duration::seconds(inactivity_threshold_secs as i64);
+
+    tracing::info!(
+        "Health monitor started: checking every {}s, inactivity threshold {}s",
+        check_interval_secs,
+        inactivity_threshold_secs
+    );
+
+    // Track which workers we've already alerted about to avoid spamming
+    let mut alerted_workers: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
+
+    loop {
+        tokio::time::sleep(check_interval).await;
+
+        let now = chrono::Utc::now();
+
+        // Get all workers
+        let workers = stores.workers.list().await;
+
+        if workers.is_empty() {
+            continue;
+        }
+
+        tracing::debug!("Health monitor checking {} workers", workers.len());
+
+        for worker in workers {
+            let worker_id = worker.id.to_string();
+            let time_since_activity = now.signed_duration_since(worker.last_activity);
+
+            // Skip workers that haven't exceeded the threshold
+            if time_since_activity < inactivity_threshold {
+                // Remove from alerted set if they've become active again
+                alerted_workers.remove(&worker_id);
+                continue;
+            }
+
+            // Determine alert type based on worker state
+            let alert_type = match &worker.state {
+                WorkerState::Working => HealthAlertType::InactiveWorking,
+                WorkerState::Idle => HealthAlertType::InactiveIdle,
+                WorkerState::Error(_) => HealthAlertType::ErrorState,
+                // Don't alert for Starting, Ready, or Stopped states
+                _ => continue,
+            };
+
+            // Check if we've already alerted about this worker recently
+            // Re-alert every 5 minutes (10x the check interval) if still inactive
+            let realert_threshold = chrono::Duration::seconds((check_interval_secs * 10) as i64);
+            if let Some(last_alert_time) = alerted_workers.get(&worker_id) {
+                if now.signed_duration_since(*last_alert_time) < realert_threshold {
+                    continue;
+                }
+            }
+
+            let inactive_secs = time_since_activity.num_seconds() as u64;
+
+            let description = match &alert_type {
+                HealthAlertType::InactiveWorking => format!(
+                    "Worker {} has been in 'working' state for {} seconds without activity",
+                    worker_id, inactive_secs
+                ),
+                HealthAlertType::InactiveIdle => format!(
+                    "Worker {} has been idle for {} seconds",
+                    worker_id, inactive_secs
+                ),
+                HealthAlertType::ErrorState => format!(
+                    "Worker {} is in error state: {:?}",
+                    worker_id, worker.state
+                ),
+            };
+
+            let alert = WorkerHealthAlert {
+                worker_id: worker_id.clone(),
+                alert_type,
+                description: description.clone(),
+                state: format!("{:?}", worker.state),
+                current_task: worker.current_task.clone(),
+                last_activity: worker.last_activity,
+                inactive_secs,
+            };
+
+            // Send alert to coordinator via agent message queue
+            let alert_json = serde_json::to_string(&alert).unwrap_or_default();
+            let message = AgentMessage {
+                id: format!("health-alert-{}-{}", worker_id, now.timestamp_millis()),
+                sender: "health_monitor".to_string(),
+                recipient: Some("coordinator".to_string()),
+                content: alert_json,
+                message_type: "health_alert".to_string(),
+                timestamp: now,
+                read: false,
+            };
+
+            // Add to message queue
+            {
+                let mut messages = stores.agent_messages.write().await;
+                messages.push(message);
+            }
+
+            tracing::warn!("{}", description);
+            alerted_workers.insert(worker_id, now);
+        }
+
+        // Clean up old entries from alerted_workers map
+        let cleanup_threshold = chrono::Duration::hours(1);
+        alerted_workers.retain(|_, last_alert| {
+            now.signed_duration_since(*last_alert) < cleanup_threshold
+        });
     }
 }
 
