@@ -1725,8 +1725,10 @@ impl Store {
             for edge in edges_out {
                 let target_id = edge.target.id.to_raw();
                 if !visited.contains(&target_id) {
-                    // Follow belongs_to edges upward
-                    if edge.relation == "belongs_to" {
+                    // Follow hierarchy edges upward:
+                    // - belongs_to (repo belongs to team, team belongs to company)
+                    // - part_of (component is part of project, task is part of goal)
+                    if edge.relation == "belongs_to" || edge.relation == "part_of" {
                         to_visit.push((target_id, depth + 1));
                     }
                 }
@@ -1738,11 +1740,18 @@ impl Store {
             for edge in edges_in {
                 let source_id = edge.source.id.to_raw();
                 if !visited.contains(&source_id) {
-                    // Collect rules/skills that apply_to or are available_to this record,
-                    // and people who are member_of (if this is a team)
+                    // Collect records that point TO this record:
+                    // - rules/skills that apply_to or are available_to this record
+                    // - people who are member_of (if this is a team)
+                    // - components/documents that are part_of this record (hierarchy)
+                    // - people/teams that own this record
+                    // - documents/entries that are contains in this record
                     if edge.relation == "applies_to"
                         || edge.relation == "available_to"
                         || edge.relation == "member_of"
+                        || edge.relation == "part_of"
+                        || edge.relation == "owns"
+                        || edge.relation == "contains"
                     {
                         to_visit.push((source_id, depth + 1));
                     }
