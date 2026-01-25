@@ -15,6 +15,19 @@ use crate::fact::{Entity, Fact, FactType};
 use crate::memo::{Memo, MemoSource};
 use crate::record::{ContextAssembly, EdgeRelation, Record, RecordEdge};
 
+/// Normalize an identity query for matching
+///
+/// Strips common prefixes (@, #) and lowercases the input.
+/// This allows "Luke", "@luke", and "LUKE" to all match the same record.
+pub fn normalize_identity_query(query: &str) -> String {
+    let trimmed = query.trim();
+    let stripped = trimmed
+        .strip_prefix('@')
+        .or_else(|| trimmed.strip_prefix('#'))
+        .unwrap_or(trimmed);
+    stripped.to_lowercase()
+}
+
 /// Database store for Atlas
 #[derive(Clone)]
 pub struct Store {
@@ -1173,6 +1186,84 @@ impl Store {
         Ok(records.into_iter().next())
     }
 
+    /// Update a record's fields including aliases
+    ///
+    /// This is an extended version of update_record that also allows updating aliases.
+    /// Used primarily by merge operations where we need to preserve identity aliases.
+    pub async fn update_record_with_aliases(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        content: Option<serde_json::Value>,
+        record_type: Option<&str>,
+        aliases: Option<Vec<String>>,
+    ) -> Result<Option<Record>> {
+        let mut updates = vec!["updated_at = time::now()".to_string()];
+
+        if let Some(n) = name {
+            updates.push(format!("name = '{}'", n.replace('\'', "\\'")));
+        }
+        if let Some(d) = description {
+            updates.push(format!("description = '{}'", d.replace('\'', "\\'")));
+        }
+        if content.is_some() {
+            updates.push("content = $content".to_string());
+        }
+        if let Some(rt) = record_type {
+            updates.push(format!("record_type = '{}'", rt.replace('\'', "\\'")));
+        }
+        if aliases.is_some() {
+            updates.push("aliases = $aliases".to_string());
+        }
+
+        let sql = format!(
+            "UPDATE record:{} SET {}",
+            id,
+            updates.join(", ")
+        );
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("content", content))
+            .bind(("aliases", aliases))
+            .await
+            .context("Failed to update record")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
+    /// Add an alias to a record
+    ///
+    /// Adds a new alias to an existing record's alias list.
+    /// Does nothing if the alias already exists (case-insensitive check).
+    pub async fn add_record_alias(&self, id: &str, alias: &str) -> Result<Option<Record>> {
+        // First get the current record to check existing aliases
+        let record = self.get_record(id).await?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+
+        // Check if alias already exists (case-insensitive)
+        let alias_lower = alias.to_lowercase();
+        if record.aliases.iter().any(|a| a.to_lowercase() == alias_lower) {
+            return Ok(Some(record));
+        }
+        if record.name.to_lowercase() == alias_lower {
+            return Ok(Some(record));
+        }
+
+        // Add the new alias
+        let mut new_aliases = record.aliases;
+        new_aliases.push(alias.to_string());
+
+        self.update_record_with_aliases(id, None, None, None, None, Some(new_aliases))
+            .await
+    }
+
     /// Soft-delete a record (sets deleted_at timestamp)
     pub async fn delete_record(&self, id: &str) -> Result<Option<Record>> {
         let sql = "UPDATE type::thing('record', $id) SET deleted_at = time::now(), updated_at = time::now()";
@@ -1324,6 +1415,57 @@ impl Store {
         Ok(records.into_iter().next())
     }
 
+    /// Find record by name or alias with case-insensitive matching
+    ///
+    /// Searches for a record where either:
+    /// - The name matches (case-insensitive)
+    /// - One of the aliases matches (case-insensitive)
+    ///
+    /// Common prefixes (@, #) are stripped during matching, so:
+    /// - "Luke" matches "luke", "@luke", "Luke"
+    /// - "@lexun" matches "lexun", "@lexun"
+    ///
+    /// Optionally filter by record type for more precise matching.
+    pub async fn find_record_by_name_or_alias(
+        &self,
+        query: &str,
+        record_type: Option<&str>,
+    ) -> Result<Option<Record>> {
+        // Normalize the query: strip common prefixes and lowercase
+        let normalized = normalize_identity_query(query);
+
+        // Build SQL query that checks both name and aliases (case-insensitive)
+        let mut sql = String::from(
+            r#"SELECT * FROM record WHERE deleted_at IS NONE AND (
+                string::lowercase(name) = $normalized OR
+                $normalized IN aliases.map(|$a| string::lowercase($a)) OR
+                string::lowercase(name) = $query_lower OR
+                $query_lower IN aliases.map(|$a| string::lowercase($a))
+            )"#
+        );
+
+        if record_type.is_some() {
+            sql.push_str(" AND record_type = $record_type");
+        }
+
+        sql.push_str(" LIMIT 1");
+
+        let query_lower = query.to_lowercase();
+
+        let mut response = self
+            .db
+            .client()
+            .query(&sql)
+            .bind(("normalized", normalized))
+            .bind(("query_lower", query_lower))
+            .bind(("record_type", record_type.map(|s| s.to_string())))
+            .await
+            .context("Failed to find record by name or alias")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records.into_iter().next())
+    }
+
     /// Get extraction context with existing records for disambiguation
     ///
     /// Returns summaries of existing records grouped by type, which can be
@@ -1332,13 +1474,14 @@ impl Store {
     pub async fn get_extraction_context(&self) -> Result<crate::record_extraction::ExtractionContext> {
         use crate::record_extraction::{ExtractionContext, RecordSummary};
 
-        // Helper to convert records to summaries
+        // Helper to convert records to summaries (including aliases for disambiguation)
         fn to_summaries(records: Vec<Record>) -> Vec<RecordSummary> {
             records
                 .into_iter()
                 .map(|r| RecordSummary {
                     id: r.id_str().unwrap_or_default(),
                     name: r.name,
+                    aliases: r.aliases,
                     description: r.description,
                 })
                 .collect()
@@ -3218,52 +3361,75 @@ impl Store {
             }
         }
 
-        // 5. Optionally merge content and description
+        // 5. Always merge aliases (source's name becomes an alias of target)
+        // This preserves identity resolution: if someone was found by source's name,
+        // they should still be findable after the merge.
+        let mut merged_aliases: Vec<String> = target.aliases.clone();
+
+        // Add source's name as an alias (if not already present)
+        let source_name_lower = source.name.to_lowercase();
+        if !merged_aliases.iter().any(|a| a.to_lowercase() == source_name_lower)
+            && target.name.to_lowercase() != source_name_lower
+        {
+            merged_aliases.push(source.name.clone());
+        }
+
+        // Merge source's aliases into target's aliases
+        for alias in &source.aliases {
+            let alias_lower = alias.to_lowercase();
+            if !merged_aliases.iter().any(|a| a.to_lowercase() == alias_lower)
+                && target.name.to_lowercase() != alias_lower
+            {
+                merged_aliases.push(alias.clone());
+            }
+        }
+
+        let aliases_merged = merged_aliases.len() > target.aliases.len();
+
+        // 6. Optionally merge content and description
         let mut content_merged = false;
         let mut description_merged = false;
+        let mut new_content = target.content.clone();
+        let mut new_description = target.description.clone();
 
-        if merge_content || merge_description {
-            let mut new_content = target.content.clone();
-            let mut new_description = target.description.clone();
-
-            if merge_content {
-                // Deep merge: source values fill in where target has null/missing
-                if let (Some(target_obj), Some(source_obj)) =
-                    (new_content.as_object_mut(), source.content.as_object())
-                {
-                    for (key, value) in source_obj {
-                        if !target_obj.contains_key(key) || target_obj.get(key) == Some(&serde_json::Value::Null) {
-                            target_obj.insert(key.clone(), value.clone());
-                            content_merged = true;
-                        }
+        if merge_content {
+            // Deep merge: source values fill in where target has null/missing
+            if let (Some(target_obj), Some(source_obj)) =
+                (new_content.as_object_mut(), source.content.as_object())
+            {
+                for (key, value) in source_obj {
+                    if !target_obj.contains_key(key) || target_obj.get(key) == Some(&serde_json::Value::Null) {
+                        target_obj.insert(key.clone(), value.clone());
+                        content_merged = true;
                     }
                 }
             }
+        }
 
-            if merge_description {
-                // Append source description if target doesn't have one
-                if target.description.is_none() && source.description.is_some() {
-                    new_description = source.description.clone();
+        if merge_description {
+            // Append source description if target doesn't have one
+            if target.description.is_none() && source.description.is_some() {
+                new_description = source.description.clone();
+                description_merged = true;
+            } else if let (Some(ref target_desc), Some(ref source_desc)) = (&target.description, &source.description) {
+                // Both have descriptions - append source with separator if different
+                if target_desc != source_desc && !target_desc.contains(source_desc) {
+                    new_description = Some(format!("{}\n\n---\n\n{}", target_desc, source_desc));
                     description_merged = true;
-                } else if let (Some(ref target_desc), Some(ref source_desc)) = (&target.description, &source.description) {
-                    // Both have descriptions - append source with separator if different
-                    if target_desc != source_desc && !target_desc.contains(source_desc) {
-                        new_description = Some(format!("{}\n\n---\n\n{}", target_desc, source_desc));
-                        description_merged = true;
-                    }
                 }
             }
+        }
 
-            // Update target record if anything changed
-            if content_merged || description_merged {
-                self.update_record(
-                    target_id,
-                    None,
-                    new_description.as_deref(),
-                    if content_merged { Some(new_content) } else { None },
-                    None, // Don't change record_type during merge
-                ).await?;
-            }
+        // Update target record if anything changed (aliases always need updating on merge)
+        if aliases_merged || content_merged || description_merged {
+            self.update_record_with_aliases(
+                target_id,
+                None,
+                new_description.as_deref(),
+                if content_merged { Some(new_content) } else { None },
+                None, // Don't change record_type during merge
+                Some(merged_aliases),
+            ).await?;
         }
 
         // 6. Mark source as superseded by target
@@ -3292,6 +3458,7 @@ impl Store {
             source_type: source.record_type.clone(),
             edges_redirected,
             edges_skipped,
+            aliases_merged,
             content_merged,
             description_merged,
         })
@@ -3551,6 +3718,8 @@ pub struct MergeResult {
     pub edges_redirected: usize,
     /// Number of edges skipped (duplicates or self-loops)
     pub edges_skipped: usize,
+    /// Whether aliases were merged from source to target
+    pub aliases_merged: bool,
     /// Whether content was merged from source to target
     pub content_merged: bool,
     /// Whether description was merged from source to target
@@ -3566,6 +3735,9 @@ impl MergeResult {
             format!("  Edges redirected: {}", self.edges_redirected),
             format!("  Edges skipped: {}", self.edges_skipped),
         ];
+        if self.aliases_merged {
+            parts.push("  Aliases: merged".to_string());
+        }
         if self.content_merged {
             parts.push("  Content: merged".to_string());
         }
@@ -3806,6 +3978,38 @@ mod tests {
         };
         // 0 (source) + 2 (events) + 3 (facts) + 1 (entities) = 6
         assert_eq!(result_no_source.total_deleted(), 6);
+    }
+
+    #[test]
+    fn test_normalize_identity_query_basic() {
+        // Basic lowercase normalization
+        assert_eq!(normalize_identity_query("Luke"), "luke");
+        assert_eq!(normalize_identity_query("ALICE"), "alice");
+        assert_eq!(normalize_identity_query("Bob Smith"), "bob smith");
+    }
+
+    #[test]
+    fn test_normalize_identity_query_strip_prefix() {
+        // Strip @ prefix (common for social handles)
+        assert_eq!(normalize_identity_query("@luke"), "luke");
+        assert_eq!(normalize_identity_query("@LexUN"), "lexun");
+
+        // Strip # prefix (common for channels/tags)
+        assert_eq!(normalize_identity_query("#channel"), "channel");
+        assert_eq!(normalize_identity_query("#TeamName"), "teamname");
+    }
+
+    #[test]
+    fn test_normalize_identity_query_trim_whitespace() {
+        assert_eq!(normalize_identity_query("  luke  "), "luke");
+        assert_eq!(normalize_identity_query("  @alice  "), "alice");
+    }
+
+    #[test]
+    fn test_normalize_identity_query_preserves_internal_chars() {
+        // Only strips leading @ or #, preserves internal ones
+        assert_eq!(normalize_identity_query("foo@bar.com"), "foo@bar.com");
+        assert_eq!(normalize_identity_query("@user@domain"), "user@domain");
     }
 }
 

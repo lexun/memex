@@ -20,8 +20,14 @@ pub struct Record {
     /// Record type classification
     pub record_type: String,
 
-    /// Human-readable name
+    /// Human-readable name (canonical identifier)
     pub name: String,
+
+    /// Alternate names/handles for identity resolution
+    /// Used for disambiguation: "Luke" = "luke" = "@luke"
+    /// Case-preserving, matched case-insensitively
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 
     /// Optional description
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -312,6 +318,7 @@ impl Record {
             id: None,
             record_type: record_type.to_string(),
             name: name.into(),
+            aliases: Vec::new(),
             description: None,
             content: JsonValue::Object(serde_json::Map::new()),
             deleted_at: None,
@@ -320,6 +327,18 @@ impl Record {
             created_at: now.clone(),
             updated_at: now,
         }
+    }
+
+    /// Add an alias to this record
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.aliases.push(alias.into());
+        self
+    }
+
+    /// Add multiple aliases to this record
+    pub fn with_aliases(mut self, aliases: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.aliases.extend(aliases.into_iter().map(|a| a.into()));
+        self
     }
 
     /// Set the description
@@ -2077,6 +2096,7 @@ mod tests {
             id: None,
             record_type: record_type.to_string(),
             name: name.to_string(),
+            aliases: Vec::new(),
             description: description.map(|s| s.to_string()),
             content: serde_json::json!({}),
             deleted_at: None,
@@ -2320,5 +2340,67 @@ mod tests {
         let prio3 = ordering.effective_priority_for("task3", Impact::Low, Urgency::Normal);
         let prio_no_override = ordering.effective_priority_for("task4", Impact::Low, Urgency::Normal);
         assert!(prio3 > prio_no_override);
+    }
+
+    #[test]
+    fn test_record_with_aliases() {
+        use super::{Record, RecordType};
+
+        let record = Record::new(RecordType::Person, "Luke Barbuto")
+            .with_alias("@lexun")
+            .with_alias("Luke");
+
+        assert_eq!(record.name, "Luke Barbuto");
+        assert_eq!(record.aliases.len(), 2);
+        assert!(record.aliases.contains(&"@lexun".to_string()));
+        assert!(record.aliases.contains(&"Luke".to_string()));
+    }
+
+    #[test]
+    fn test_record_with_multiple_aliases() {
+        use super::{Record, RecordType};
+
+        let record = Record::new(RecordType::Person, "Alice")
+            .with_aliases(vec!["@alice", "alice_dev", "Alice Smith"]);
+
+        assert_eq!(record.name, "Alice");
+        assert_eq!(record.aliases.len(), 3);
+    }
+
+    #[test]
+    fn test_record_default_empty_aliases() {
+        use super::{Record, RecordType};
+
+        let record = Record::new(RecordType::Repo, "memex");
+
+        assert_eq!(record.aliases.len(), 0);
+    }
+
+    #[test]
+    fn test_record_aliases_serialization() {
+        use super::{Record, RecordType};
+
+        let record = Record::new(RecordType::Person, "Bob")
+            .with_alias("@bob");
+
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains("aliases"));
+        assert!(json.contains("@bob"));
+
+        // Deserialize back
+        let parsed: Record = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.aliases.len(), 1);
+        assert_eq!(parsed.aliases[0], "@bob");
+    }
+
+    #[test]
+    fn test_record_empty_aliases_not_serialized() {
+        use super::{Record, RecordType};
+
+        let record = Record::new(RecordType::Repo, "test-repo");
+
+        let json = serde_json::to_string(&record).unwrap();
+        // Empty aliases should be omitted (skip_serializing_if = "Vec::is_empty")
+        assert!(!json.contains("aliases"));
     }
 }

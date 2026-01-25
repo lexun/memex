@@ -33,6 +33,9 @@ pub struct ExtractionContext {
 pub struct RecordSummary {
     pub id: String,
     pub name: String,
+    /// Alternate names/handles for identity resolution
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -206,6 +209,21 @@ impl<'a> RecordExtractor<'a> {
     }
 }
 
+/// Format a record summary for the extraction prompt
+/// Includes aliases if present for better identity resolution
+fn format_record_summary(r: &RecordSummary) -> String {
+    if r.aliases.is_empty() {
+        format!("- {} (id: {})\n", r.name, r.id)
+    } else {
+        format!(
+            "- {} [aliases: {}] (id: {})\n",
+            r.name,
+            r.aliases.join(", "),
+            r.id
+        )
+    }
+}
+
 /// Build the extraction prompt with context
 fn build_extraction_prompt(context: &ExtractionContext) -> String {
     let mut context_section = String::from("## Existing Records in Knowledge Base\n\n");
@@ -213,7 +231,7 @@ fn build_extraction_prompt(context: &ExtractionContext) -> String {
     if !context.repos.is_empty() {
         context_section.push_str("**Repos:**\n");
         for r in &context.repos {
-            context_section.push_str(&format!("- {} (id: {})\n", r.name, r.id));
+            context_section.push_str(&format_record_summary(r));
         }
         context_section.push('\n');
     }
@@ -221,7 +239,7 @@ fn build_extraction_prompt(context: &ExtractionContext) -> String {
     if !context.projects.is_empty() {
         context_section.push_str("**Projects/Initiatives:**\n");
         for r in &context.projects {
-            context_section.push_str(&format!("- {} (id: {})\n", r.name, r.id));
+            context_section.push_str(&format_record_summary(r));
         }
         context_section.push('\n');
     }
@@ -229,7 +247,7 @@ fn build_extraction_prompt(context: &ExtractionContext) -> String {
     if !context.people.is_empty() {
         context_section.push_str("**People:**\n");
         for r in &context.people {
-            context_section.push_str(&format!("- {} (id: {})\n", r.name, r.id));
+            context_section.push_str(&format_record_summary(r));
         }
         context_section.push('\n');
     }
@@ -237,7 +255,7 @@ fn build_extraction_prompt(context: &ExtractionContext) -> String {
     if !context.teams.is_empty() {
         context_section.push_str("**Teams:**\n");
         for r in &context.teams {
-            context_section.push_str(&format!("- {} (id: {})\n", r.name, r.id));
+            context_section.push_str(&format_record_summary(r));
         }
         context_section.push('\n');
     }
@@ -245,7 +263,7 @@ fn build_extraction_prompt(context: &ExtractionContext) -> String {
     if !context.companies.is_empty() {
         context_section.push_str("**Companies:**\n");
         for r in &context.companies {
-            context_section.push_str(&format!("- {} (id: {})\n", r.name, r.id));
+            context_section.push_str(&format_record_summary(r));
         }
         context_section.push('\n');
     }
@@ -253,7 +271,7 @@ fn build_extraction_prompt(context: &ExtractionContext) -> String {
     if !context.rules.is_empty() {
         context_section.push_str("**Rules:**\n");
         for r in &context.rules {
-            context_section.push_str(&format!("- {} (id: {})\n", r.name, r.id));
+            context_section.push_str(&format_record_summary(r));
         }
         context_section.push('\n');
     }
@@ -266,9 +284,11 @@ Extract knowledge from the episode below and output structured JSON.
 
 **RECORDS**: Create records for ALL significant entities mentioned.
 - Record types: repo, person, team, company, rule, skill, document, initiative, technology
-- If an entity clearly matches an existing record above, use action="reference" with existing_id
+- If an entity matches an existing record above (by name OR alias), use action="reference" with existing_id
+- Records may have aliases (alternate names) shown in [brackets] - check these when matching
+- Example: "Luke [aliases: @lexun, lexun]" means "Luke", "@lexun", and "lexun" all refer to the same person
 - If updating info about an existing record, use action="update" with existing_id
-- Only use action="create" for genuinely new entities not in the list above
+- Only use action="create" for genuinely new entities not matching any name or alias above
 
 **CRITICAL - Handling Updates:**
 When a memo describes a CHANGE to something that already exists, use action="update":
