@@ -181,6 +181,11 @@ pub struct WorkerConfig {
     /// By default, workers are isolated and don't inherit user's MCP servers.
     #[serde(default)]
     pub mcp_config: Option<WorkerMcpConfig>,
+
+    /// Enable Chrome browser integration for web UI testing.
+    /// When true, passes --chrome flag to Claude CLI.
+    #[serde(default)]
+    pub chrome: bool,
 }
 
 impl WorkerConfig {
@@ -192,6 +197,7 @@ impl WorkerConfig {
             model: None,
             max_context: None,
             mcp_config: Some(WorkerMcpConfig::none()), // Isolated by default
+            chrome: false,
         }
     }
 
@@ -225,6 +231,12 @@ impl WorkerConfig {
     /// Give worker access to only specific MCP servers
     pub fn with_mcp_servers(mut self, servers: Vec<String>) -> Self {
         self.mcp_config = Some(WorkerMcpConfig::only(servers));
+        self
+    }
+
+    /// Enable Chrome browser integration
+    pub fn with_chrome(mut self, enabled: bool) -> Self {
+        self.chrome = enabled;
         self
     }
 }

@@ -41,6 +41,9 @@ pub struct DbWorker {
     /// MCP configuration (JSON-serialized WorkerMcpConfig)
     /// If None, worker defaults to no MCP servers (isolated)
     pub mcp_config: Option<String>,
+    /// Enable Chrome browser integration for web UI testing
+    #[serde(default)]
+    pub chrome: bool,
     /// When the record was created
     pub created_at: Datetime,
     /// When the record was last updated
@@ -67,6 +70,7 @@ impl DbWorker {
             messages_received: 0,
             last_session_id: None,
             mcp_config: None,
+            chrome: false,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -100,6 +104,12 @@ impl DbWorker {
     /// Set the MCP configuration (as JSON string)
     pub fn with_mcp_config(mut self, mcp_config: impl Into<String>) -> Self {
         self.mcp_config = Some(mcp_config.into());
+        self
+    }
+
+    /// Enable Chrome browser integration
+    pub fn with_chrome(mut self, chrome: bool) -> Self {
+        self.chrome = chrome;
         self
     }
 }

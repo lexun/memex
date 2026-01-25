@@ -57,12 +57,34 @@ impl CortexClient {
         mcp_strict: Option<bool>,
         mcp_servers: Option<Vec<String>>,
     ) -> Result<WorkerId> {
+        self.create_worker_full(cwd, model, system_prompt, mcp_strict, mcp_servers, None).await
+    }
+
+    /// Create a new worker with all configuration options
+    ///
+    /// # Arguments
+    /// * `cwd` - Working directory for the worker
+    /// * `model` - Model to use (e.g., "haiku", "sonnet", "opus")
+    /// * `system_prompt` - Additional system prompt context
+    /// * `mcp_strict` - If true (default), worker won't inherit user's MCP servers
+    /// * `mcp_servers` - List of MCP server JSON configs to include
+    /// * `chrome` - Enable Chrome browser integration for web UI testing
+    pub async fn create_worker_full(
+        &self,
+        cwd: &str,
+        model: Option<&str>,
+        system_prompt: Option<&str>,
+        mcp_strict: Option<bool>,
+        mcp_servers: Option<Vec<String>>,
+        chrome: Option<bool>,
+    ) -> Result<WorkerId> {
         let params = json!({
             "cwd": cwd,
             "model": model,
             "system_prompt": system_prompt,
             "mcp_strict": mcp_strict,
             "mcp_servers": mcp_servers,
+            "chrome": chrome,
         });
 
         let result = self.client.request("cortex_create_worker", params).await?;
@@ -295,11 +317,31 @@ impl CortexClient {
         model: Option<&str>,
         repo_path: Option<&str>,
     ) -> Result<DispatchTaskResult> {
+        self.dispatch_task_full(task_id, worktree, model, repo_path, None).await
+    }
+
+    /// Dispatch a task to a worker with all configuration options
+    ///
+    /// # Arguments
+    /// * `task_id` - Task ID to dispatch
+    /// * `worktree` - Optional: specific worktree path. Auto-creates if not provided.
+    /// * `model` - Optional: model override (defaults to sonnet)
+    /// * `repo_path` - Optional: repo path for worktree creation (defaults to cwd)
+    /// * `chrome` - Enable Chrome browser integration for web UI testing
+    pub async fn dispatch_task_full(
+        &self,
+        task_id: &str,
+        worktree: Option<&str>,
+        model: Option<&str>,
+        repo_path: Option<&str>,
+        chrome: Option<bool>,
+    ) -> Result<DispatchTaskResult> {
         let params = json!({
             "task_id": task_id,
             "worktree": worktree,
             "model": model,
             "repo_path": repo_path,
+            "chrome": chrome,
         });
 
         let result = self.client.request("cortex_dispatch_task", params).await?;
@@ -323,10 +365,28 @@ impl CortexClient {
         model: Option<&str>,
         repo_path: Option<&str>,
     ) -> Result<DispatchTasksResult> {
+        self.dispatch_tasks_full(task_ids, model, repo_path, None).await
+    }
+
+    /// Dispatch multiple tasks to workers in parallel with all configuration options
+    ///
+    /// # Arguments
+    /// * `task_ids` - List of task IDs to dispatch
+    /// * `model` - Optional model override applied to all workers
+    /// * `repo_path` - Optional repo path for worktree creation (all workers)
+    /// * `chrome` - Enable Chrome browser integration for all workers
+    pub async fn dispatch_tasks_full(
+        &self,
+        task_ids: &[&str],
+        model: Option<&str>,
+        repo_path: Option<&str>,
+        chrome: Option<bool>,
+    ) -> Result<DispatchTasksResult> {
         let params = json!({
             "task_ids": task_ids,
             "model": model,
             "repo_path": repo_path,
+            "chrome": chrome,
         });
 
         let result = self.client.request("cortex_dispatch_tasks", params).await?;

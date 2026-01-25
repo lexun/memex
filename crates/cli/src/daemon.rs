@@ -3507,6 +3507,8 @@ struct CreateWorkerParams {
     mcp_strict: Option<bool>,
     /// List of MCP server JSON configs to include
     mcp_servers: Option<Vec<String>>,
+    /// Enable Chrome browser integration for web UI testing
+    chrome: Option<bool>,
 }
 
 async fn handle_cortex_create_worker(
@@ -3537,6 +3539,11 @@ async fn handle_cortex_create_worker(
     let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
     config = config.with_mcp_config(mcp_config);
 
+    // Enable Chrome browser integration if requested
+    if params.chrome.unwrap_or(false) {
+        config = config.with_chrome(true);
+    }
+
     // Create in-memory worker
     let worker_id = stores.workers
         .create(config)
@@ -3547,7 +3554,8 @@ async fn handle_cortex_create_worker(
     let db_worker = DbWorker::new(&worker_id.0, &params.cwd)
         .with_model(params.model.clone().unwrap_or_default())
         .with_system_prompt(params.system_prompt.clone().unwrap_or_default())
-        .with_mcp_config(mcp_config_json);
+        .with_mcp_config(mcp_config_json)
+        .with_chrome(params.chrome.unwrap_or(false));
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
         tracing::warn!("Failed to persist worker to DB: {}", e);
@@ -4153,6 +4161,8 @@ struct DispatchTaskParams {
     model: Option<String>,
     /// Optional: repo path for worktree creation (defaults to cwd)
     repo_path: Option<String>,
+    /// Enable Chrome browser integration for web UI testing
+    chrome: Option<bool>,
 }
 
 /// Dispatch a task to a worker with automatic context assembly
@@ -4340,6 +4350,12 @@ async fn handle_cortex_dispatch_task(
     let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
     config = config.with_mcp_config(mcp_config);
 
+    // Enable Chrome browser integration if requested
+    let chrome_enabled = params.chrome.unwrap_or(false);
+    if chrome_enabled {
+        config = config.with_chrome(true);
+    }
+
     let worker_id = stores.workers
         .create(config)
         .await
@@ -4356,7 +4372,8 @@ async fn handle_cortex_dispatch_task(
         .with_system_prompt(system_prompt)
         .with_current_task(Some(params.task_id.clone()))
         .with_worktree(worktree_path.clone())
-        .with_mcp_config(mcp_config_json);
+        .with_mcp_config(mcp_config_json)
+        .with_chrome(chrome_enabled);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
         tracing::warn!("Failed to persist worker to DB: {}", e);
@@ -4410,6 +4427,8 @@ struct DispatchTasksParams {
     model: Option<String>,
     /// Optional: repo path for worktree creation
     repo_path: Option<String>,
+    /// Enable Chrome browser integration for all workers
+    chrome: Option<bool>,
 }
 
 /// Result for a single task dispatch in a batch
@@ -4439,6 +4458,7 @@ async fn handle_cortex_dispatch_tasks(
     }
 
     // Dispatch all tasks concurrently using join_all
+    let chrome_enabled = params.chrome.unwrap_or(false);
     let dispatch_futures: Vec<_> = params.task_ids.iter().map(|task_id| {
         let stores = Arc::clone(stores);
         let task_id = task_id.clone();
@@ -4446,7 +4466,7 @@ async fn handle_cortex_dispatch_tasks(
         let repo_path = params.repo_path.clone();
 
         async move {
-            dispatch_single_task(&stores, &task_id, model.as_deref(), repo_path.as_deref()).await
+            dispatch_single_task(&stores, &task_id, model.as_deref(), repo_path.as_deref(), chrome_enabled).await
         }
     }).collect();
 
@@ -4495,6 +4515,7 @@ async fn dispatch_single_task(
     task_id: &str,
     model: Option<&str>,
     repo_path: Option<&str>,
+    chrome: bool,
 ) -> Result<DispatchedWorkerResult, IpcError> {
     // 1. Get task record
     let task_record = match stores.atlas.get_record(task_id).await {
@@ -4695,6 +4716,11 @@ async fn dispatch_single_task(
     let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
     config = config.with_mcp_config(mcp_config);
 
+    // Enable Chrome browser integration if requested
+    if chrome {
+        config = config.with_chrome(true);
+    }
+
     let worker_id = match stores.workers.create(config).await {
         Ok(id) => id,
         Err(e) => {
@@ -4720,7 +4746,8 @@ async fn dispatch_single_task(
         .with_system_prompt(system_prompt)
         .with_current_task(Some(task_id.to_string()))
         .with_worktree(worktree_path.clone())
-        .with_mcp_config(mcp_config_json);
+        .with_mcp_config(mcp_config_json)
+        .with_chrome(chrome);
 
     if let Err(e) = stores.forge.create_worker(db_worker).await {
         tracing::warn!("Failed to persist worker to DB: {}", e);

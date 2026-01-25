@@ -1361,6 +1361,9 @@ impl McpServer for MemexMcpServer {
         /// related to this record will be automatically added to the worker's system prompt.
         /// This is typically a repo or project record ID.
         context_from: Option<String>,
+        /// Enable Chrome browser integration for web UI testing.
+        /// When true, passes --chrome flag to Claude CLI, enabling browser automation tools.
+        chrome: Option<bool>,
     ) -> mcp_attr::Result<String> {
         // Build the system prompt, optionally including assembled context
         let final_system_prompt = if let Some(ref record_id) = context_from {
@@ -1389,12 +1392,13 @@ impl McpServer for MemexMcpServer {
 
         match self
             .cortex_client
-            .create_worker_with_mcp(
+            .create_worker_full(
                 &cwd,
                 model.as_deref(),
                 final_system_prompt.as_deref(),
                 mcp_strict,
                 mcp_servers.clone(),
+                chrome,
             )
             .await
         {
@@ -1410,9 +1414,14 @@ impl McpServer for MemexMcpServer {
                 let context_info = context_from
                     .map(|id| format!("\n  Context from: {}", id))
                     .unwrap_or_default();
+                let chrome_info = if chrome.unwrap_or(false) {
+                    "\n  Chrome: enabled"
+                } else {
+                    ""
+                };
                 Ok(format!(
-                    "Created worker: {}\n  Directory: {}\n  MCP mode: {}{}{}",
-                    worker_id, cwd, mcp_mode, servers_info, context_info
+                    "Created worker: {}\n  Directory: {}\n  MCP mode: {}{}{}{}",
+                    worker_id, cwd, mcp_mode, servers_info, context_info, chrome_info
                 ))
             }
             Err(e) => {
@@ -1445,19 +1454,30 @@ impl McpServer for MemexMcpServer {
         model: Option<String>,
         /// Optional: repo path for worktree creation (defaults to current directory)
         repo_path: Option<String>,
+        /// Enable Chrome browser integration for web UI testing.
+        /// When true, passes --chrome flag to Claude CLI.
+        chrome: Option<bool>,
     ) -> mcp_attr::Result<String> {
         match self
             .cortex_client
-            .dispatch_task(&task_id, worktree.as_deref(), model.as_deref(), repo_path.as_deref())
+            .dispatch_task_full(&task_id, worktree.as_deref(), model.as_deref(), repo_path.as_deref(), chrome)
             .await
         {
-            Ok(result) => Ok(format!(
-                "Dispatched task {} to worker {}\n  Worktree: {}\n  Context from: {}",
-                task_id,
-                result.worker_id,
-                result.worktree,
-                result.context_from.unwrap_or_else(|| "none".to_string())
-            )),
+            Ok(result) => {
+                let chrome_info = if chrome.unwrap_or(false) {
+                    "\n  Chrome: enabled"
+                } else {
+                    ""
+                };
+                Ok(format!(
+                    "Dispatched task {} to worker {}\n  Worktree: {}\n  Context from: {}{}",
+                    task_id,
+                    result.worker_id,
+                    result.worktree,
+                    result.context_from.unwrap_or_else(|| "none".to_string()),
+                    chrome_info
+                ))
+            }
             Err(e) => {
                 let msg = format!("Failed to dispatch task: {}", e);
                 Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
@@ -1486,6 +1506,9 @@ impl McpServer for MemexMcpServer {
         model: Option<String>,
         /// Optional: repo path for worktree creation (defaults to current directory)
         repo_path: Option<String>,
+        /// Enable Chrome browser integration for all workers.
+        /// When true, passes --chrome flag to Claude CLI.
+        chrome: Option<bool>,
     ) -> mcp_attr::Result<String> {
         if task_ids.is_empty() {
             return Err(mcp_attr::Error::new(ErrorCode::INVALID_PARAMS)
@@ -1497,13 +1520,18 @@ impl McpServer for MemexMcpServer {
 
         match self
             .cortex_client
-            .dispatch_tasks(&task_id_refs, model.as_deref(), repo_path.as_deref())
+            .dispatch_tasks_full(&task_id_refs, model.as_deref(), repo_path.as_deref(), chrome)
             .await
         {
             Ok(result) => {
+                let chrome_info = if chrome.unwrap_or(false) {
+                    " (Chrome enabled)"
+                } else {
+                    ""
+                };
                 let mut output = format!(
-                    "Dispatched {} task(s), {} failed\n\n",
-                    result.dispatched, result.failed
+                    "Dispatched {} task(s), {} failed{}\n\n",
+                    result.dispatched, result.failed, chrome_info
                 );
 
                 for worker in &result.workers {

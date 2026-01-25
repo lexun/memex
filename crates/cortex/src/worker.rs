@@ -507,7 +507,7 @@ impl WorkerManager {
         };
 
         // Phase 1: Acquire per-worker lock, extract config, update state, add transcript entry
-        let (cwd, model, system_prompt, last_session_id, mcp_config, transcript_idx, direnv_env) = {
+        let (cwd, model, system_prompt, last_session_id, mcp_config, chrome, transcript_idx, direnv_env) = {
             let mut worker = worker_arc.write().await;
 
             worker.status.state = WorkerState::Working;
@@ -537,6 +537,7 @@ impl WorkerManager {
                 worker.config.system_prompt.clone(),
                 worker.last_session_id.clone(),
                 worker.config.mcp_config.clone(),
+                worker.config.chrome,
                 idx.min(MAX_TRANSCRIPT_ENTRIES - 1), // Adjust index if we trimmed
                 worker.cached_direnv_env.clone(),    // Use cached environment
             )
@@ -588,6 +589,11 @@ impl WorkerManager {
             // Add any specified MCP server configs
             for server_config in &mcp.servers {
                 cmd.arg("--mcp-config").arg(server_config);
+            }
+
+            // Enable Chrome browser integration if requested
+            if chrome {
+                cmd.arg("--chrome");
             }
 
             // Add resume if we have a session
