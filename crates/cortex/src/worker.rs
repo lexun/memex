@@ -389,6 +389,7 @@ struct Worker {
 /// - Per-worker lock: Write lock for state updates
 ///
 /// This allows multiple workers to update state concurrently.
+#[derive(Clone)]
 pub struct WorkerManager {
     workers: Arc<RwLock<HashMap<WorkerId, Arc<RwLock<Worker>>>>>,
 }

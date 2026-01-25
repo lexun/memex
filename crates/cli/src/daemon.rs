@@ -504,6 +504,7 @@ impl Daemon {
             let web_state = Arc::new(web::WebState {
                 forge: forge_store,
                 atlas: atlas_store,
+                workers: stores.workers.clone(),
             });
             let web_router = web::build_router(web_state, &self.config.web);
             let web_addr = format!("{}:{}", self.config.web.host, self.config.web.port);

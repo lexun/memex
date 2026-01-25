@@ -28,6 +28,7 @@ const MAIN_CSS: &str = include_str!("../../web/style/main.css");
 pub struct WebState {
     pub forge: forge::Store,
     pub atlas: atlas::Store,
+    pub workers: cortex::WorkerManager,
 }
 
 /// Build the web router
@@ -39,6 +40,7 @@ pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
         .route("/api/tasks/:id", get(api_get_task))
         .route("/api/workers", get(api_list_workers))
         .route("/api/workers/:id", get(api_get_worker))
+        .route("/api/workers/:id/transcript", get(api_get_worker_transcript))
         .route("/api/records/:record_type", get(api_list_records_by_type))
         .route("/api/record/:id", get(api_get_record))
         .route("/api/memos", get(api_list_memos))
@@ -164,6 +166,22 @@ struct EventView {
     source: String,
     timestamp: String,
     summary: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct TranscriptEntryView {
+    timestamp: String,
+    prompt: String,
+    response: Option<String>,
+    is_error: bool,
+    duration_ms: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct WorkerTranscriptView {
+    source: String,
+    thread_id: Option<String>,
+    entries: Vec<TranscriptEntryView>,
 }
 
 // -----------------------------------------------------------------------------
@@ -314,6 +332,66 @@ async fn api_get_worker(
         Err(e) => {
             tracing::error!("Failed to get worker {}: {}", id, e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get worker").into_response()
+        }
+    }
+}
+
+async fn api_get_worker_transcript(
+    State(state): State<Arc<WebState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // First try to get persistent transcript from database
+    if let Ok(Some(thread)) = state.atlas.get_thread_by_worker(&id).await {
+        if let Some(thread_id) = thread.id_str() {
+            if let Ok((_, entries)) = state.atlas.get_thread_with_entries(&thread_id, None).await {
+                let transcript: Vec<TranscriptEntryView> = entries.iter().filter_map(|entry| {
+                    let content = &entry.content;
+                    let role = content.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let is_user = role == "user";
+
+                    Some(TranscriptEntryView {
+                        timestamp: entry.created_at.to_string(),
+                        prompt: if is_user { entry.description.clone().unwrap_or_default() } else { String::new() },
+                        response: if !is_user { entry.description.clone() } else { None },
+                        is_error: false,
+                        duration_ms: content.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0),
+                    })
+                }).collect();
+
+                if !transcript.is_empty() {
+                    return Json(WorkerTranscriptView {
+                        source: "database".to_string(),
+                        thread_id: Some(thread_id.to_string()),
+                        entries: transcript,
+                    }).into_response();
+                }
+            }
+        }
+    }
+
+    // Fall back to in-memory transcript
+    let worker_id = cortex::WorkerId::from_string(&id);
+    match state.workers.transcript(&worker_id, None).await {
+        Ok(entries) => {
+            let transcript: Vec<TranscriptEntryView> = entries.iter().map(|e| {
+                TranscriptEntryView {
+                    timestamp: e.timestamp.to_rfc3339(),
+                    prompt: e.prompt.clone(),
+                    response: e.response.clone(),
+                    is_error: e.is_error,
+                    duration_ms: e.duration_ms,
+                }
+            }).collect();
+
+            Json(WorkerTranscriptView {
+                source: "memory".to_string(),
+                thread_id: None,
+                entries: transcript,
+            }).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to get transcript for worker {}: {}", id, e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get transcript").into_response()
         }
     }
 }
