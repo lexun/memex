@@ -2,6 +2,8 @@
   inputs = {
     nixpkgs.url = "github:cachix/devenv-nixpkgs/rolling";
     crane.url = "github:ipetkov/crane";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     devenv.url = "github:cachix/devenv";
     devenv.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -16,6 +18,7 @@
       self,
       nixpkgs,
       crane,
+      rust-overlay,
       devenv,
       systems,
       ...
@@ -37,6 +40,7 @@
             pkgs = import nixpkgs {
               inherit system;
               config.allowUnfree = true;
+              overlays = [ rust-overlay.overlays.default ];
             };
           }
         );
@@ -49,25 +53,62 @@
         let
           craneLib = crane.mkLib pkgs;
 
+          # Rust toolchain with WASM target for building web UI
+          rustToolchainWithWasm = pkgs.rust-bin.stable.latest.default.override {
+            targets = [ "wasm32-unknown-unknown" ];
+          };
+          craneLibWasm = (crane.mkLib pkgs).overrideToolchain rustToolchainWithWasm;
+
+          # Source filtering for the main build
+          src = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter =
+              path: type:
+              # Include all Cargo/Rust files
+              (craneLib.filterCargoSources path type)
+              # Also include .surql migration files and .html templates
+              || (pkgs.lib.hasSuffix ".surql" path)
+              || (pkgs.lib.hasSuffix ".html" path)
+              # Include CSS for web UI
+              || (pkgs.lib.hasSuffix ".css" path && pkgs.lib.hasInfix "/web/style/" path);
+          };
+
+          # Build wasm-bindgen-cli matching the version in Cargo.lock (0.2.106)
+          wasmBindgenCli = pkgs.rustPlatform.buildRustPackage rec {
+            pname = "wasm-bindgen-cli";
+            version = "0.2.106";
+            src = pkgs.fetchCrate {
+              inherit pname version;
+              hash = "sha256-M6WuGl7EruNopHZbqBpucu4RWz44/MSdv6f0zkYw+44=";
+            };
+            cargoHash = "sha256-ElDatyOwdKwHg3bNH/1pcxKI7LXkhsotlDPQjiLHBwA=";
+            doCheck = false;
+          };
+
+          # Build WASM bundle for the web UI
+          webWasm = craneLibWasm.buildPackage {
+            pname = "memex-web-wasm";
+            version = "0.1.0";
+            src = src;
+            cargoExtraArgs = "-p memex-web --features csr";
+            CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
+            doCheck = false;
+            nativeBuildInputs = [ wasmBindgenCli pkgs.binaryen ];
+            installPhase = ''
+              mkdir -p $out
+              wasm-bindgen \
+                --target web \
+                --out-dir $out \
+                target/wasm32-unknown-unknown/release/memex_web.wasm
+              wasm-opt -Oz -o $out/memex_web_bg.wasm $out/memex_web_bg.wasm
+            '';
+          };
+
           # Common arguments shared between deps and main build
           commonArgs = {
             pname = "memex";
             version = "0.1.0";
-            src = pkgs.lib.cleanSourceWith {
-              src = ./.;
-              filter =
-                path: type:
-                # Include all Cargo/Rust files
-                (craneLib.filterCargoSources path type)
-                # Also include .surql migration files and .html templates
-                || (pkgs.lib.hasSuffix ".surql" path)
-                || (pkgs.lib.hasSuffix ".html" path)
-                # Include pre-built WASM bundle for embedded web UI
-                || (pkgs.lib.hasSuffix ".js" path && pkgs.lib.hasInfix "/web/pkg/" path)
-                || (pkgs.lib.hasSuffix ".wasm" path && pkgs.lib.hasInfix "/web/pkg/" path)
-                # Include CSS for web UI
-                || (pkgs.lib.hasSuffix ".css" path && pkgs.lib.hasInfix "/web/style/" path);
-            };
+            inherit src;
             strictDeps = true;
 
             buildInputs =
@@ -98,6 +139,15 @@
 
             # Set LIBCLANG_PATH for bindgen
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
+            # Copy WASM bundle into place before cargo build
+            preBuild = ''
+              mkdir -p crates/web/pkg
+              cp ${webWasm}/memex_web.js crates/web/pkg/
+              cp ${webWasm}/memex_web_bg.wasm crates/web/pkg/
+            '' + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              export PATH="${pkgs.stdenv.cc}/bin:$PATH"
+            '';
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
             # Fix C++ standard library include path for RocksDB compilation on macOS
@@ -105,10 +155,6 @@
             NIX_CFLAGS_COMPILE = "-isystem ${pkgs.llvmPackages.libcxx}/include/c++/v1";
             # Also need to set it for C++ specifically
             NIX_CXXSTDLIB_COMPILE = "-isystem ${pkgs.llvmPackages.libcxx}/include/c++/v1";
-            # Ensure cc-rs finds the stdenv compiler wrapper
-            preBuild = ''
-              export PATH="${pkgs.stdenv.cc}/bin:$PATH"
-            '';
           };
 
           # Build *just* the cargo dependencies so they can be cached

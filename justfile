@@ -4,9 +4,16 @@ set positional-arguments
 default:
     @just --list --unsorted
 
-# Build the project
+# Build WASM bundle for embedded web UI
+wasm:
+    wasm-pack build crates/web --target web --out-dir pkg --features csr
+
+# Build the project (cargo only, assumes WASM is up to date)
 build:
     cargo build
+
+# Build everything including WASM
+build-all: wasm build
 
 # Run tests
 test:
