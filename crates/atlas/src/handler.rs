@@ -499,6 +499,7 @@ pub async fn handle_record_command(cmd: RecordCommand, socket_path: &Path) -> Re
             name,
             description,
             content,
+            record_type,
         } => {
             let content_json = if let Some(c) = content {
                 Some(serde_json::from_str(&c)?)
@@ -507,7 +508,7 @@ pub async fn handle_record_command(cmd: RecordCommand, socket_path: &Path) -> Re
             };
 
             match client
-                .update_record(&id, name.as_deref(), description.as_deref(), content_json)
+                .update_record(&id, name.as_deref(), description.as_deref(), content_json, record_type.as_deref())
                 .await?
             {
                 Some(record) => {

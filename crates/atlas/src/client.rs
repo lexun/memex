@@ -714,6 +714,7 @@ impl RecordClient {
         name: Option<&str>,
         description: Option<&str>,
         content: Option<serde_json::Value>,
+        record_type: Option<&str>,
     ) -> Result<Option<Record>> {
         #[derive(Serialize)]
         struct Params<'a> {
@@ -721,6 +722,7 @@ impl RecordClient {
             name: Option<&'a str>,
             description: Option<&'a str>,
             content: Option<serde_json::Value>,
+            record_type: Option<&'a str>,
         }
 
         let result = self
@@ -732,6 +734,7 @@ impl RecordClient {
                     name,
                     description,
                     content,
+                    record_type,
                 },
             )
             .await

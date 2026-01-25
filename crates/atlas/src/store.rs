@@ -1138,6 +1138,7 @@ impl Store {
         name: Option<&str>,
         description: Option<&str>,
         content: Option<serde_json::Value>,
+        record_type: Option<&str>,
     ) -> Result<Option<Record>> {
         let mut updates = vec!["updated_at = time::now()".to_string()];
 
@@ -1149,6 +1150,9 @@ impl Store {
         }
         if content.is_some() {
             updates.push("content = $content".to_string());
+        }
+        if let Some(rt) = record_type {
+            updates.push(format!("record_type = '{}'", rt.replace('\'', "\\'")));
         }
 
         let sql = format!(
@@ -1426,6 +1430,7 @@ impl Store {
                                 } else {
                                     Some(extracted.content.clone())
                                 },
+                                None, // Don't update record_type
                             )
                             .await
                         {

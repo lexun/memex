@@ -778,7 +778,7 @@ impl McpServer for MemexMcpServer {
         // Update the record
         match self
             .record_client
-            .update_record(&id, None, None, Some(content.to_json()))
+            .update_record(&id, None, None, Some(content.to_json()), None)
             .await
         {
             Ok(Some(updated)) => {
@@ -2478,6 +2478,8 @@ impl McpServer for MemexMcpServer {
         description: Option<String>,
         /// New JSON content (optional, merges with existing)
         content: Option<String>,
+        /// New record type (optional, for migrations)
+        record_type: Option<String>,
     ) -> mcp_attr::Result<String> {
         let content_json = if let Some(ref c) = content {
             Some(serde_json::from_str(c).map_err(|e| {
@@ -2490,7 +2492,7 @@ impl McpServer for MemexMcpServer {
 
         match self
             .record_client
-            .update_record(&id, name.as_deref(), description.as_deref(), content_json)
+            .update_record(&id, name.as_deref(), description.as_deref(), content_json, record_type.as_deref())
             .await
         {
             Ok(Some(record)) => {

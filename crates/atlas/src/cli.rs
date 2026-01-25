@@ -314,6 +314,10 @@ pub enum RecordCommand {
         /// JSON content to merge
         #[arg(short, long)]
         content: Option<String>,
+
+        /// New record type (for migrations)
+        #[arg(short = 't', long)]
+        record_type: Option<String>,
     },
 
     /// Delete a record (soft-delete)

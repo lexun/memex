@@ -2199,6 +2199,8 @@ struct UpdateRecordParams {
     description: Option<String>,
     #[serde(default)]
     content: Option<serde_json::Value>,
+    #[serde(default)]
+    record_type: Option<String>,
 }
 
 async fn handle_update_record(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
@@ -2217,6 +2219,7 @@ async fn handle_update_record(request: &Request, stores: &Stores) -> Result<serd
             params.name.as_deref(),
             params.description.as_deref(),
             params.content.clone(),
+            params.record_type.as_deref(),
         )
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
