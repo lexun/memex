@@ -15,7 +15,7 @@ use axum::{
     extract::{Path, State},
     http::{header, StatusCode},
     response::{
-        sse::{Event, KeepAlive, Sse},
+        sse::{Event as SseEvent, KeepAlive, Sse},
         Html, IntoResponse, Response,
     },
     routing::get,
@@ -315,7 +315,7 @@ async fn api_get_worker_transcript(
 async fn api_stream_worker_transcript(
     State(state): State<Arc<WebState>>,
     Path(id): Path<String>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     tracing::info!("SSE client connected for worker {} transcript", id);
 
     // Track the number of entries we've sent to detect new ones
@@ -327,7 +327,7 @@ async fn api_stream_worker_transcript(
         let initial = get_transcript_for_sse(&state, &id).await;
         last_entry_count = initial.entries.len();
         if let Ok(json) = serde_json::to_string(&initial) {
-            yield Ok(Event::default().data(json));
+            yield Ok(SseEvent::default().data(json));
         }
 
         // Poll every second for updates
@@ -342,7 +342,7 @@ async fn api_stream_worker_transcript(
             if current_count != last_entry_count {
                 last_entry_count = current_count;
                 if let Ok(json) = serde_json::to_string(&transcript) {
-                    yield Ok(Event::default().data(json));
+                    yield Ok(SseEvent::default().data(json));
                 }
             }
         }
@@ -356,12 +356,12 @@ async fn api_stream_worker_transcript(
 }
 
 /// Helper to get transcript data for SSE
-async fn get_transcript_for_sse(state: &Arc<WebState>, id: &str) -> WorkerTranscriptView {
+async fn get_transcript_for_sse(state: &Arc<WebState>, id: &str) -> WorkerTranscript {
     // First try to get persistent transcript from database
     if let Ok(Some(thread)) = state.atlas.get_thread_by_worker(id).await {
         if let Some(thread_id) = thread.id_str() {
             if let Ok((_, entries)) = state.atlas.get_thread_with_entries(&thread_id, None).await {
-                let transcript: Vec<TranscriptEntryView> = entries
+                let transcript: Vec<TranscriptEntry> = entries
                     .iter()
                     .filter_map(|entry| {
                         let content = &entry.content;
@@ -371,7 +371,7 @@ async fn get_transcript_for_sse(state: &Arc<WebState>, id: &str) -> WorkerTransc
                             .unwrap_or("unknown");
                         let is_user = role == "user";
 
-                        Some(TranscriptEntryView {
+                        Some(TranscriptEntry {
                             timestamp: entry.created_at.to_string(),
                             prompt: if is_user {
                                 entry.description.clone().unwrap_or_default()
@@ -393,7 +393,7 @@ async fn get_transcript_for_sse(state: &Arc<WebState>, id: &str) -> WorkerTransc
                     .collect();
 
                 if !transcript.is_empty() {
-                    return WorkerTranscriptView {
+                    return WorkerTranscript {
                         source: "database".to_string(),
                         thread_id: Some(thread_id.to_string()),
                         entries: transcript,
@@ -407,9 +407,9 @@ async fn get_transcript_for_sse(state: &Arc<WebState>, id: &str) -> WorkerTransc
     let worker_id = cortex::WorkerId::from_string(id);
     match state.workers.transcript(&worker_id, None).await {
         Ok(entries) => {
-            let transcript: Vec<TranscriptEntryView> = entries
+            let transcript: Vec<TranscriptEntry> = entries
                 .iter()
-                .map(|e| TranscriptEntryView {
+                .map(|e| TranscriptEntry {
                     timestamp: e.timestamp.to_rfc3339(),
                     prompt: e.prompt.clone(),
                     response: e.response.clone(),
@@ -418,13 +418,13 @@ async fn get_transcript_for_sse(state: &Arc<WebState>, id: &str) -> WorkerTransc
                 })
                 .collect();
 
-            WorkerTranscriptView {
+            WorkerTranscript {
                 source: "memory".to_string(),
                 thread_id: None,
                 entries: transcript,
             }
         }
-        Err(_) => WorkerTranscriptView {
+        Err(_) => WorkerTranscript {
             source: "error".to_string(),
             thread_id: None,
             entries: vec![],

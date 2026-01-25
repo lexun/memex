@@ -73,15 +73,15 @@
               || (pkgs.lib.hasSuffix ".css" path && pkgs.lib.hasInfix "/web/style/" path);
           };
 
-          # Build wasm-bindgen-cli matching the version in Cargo.lock (0.2.106)
+          # Build wasm-bindgen-cli matching the version in Cargo.lock (0.2.108)
           wasmBindgenCli = pkgs.rustPlatform.buildRustPackage rec {
             pname = "wasm-bindgen-cli";
-            version = "0.2.106";
+            version = "0.2.108";
             src = pkgs.fetchCrate {
               inherit pname version;
-              hash = "sha256-M6WuGl7EruNopHZbqBpucu4RWz44/MSdv6f0zkYw+44=";
+              hash = "sha256-UsuxILm1G6PkmVw0I/JF12CRltAfCJQFOaT4hFwvR8E=";
             };
-            cargoHash = "sha256-ElDatyOwdKwHg3bNH/1pcxKI7LXkhsotlDPQjiLHBwA=";
+            cargoHash = "sha256-iqQiWbsKlLBiJFeqIYiXo3cqxGLSjNM8SOWXGM9u43E=";
             doCheck = false;
           };
 
