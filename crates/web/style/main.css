@@ -987,6 +987,36 @@ code {
     box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.3);
 }
 
+/* Textarea variant for multi-line editing */
+.editable-textarea {
+    width: 100%;
+    min-height: 4rem;
+    padding: 0.5rem;
+    background: var(--bg);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--fg);
+    font-size: inherit;
+    font-family: inherit;
+    line-height: 1.5;
+    outline: none;
+    resize: vertical;
+}
+
+.editable-textarea:focus {
+    box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.3);
+}
+
+.textarea-hint {
+    font-size: 0.75rem;
+    color: var(--fg-dim);
+    margin-top: 0.25rem;
+}
+
+.editable-text.multiline .multiline-content {
+    white-space: pre-wrap;
+}
+
 /* Heading style for editable text */
 .editable-heading {
     font-size: 1.5rem;

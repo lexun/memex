@@ -397,6 +397,9 @@ pub fn EditableText(
     /// Display as heading (larger text)
     #[prop(optional)]
     heading: bool,
+    /// Use textarea for multi-line editing
+    #[prop(optional)]
+    multiline: bool,
 ) -> impl IntoView {
     let (is_editing, set_is_editing) = create_signal(false);
     let (edit_value, set_edit_value) = create_signal(value.clone());
@@ -443,6 +446,8 @@ pub fn EditableText(
         }
     };
 
+    // For single-line: Enter saves, Escape cancels
+    // For multi-line: Cmd/Ctrl+Enter saves, Escape cancels
     let on_keydown = {
         let do_cancel = do_cancel.clone();
         let do_save = do_save.clone();
@@ -450,9 +455,21 @@ pub fn EditableText(
             let key = ev.key();
             if key == "Escape" {
                 do_cancel();
-            } else if key == "Enter" && !ev.shift_key() {
-                ev.prevent_default();
-                do_save();
+            } else if key == "Enter" {
+                if multiline {
+                    // Multi-line: Cmd/Ctrl+Enter to save
+                    if ev.meta_key() || ev.ctrl_key() {
+                        ev.prevent_default();
+                        do_save();
+                    }
+                    // Otherwise allow normal Enter for new lines
+                } else {
+                    // Single-line: Enter to save
+                    if !ev.shift_key() {
+                        ev.prevent_default();
+                        do_save();
+                    }
+                }
             }
         }
     };
@@ -471,34 +488,58 @@ pub fn EditableText(
     view! {
         {move || {
             if is_editing.get() {
-                view! {
-                    <div class=format!("{} editing", class_name)>
-                        <input
-                            type="text"
-                            class="editable-input"
-                            prop:value=move || edit_value.get()
-                            on:input=move |ev| {
-                                set_edit_value.set(event_target_value(&ev));
-                            }
-                            on:keydown=on_keydown.clone()
-                            on:blur=save_on_blur.clone()
-                            autofocus=true
-                            placeholder=placeholder_text.clone()
-                        />
-                        {move || is_saving.get().then(|| view! { <span class="saving-indicator">"..."</span> })}
-                    </div>
-                }.into_view()
+                if multiline {
+                    view! {
+                        <div class=format!("{} editing multiline", class_name)>
+                            <textarea
+                                class="editable-textarea"
+                                prop:value=move || edit_value.get()
+                                on:input=move |ev| {
+                                    set_edit_value.set(event_target_value(&ev));
+                                }
+                                on:keydown=on_keydown.clone()
+                                on:blur=save_on_blur.clone()
+                                autofocus=true
+                                placeholder=placeholder_text.clone()
+                                rows=3
+                            />
+                            <div class="textarea-hint">"Cmd/Ctrl+Enter to save, Esc to cancel"</div>
+                            {move || is_saving.get().then(|| view! { <span class="saving-indicator">"..."</span> })}
+                        </div>
+                    }.into_view()
+                } else {
+                    view! {
+                        <div class=format!("{} editing", class_name)>
+                            <input
+                                type="text"
+                                class="editable-input"
+                                prop:value=move || edit_value.get()
+                                on:input=move |ev| {
+                                    set_edit_value.set(event_target_value(&ev));
+                                }
+                                on:keydown=on_keydown.clone()
+                                on:blur=save_on_blur.clone()
+                                autofocus=true
+                                placeholder=placeholder_text.clone()
+                            />
+                            {move || is_saving.get().then(|| view! { <span class="saving-indicator">"..."</span> })}
+                        </div>
+                    }.into_view()
+                }
             } else {
                 let display_value = edit_value.get();
                 let is_empty = display_value.is_empty();
                 view! {
                     <div
-                        class=format!("{} viewable{}", class_name, if is_empty { " empty" } else { "" })
+                        class=format!("{} viewable{}{}", class_name, if is_empty { " empty" } else { "" }, if multiline { " multiline" } else { "" })
                         on:click=start_editing.clone()
                         title="Click to edit"
                     >
                         {if is_empty {
                             view! { <span class="placeholder">{placeholder_text.clone()}</span> }.into_view()
+                        } else if multiline {
+                            // Preserve line breaks in multi-line display
+                            view! { <span class="multiline-content">{display_value}</span> }.into_view()
                         } else {
                             view! { <span>{display_value}</span> }.into_view()
                         }}
@@ -1488,6 +1529,7 @@ fn RecordDetailContent(detail: RecordDetail) -> impl IntoView {
                         record_id=record_id_for_desc
                         field="description"
                         placeholder="Add a description..."
+                        multiline=true
                     />
                 </div>
 
