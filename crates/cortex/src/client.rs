@@ -164,8 +164,8 @@ impl CortexClient {
             .client
             .request("cortex_worker_transcript", params)
             .await?;
-        let transcript: Vec<TranscriptEntry> = serde_json::from_value(result)?;
-        Ok(transcript)
+        let response: TranscriptResponseDto = serde_json::from_value(result)?;
+        Ok(response.entries)
     }
 
     /// Validate the shell environment for a worker
@@ -316,6 +316,19 @@ struct WorkerResponseDto {
     is_error: bool,
     session_id: Option<String>,
     duration_ms: u64,
+}
+
+/// DTO for transcript response (matches what daemon returns)
+#[derive(Debug, Deserialize)]
+struct TranscriptResponseDto {
+    /// Source of the transcript ("database" or "memory")
+    #[allow(dead_code)]
+    source: String,
+    /// Thread ID (only present for database source)
+    #[allow(dead_code)]
+    thread_id: Option<String>,
+    /// The transcript entries
+    entries: Vec<TranscriptEntry>,
 }
 
 /// Result of getting or creating the Coordinator
