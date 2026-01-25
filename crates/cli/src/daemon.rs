@@ -679,6 +679,7 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "cortex_get_response" => handle_cortex_get_response(request, stores).await,
         "cortex_worker_status" => handle_cortex_worker_status(request, &stores.workers).await,
         "cortex_list_workers" => handle_cortex_list_workers(&stores.workers).await,
+        "get_workers_by_task" => handle_get_workers_by_task(request, &stores.forge).await,
         "cortex_remove_worker" => handle_cortex_remove_worker(request, stores).await,
         "cortex_worker_transcript" => handle_cortex_worker_transcript(request, stores).await,
         "cortex_validate_shell" => handle_cortex_validate_shell(request, &stores.workers).await,
@@ -3445,6 +3446,26 @@ async fn handle_cortex_list_workers(
 ) -> Result<serde_json::Value, IpcError> {
     let list = workers.list().await;
     Ok(serde_json::to_value(list).unwrap())
+}
+
+#[derive(Deserialize)]
+struct GetWorkersByTaskParams {
+    task_id: String,
+}
+
+async fn handle_get_workers_by_task(
+    request: &Request,
+    forge: &ForgeStore,
+) -> Result<serde_json::Value, IpcError> {
+    let params: GetWorkersByTaskParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let workers = forge
+        .get_workers_by_task(&params.task_id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(serde_json::to_value(workers).unwrap())
 }
 
 async fn handle_cortex_remove_worker(

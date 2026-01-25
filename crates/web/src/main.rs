@@ -227,7 +227,7 @@ async fn api_get_task(
     };
 
     // Get notes for this task
-    let notes_result = client.request("get_task_notes", json!({ "task_id": id })).await;
+    let notes_result = client.request("get_notes", json!({ "task_id": id })).await;
     let notes: Vec<memex_web::types::Note> = notes_result
         .ok()
         .and_then(|v| v.as_array().cloned())
@@ -296,7 +296,7 @@ async fn api_list_workers(
 ) -> Result<axum::Json<Vec<memex_web::types::Worker>>, axum::http::StatusCode> {
     use serde_json::json;
 
-    let result = client.request("list_workers", json!({})).await;
+    let result = client.request("cortex_list_workers", json!({})).await;
 
     match result {
         Ok(value) => {
