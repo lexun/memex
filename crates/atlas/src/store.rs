@@ -3261,6 +3261,7 @@ impl Store {
                     None,
                     new_description.as_deref(),
                     if content_merged { Some(new_content) } else { None },
+                    None, // Don't change record_type during merge
                 ).await?;
             }
         }
