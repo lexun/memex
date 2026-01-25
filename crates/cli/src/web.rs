@@ -41,6 +41,7 @@ pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
         .route("/api/workers", get(api_list_workers))
         .route("/api/workers/:id", get(api_get_worker))
         .route("/api/workers/:id/transcript", get(api_get_worker_transcript))
+        .route("/api/activity", get(api_get_activity_feed))
         .route("/api/records/:record_type", get(api_list_records_by_type))
         .route("/api/record/:id", get(api_get_record))
         .route("/api/memos", get(api_list_memos))
@@ -182,6 +183,23 @@ struct WorkerTranscriptView {
     source: String,
     thread_id: Option<String>,
     entries: Vec<TranscriptEntryView>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ActivityEntry {
+    worker_id: String,
+    worker_state: String,
+    current_task: Option<String>,
+    timestamp: String,
+    prompt: String,
+    response: Option<String>,
+    is_error: bool,
+    duration_ms: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ActivityFeed {
+    entries: Vec<ActivityEntry>,
 }
 
 // -----------------------------------------------------------------------------
@@ -589,4 +607,46 @@ fn extract_event_summary(event_type: &str, payload: &serde_json::Value) -> Optio
         }
         _ => None,
     }
+}
+
+async fn api_get_activity_feed(State(state): State<Arc<WebState>>) -> impl IntoResponse {
+    // Get all workers
+    let workers = match state.forge.list_workers(None).await {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!("Failed to list workers for activity feed: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to get workers").into_response();
+        }
+    };
+
+    let mut all_entries: Vec<ActivityEntry> = Vec::new();
+
+    // Get transcript for each worker and combine entries
+    for worker in &workers {
+        let worker_id = cortex::WorkerId::from_string(&worker.worker_id);
+
+        // Get transcript for this worker (limit to last 10 entries per worker)
+        if let Ok(entries) = state.workers.transcript(&worker_id, Some(10)).await {
+            for e in entries {
+                all_entries.push(ActivityEntry {
+                    worker_id: worker.worker_id.clone(),
+                    worker_state: worker.state.clone(),
+                    current_task: worker.current_task.clone(),
+                    timestamp: e.timestamp.to_rfc3339(),
+                    prompt: e.prompt,
+                    response: e.response,
+                    is_error: e.is_error,
+                    duration_ms: e.duration_ms,
+                });
+            }
+        }
+    }
+
+    // Sort by timestamp (newest first)
+    all_entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    // Limit total entries
+    all_entries.truncate(50);
+
+    Json(ActivityFeed { entries: all_entries }).into_response()
 }
