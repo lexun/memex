@@ -18,6 +18,7 @@ forge = { path = "../forge" }
 ipc = { path = "../ipc" }
 llm = { path = "../llm" }
 mcp = { path = "../mcp" }
+memex-web = { path = "../web", default-features = false }
 vibetree = "0.2.5"
 tokio.workspace = true
 serde.workspace = true

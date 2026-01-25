@@ -19,6 +19,12 @@ use axum::{
 
 use crate::config::WebConfig;
 
+// Re-use types from the web crate for API responses
+use memex_web::types::{
+    ActivityEntry, ActivityFeed, DashboardStats, Event, MemoView, Note, Record, RecordDetail,
+    Task, TaskDetail, TranscriptEntry, Worker, WorkerTranscript,
+};
+
 // Embedded WASM/JS assets - built by wasm-pack before cargo build
 const WASM_JS: &str = include_str!("../../web/pkg/memex_web.js");
 const WASM_BG: &[u8] = include_bytes!("../../web/pkg/memex_web_bg.wasm");
@@ -84,125 +90,6 @@ async fn serve_main_css() -> Response {
 }
 
 // -----------------------------------------------------------------------------
-// View models for API responses
-// -----------------------------------------------------------------------------
-
-#[derive(Clone, serde::Serialize)]
-struct DashboardStats {
-    records: usize,
-    tasks: usize,
-    memos: usize,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct TaskView {
-    id: String,
-    title: String,
-    description: Option<String>,
-    status: String,
-    priority: i32,
-    project: Option<String>,
-    created_at: String,
-    updated_at: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct TaskDetailResponse {
-    task: TaskView,
-    notes: Vec<NoteView>,
-    assigned_workers: Vec<WorkerView>,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct WorkerView {
-    id: String,
-    state: String,
-    current_task: Option<String>,
-    worktree: Option<String>,
-    cwd: String,
-    model: Option<String>,
-    messages_sent: u64,
-    messages_received: u64,
-    started_at: String,
-    last_activity: String,
-    error_message: Option<String>,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct NoteView {
-    id: String,
-    content: String,
-    created_at: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct RecordView {
-    id: String,
-    record_type: String,
-    name: String,
-    description: Option<String>,
-    content: serde_json::Value,
-    created_at: String,
-    updated_at: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct RecordDetailView {
-    record: RecordView,
-    related: Vec<RecordView>,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct MemoView {
-    id: String,
-    content: String,
-    source: String,
-    created_at: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct EventView {
-    id: String,
-    event_type: String,
-    source: String,
-    timestamp: String,
-    summary: Option<String>,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct TranscriptEntryView {
-    timestamp: String,
-    prompt: String,
-    response: Option<String>,
-    is_error: bool,
-    duration_ms: u64,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct WorkerTranscriptView {
-    source: String,
-    thread_id: Option<String>,
-    entries: Vec<TranscriptEntryView>,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct ActivityEntry {
-    worker_id: String,
-    worker_state: String,
-    current_task: Option<String>,
-    timestamp: String,
-    prompt: String,
-    response: Option<String>,
-    is_error: bool,
-    duration_ms: u64,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct ActivityFeed {
-    entries: Vec<ActivityEntry>,
-}
-
-// -----------------------------------------------------------------------------
 // SPA fallback - serve the Leptos app shell
 // -----------------------------------------------------------------------------
 
@@ -230,9 +117,9 @@ async fn api_stats(State(state): State<Arc<WebState>>) -> impl IntoResponse {
 async fn api_list_tasks(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     match state.forge.list_tasks(None, None).await {
         Ok(tasks) => {
-            let tasks: Vec<TaskView> = tasks
+            let tasks: Vec<Task> = tasks
                 .into_iter()
-                .map(|t| TaskView {
+                .map(|t| Task {
                     id: t.id.map(|id| id.id.to_string()).unwrap_or_default(),
                     title: t.title,
                     description: t.description,
@@ -269,13 +156,13 @@ async fn api_get_task(
     };
 
     // Get notes for this task
-    let notes: Vec<NoteView> = state
+    let notes: Vec<Note> = state
         .forge
         .get_notes(&id)
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|n| NoteView {
+        .map(|n| Note {
             id: n.id.map(|t| t.id.to_string()).unwrap_or_default(),
             content: n.content,
             created_at: n.created_at.to_string(),
@@ -283,7 +170,7 @@ async fn api_get_task(
         .collect();
 
     // Get workers assigned to this task
-    let assigned_workers: Vec<WorkerView> = state
+    let assigned_workers: Vec<Worker> = state
         .forge
         .get_workers_by_task(&id)
         .await
@@ -292,7 +179,7 @@ async fn api_get_task(
         .map(worker_to_view)
         .collect();
 
-    let task_view = TaskView {
+    let task_view = Task {
         id: task.id.map(|id| id.id.to_string()).unwrap_or_default(),
         title: task.title,
         description: task.description,
@@ -303,7 +190,7 @@ async fn api_get_task(
         updated_at: task.updated_at.to_string(),
     };
 
-    Json(TaskDetailResponse {
+    Json(TaskDetail {
         task: task_view,
         notes,
         assigned_workers,
@@ -311,8 +198,8 @@ async fn api_get_task(
     .into_response()
 }
 
-fn worker_to_view(w: forge::DbWorker) -> WorkerView {
-    WorkerView {
+fn worker_to_view(w: forge::DbWorker) -> Worker {
+    Worker {
         id: w.worker_id,
         state: w.state,
         current_task: w.current_task,
@@ -330,7 +217,7 @@ fn worker_to_view(w: forge::DbWorker) -> WorkerView {
 async fn api_list_workers(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     match state.forge.list_workers(None).await {
         Ok(workers) => {
-            let workers: Vec<WorkerView> = workers.into_iter().map(worker_to_view).collect();
+            let workers: Vec<Worker> = workers.into_iter().map(worker_to_view).collect();
             Json(workers).into_response()
         }
         Err(e) => {
@@ -362,12 +249,12 @@ async fn api_get_worker_transcript(
     if let Ok(Some(thread)) = state.atlas.get_thread_by_worker(&id).await {
         if let Some(thread_id) = thread.id_str() {
             if let Ok((_, entries)) = state.atlas.get_thread_with_entries(&thread_id, None).await {
-                let transcript: Vec<TranscriptEntryView> = entries.iter().filter_map(|entry| {
+                let transcript: Vec<TranscriptEntry> = entries.iter().filter_map(|entry| {
                     let content = &entry.content;
                     let role = content.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
                     let is_user = role == "user";
 
-                    Some(TranscriptEntryView {
+                    Some(TranscriptEntry {
                         timestamp: entry.created_at.to_string(),
                         prompt: if is_user { entry.description.clone().unwrap_or_default() } else { String::new() },
                         response: if !is_user { entry.description.clone() } else { None },
@@ -377,7 +264,7 @@ async fn api_get_worker_transcript(
                 }).collect();
 
                 if !transcript.is_empty() {
-                    return Json(WorkerTranscriptView {
+                    return Json(WorkerTranscript {
                         source: "database".to_string(),
                         thread_id: Some(thread_id.to_string()),
                         entries: transcript,
@@ -391,8 +278,8 @@ async fn api_get_worker_transcript(
     let worker_id = cortex::WorkerId::from_string(&id);
     match state.workers.transcript(&worker_id, None).await {
         Ok(entries) => {
-            let transcript: Vec<TranscriptEntryView> = entries.iter().map(|e| {
-                TranscriptEntryView {
+            let transcript: Vec<TranscriptEntry> = entries.iter().map(|e| {
+                TranscriptEntry {
                     timestamp: e.timestamp.to_rfc3339(),
                     prompt: e.prompt.clone(),
                     response: e.response.clone(),
@@ -401,7 +288,7 @@ async fn api_get_worker_transcript(
                 }
             }).collect();
 
-            Json(WorkerTranscriptView {
+            Json(WorkerTranscript {
                 source: "memory".to_string(),
                 thread_id: None,
                 entries: transcript,
@@ -420,9 +307,9 @@ async fn api_list_records_by_type(
 ) -> impl IntoResponse {
     match state.atlas.list_records(Some(&record_type), false, None).await {
         Ok(records) => {
-            let records: Vec<RecordView> = records
+            let records: Vec<Record> = records
                 .into_iter()
-                .map(|r| RecordView {
+                .map(|r| Record {
                     id: r.id.map(|t| t.id.to_string()).unwrap_or_default(),
                     record_type: r.record_type,
                     name: r.name,
@@ -458,7 +345,7 @@ async fn api_get_record(
     };
 
     // Get related records via edges (both directions)
-    let mut related: Vec<RecordView> = Vec::new();
+    let mut related: Vec<Record> = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
     seen_ids.insert(id.clone());
 
@@ -490,15 +377,15 @@ async fn api_get_record(
 
     let record_view = record_to_view(record);
 
-    Json(RecordDetailView {
+    Json(RecordDetail {
         record: record_view,
         related,
     })
     .into_response()
 }
 
-fn record_to_view(r: atlas::Record) -> RecordView {
-    RecordView {
+fn record_to_view(r: atlas::Record) -> Record {
+    Record {
         id: r.id.map(|t| t.id.to_string()).unwrap_or_default(),
         record_type: r.record_type,
         name: r.name,
@@ -533,11 +420,11 @@ async fn api_list_memos(State(state): State<Arc<WebState>>) -> impl IntoResponse
 async fn api_list_events(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     match state.atlas.list_events(Some("task."), Some(50)).await {
         Ok(events) => {
-            let events: Vec<EventView> = events
+            let events: Vec<Event> = events
                 .into_iter()
                 .map(|e| {
                     let summary = extract_event_summary(&e.event_type, &e.payload);
-                    EventView {
+                    Event {
                         id: e.id.map(|t| t.id.to_string()).unwrap_or_default(),
                         event_type: e.event_type,
                         source: e.source.actor,
