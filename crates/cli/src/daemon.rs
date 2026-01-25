@@ -663,6 +663,8 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "update_record" => handle_update_record(request, stores).await,
         "delete_record" => handle_delete_record(request, stores).await,
         "purge_record" => handle_purge_record(request, &stores.atlas).await,
+        "merge_records" => handle_merge_records(request, stores).await,
+        "preview_merge_records" => handle_preview_merge_records(request, &stores.atlas).await,
         "create_edge" => handle_create_edge(request, stores).await,
         "list_edges" => handle_list_edges(request, &stores.atlas).await,
         "delete_edge" => handle_delete_edge(request, stores).await,
@@ -2327,6 +2329,70 @@ async fn handle_purge_record(request: &Request, store: &AtlasStore) -> Result<se
             .map(|result| serde_json::to_value(result).unwrap())
             .map_err(|e| IpcError::internal(e.to_string()))
     }
+}
+
+#[derive(Deserialize)]
+struct MergeRecordsParams {
+    source_id: String,
+    target_id: String,
+    #[serde(default)]
+    merge_content: bool,
+    #[serde(default)]
+    merge_description: bool,
+}
+
+/// Merge two records, redirecting edges and marking source as superseded
+async fn handle_merge_records(request: &Request, stores: &Stores) -> Result<serde_json::Value, IpcError> {
+    let params: MergeRecordsParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let result = stores.atlas
+        .merge_records(
+            &params.source_id,
+            &params.target_id,
+            params.merge_content,
+            params.merge_description,
+        )
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Emit record.merged event for provenance
+    let event = Event::new(
+        "record.merged",
+        EventSource::system("atlas").with_via("daemon"),
+        json!({
+            "source_id": params.source_id,
+            "target_id": params.target_id,
+            "source_type": result.source_type,
+            "edges_redirected": result.edges_redirected,
+            "edges_skipped": result.edges_skipped,
+            "content_merged": result.content_merged,
+            "description_merged": result.description_merged
+        }),
+    );
+    if let Err(e) = stores.atlas.record_event(event).await {
+        tracing::warn!("Failed to record record.merged event: {}", e);
+    }
+
+    Ok(serde_json::to_value(result).unwrap())
+}
+
+#[derive(Deserialize)]
+struct PreviewMergeParams {
+    source_id: String,
+    target_id: String,
+}
+
+/// Preview what a merge would do without executing it
+async fn handle_preview_merge_records(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: PreviewMergeParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    store
+        .preview_merge_records(&params.source_id, &params.target_id)
+        .await
+        .map(|result| serde_json::to_value(result).unwrap())
+        .map_err(|e| IpcError::internal(e.to_string()))
 }
 
 #[derive(Deserialize)]

@@ -3075,6 +3075,343 @@ impl Store {
         })
     }
 
+    // ========== Record Merge Operations ==========
+
+    /// Merge two records, combining edges and marking the source as superseded
+    ///
+    /// This is used for deduplication. When duplicates are discovered:
+    /// 1. All edges FROM the source record are redirected to point FROM the target
+    /// 2. All edges TO the source record are redirected to point TO the target
+    /// 3. Content/description can be optionally merged
+    /// 4. The source record is marked as superseded_by the target
+    /// 5. A record.merged event is emitted for provenance
+    ///
+    /// Returns a MergeResult summarizing what was changed.
+    pub async fn merge_records(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        merge_content: bool,
+        merge_description: bool,
+    ) -> Result<MergeResult> {
+        // 1. Get both records
+        let source = self.get_record(source_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Source record not found: {}", source_id))?;
+        let target = self.get_record(target_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Target record not found: {}", target_id))?;
+
+        // Validate: records should be same type
+        if source.record_type != target.record_type {
+            anyhow::bail!(
+                "Cannot merge records of different types: {} vs {}",
+                source.record_type,
+                target.record_type
+            );
+        }
+
+        // 2. Get all edges from/to the source record
+        let edges_from = self.get_edges_from(source_id, None, true).await?;
+        let edges_to = self.get_edges_to(source_id, None, true).await?;
+
+        let mut edges_redirected = 0;
+        let mut edges_skipped = 0;
+
+        // 3. Redirect edges FROM the source to be FROM the target
+        for edge in &edges_from {
+            let edge_id = edge.id_str().unwrap_or_default();
+            let target_record_id = edge.target.id.to_raw();
+            let relation: EdgeRelation = edge.relation.parse()
+                .map_err(|e: String| anyhow::anyhow!(e))?;
+
+            // Skip if this would create a self-loop
+            if target_record_id == target_id {
+                edges_skipped += 1;
+                continue;
+            }
+
+            // Check if target already has this edge (to avoid duplicates)
+            let existing = self.get_edges_from(target_id, Some(relation), true).await?;
+            let already_exists = existing.iter().any(|e| e.target.id.to_raw() == target_record_id);
+
+            if already_exists {
+                // Supersede the old edge without creating a new one
+                self.supersede_edge_without_replacement(&edge_id).await?;
+                edges_skipped += 1;
+            } else {
+                // Create new edge from target and supersede the old one
+                let new_edge = self.create_edge(
+                    target_id,
+                    &target_record_id,
+                    relation,
+                    edge.metadata.clone(),
+                ).await?;
+
+                // Mark old edge as superseded by the new one
+                let now = surrealdb::sql::Datetime::default();
+                let sql = r#"
+                    UPDATE type::thing('record_edge', $old_id) SET
+                        valid_until = $now,
+                        superseded_by = $new_id,
+                        superseded_via = $via_event
+                "#;
+                self.db
+                    .client()
+                    .query(sql)
+                    .bind(("old_id", edge_id.clone()))
+                    .bind(("now", now))
+                    .bind(("new_id", new_edge.id.clone()))
+                    .bind(("via_event", Some(format!("merge:{}→{}", source_id, target_id))))
+                    .await
+                    .context("Failed to supersede edge")?;
+
+                edges_redirected += 1;
+            }
+        }
+
+        // 4. Redirect edges TO the source to point TO the target
+        for edge in &edges_to {
+            let edge_id = edge.id_str().unwrap_or_default();
+            let source_record_id = edge.source.id.to_raw();
+            let relation: EdgeRelation = edge.relation.parse()
+                .map_err(|e: String| anyhow::anyhow!(e))?;
+
+            // Skip if this would create a self-loop
+            if source_record_id == target_id {
+                edges_skipped += 1;
+                continue;
+            }
+
+            // Check if target already has this incoming edge
+            let existing = self.get_edges_to(target_id, Some(relation), true).await?;
+            let already_exists = existing.iter().any(|e| e.source.id.to_raw() == source_record_id);
+
+            if already_exists {
+                self.supersede_edge_without_replacement(&edge_id).await?;
+                edges_skipped += 1;
+            } else {
+                // Create new edge to target and supersede the old one
+                let new_edge = self.create_edge(
+                    &source_record_id,
+                    target_id,
+                    relation,
+                    edge.metadata.clone(),
+                ).await?;
+
+                let now = surrealdb::sql::Datetime::default();
+                let sql = r#"
+                    UPDATE type::thing('record_edge', $old_id) SET
+                        valid_until = $now,
+                        superseded_by = $new_id,
+                        superseded_via = $via_event
+                "#;
+                self.db
+                    .client()
+                    .query(sql)
+                    .bind(("old_id", edge_id.clone()))
+                    .bind(("now", now))
+                    .bind(("new_id", new_edge.id.clone()))
+                    .bind(("via_event", Some(format!("merge:{}→{}", source_id, target_id))))
+                    .await
+                    .context("Failed to supersede edge")?;
+
+                edges_redirected += 1;
+            }
+        }
+
+        // 5. Optionally merge content and description
+        let mut content_merged = false;
+        let mut description_merged = false;
+
+        if merge_content || merge_description {
+            let mut new_content = target.content.clone();
+            let mut new_description = target.description.clone();
+
+            if merge_content {
+                // Deep merge: source values fill in where target has null/missing
+                if let (Some(target_obj), Some(source_obj)) =
+                    (new_content.as_object_mut(), source.content.as_object())
+                {
+                    for (key, value) in source_obj {
+                        if !target_obj.contains_key(key) || target_obj.get(key) == Some(&serde_json::Value::Null) {
+                            target_obj.insert(key.clone(), value.clone());
+                            content_merged = true;
+                        }
+                    }
+                }
+            }
+
+            if merge_description {
+                // Append source description if target doesn't have one
+                if target.description.is_none() && source.description.is_some() {
+                    new_description = source.description.clone();
+                    description_merged = true;
+                } else if let (Some(ref target_desc), Some(ref source_desc)) = (&target.description, &source.description) {
+                    // Both have descriptions - append source with separator if different
+                    if target_desc != source_desc && !target_desc.contains(source_desc) {
+                        new_description = Some(format!("{}\n\n---\n\n{}", target_desc, source_desc));
+                        description_merged = true;
+                    }
+                }
+            }
+
+            // Update target record if anything changed
+            if content_merged || description_merged {
+                self.update_record(
+                    target_id,
+                    None,
+                    new_description.as_deref(),
+                    if content_merged { Some(new_content) } else { None },
+                ).await?;
+            }
+        }
+
+        // 6. Mark source as superseded by target
+        let now = surrealdb::sql::Datetime::default();
+        let via_event = format!("merge:{}→{}", source_id, target_id);
+        let sql = r#"
+            UPDATE type::thing('record', $id) SET
+                superseded_by = type::thing('record', $target_id),
+                superseded_via = $via_event,
+                deleted_at = $now,
+                updated_at = $now
+        "#;
+        self.db
+            .client()
+            .query(sql)
+            .bind(("id", source_id.to_string()))
+            .bind(("target_id", target_id.to_string()))
+            .bind(("via_event", via_event))
+            .bind(("now", now))
+            .await
+            .context("Failed to mark source as superseded")?;
+
+        Ok(MergeResult {
+            source_id: source_id.to_string(),
+            target_id: target_id.to_string(),
+            source_type: source.record_type.clone(),
+            edges_redirected,
+            edges_skipped,
+            content_merged,
+            description_merged,
+        })
+    }
+
+    /// Supersede an edge without creating a replacement
+    /// Used when an equivalent edge already exists on the target
+    async fn supersede_edge_without_replacement(&self, edge_id: &str) -> Result<()> {
+        let now = surrealdb::sql::Datetime::default();
+        let sql = r#"
+            UPDATE type::thing('record_edge', $edge_id) SET
+                valid_until = $now,
+                superseded_via = 'merge:duplicate'
+        "#;
+        self.db
+            .client()
+            .query(sql)
+            .bind(("edge_id", edge_id.to_string()))
+            .bind(("now", now))
+            .await
+            .context("Failed to supersede duplicate edge")?;
+
+        Ok(())
+    }
+
+    /// Preview what a merge would do without executing it
+    pub async fn preview_merge_records(
+        &self,
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<MergePreview> {
+        // Get both records
+        let source = self.get_record(source_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Source record not found: {}", source_id))?;
+        let target = self.get_record(target_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Target record not found: {}", target_id))?;
+
+        // Validate types match
+        if source.record_type != target.record_type {
+            anyhow::bail!(
+                "Cannot merge records of different types: {} vs {}",
+                source.record_type,
+                target.record_type
+            );
+        }
+
+        // Count edges
+        let edges_from = self.get_edges_from(source_id, None, true).await?;
+        let edges_to = self.get_edges_to(source_id, None, true).await?;
+
+        let mut would_redirect = 0;
+        let mut would_skip = 0;
+
+        // Check edges from source
+        for edge in &edges_from {
+            let target_record_id = edge.target.id.to_raw();
+            let relation: EdgeRelation = edge.relation.parse()
+                .map_err(|e: String| anyhow::anyhow!(e))?;
+
+            if target_record_id == target_id {
+                would_skip += 1;
+                continue;
+            }
+
+            let existing = self.get_edges_from(target_id, Some(relation), true).await?;
+            if existing.iter().any(|e| e.target.id.to_raw() == target_record_id) {
+                would_skip += 1;
+            } else {
+                would_redirect += 1;
+            }
+        }
+
+        // Check edges to source
+        for edge in &edges_to {
+            let source_record_id = edge.source.id.to_raw();
+            let relation: EdgeRelation = edge.relation.parse()
+                .map_err(|e: String| anyhow::anyhow!(e))?;
+
+            if source_record_id == target_id {
+                would_skip += 1;
+                continue;
+            }
+
+            let existing = self.get_edges_to(target_id, Some(relation), true).await?;
+            if existing.iter().any(|e| e.source.id.to_raw() == source_record_id) {
+                would_skip += 1;
+            } else {
+                would_redirect += 1;
+            }
+        }
+
+        // Check what content would merge
+        let mut content_fields_to_merge = Vec::new();
+        if let (Some(target_obj), Some(source_obj)) =
+            (target.content.as_object(), source.content.as_object())
+        {
+            for (key, _) in source_obj {
+                if !target_obj.contains_key(key) || target_obj.get(key) == Some(&serde_json::Value::Null) {
+                    content_fields_to_merge.push(key.clone());
+                }
+            }
+        }
+
+        let would_merge_description = source.description.is_some() &&
+            (target.description.is_none() ||
+             (target.description.as_ref() != source.description.as_ref() &&
+              !target.description.as_ref().map(|d| d.contains(source.description.as_ref().unwrap_or(&String::new()))).unwrap_or(false)));
+
+        Ok(MergePreview {
+            source_id: source_id.to_string(),
+            source_name: source.name,
+            target_id: target_id.to_string(),
+            target_name: target.name,
+            record_type: source.record_type,
+            edges_would_redirect: would_redirect,
+            edges_would_skip: would_skip,
+            content_fields_to_merge,
+            would_merge_description,
+        })
+    }
+
     /// Preview what would be purged for a record
     pub async fn preview_purge_record(&self, record_id: &str) -> Result<PurgeResult> {
         let source_record = format!("record:{}", record_id);
@@ -3197,6 +3534,88 @@ impl PurgeResult {
             + self.entities_deleted
             + self.records_deleted
             + self.edges_deleted
+    }
+}
+
+/// Result of a record merge operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeResult {
+    /// ID of the source record (the duplicate being merged away)
+    pub source_id: String,
+    /// ID of the target record (the survivor)
+    pub target_id: String,
+    /// Type of records merged
+    pub source_type: String,
+    /// Number of edges redirected to the target
+    pub edges_redirected: usize,
+    /// Number of edges skipped (duplicates or self-loops)
+    pub edges_skipped: usize,
+    /// Whether content was merged from source to target
+    pub content_merged: bool,
+    /// Whether description was merged from source to target
+    pub description_merged: bool,
+}
+
+impl MergeResult {
+    /// Summary message of the merge
+    pub fn summary(&self) -> String {
+        let mut parts = vec![
+            format!("Merged {} → {}", self.source_id, self.target_id),
+            format!("  Type: {}", self.source_type),
+            format!("  Edges redirected: {}", self.edges_redirected),
+            format!("  Edges skipped: {}", self.edges_skipped),
+        ];
+        if self.content_merged {
+            parts.push("  Content: merged".to_string());
+        }
+        if self.description_merged {
+            parts.push("  Description: merged".to_string());
+        }
+        parts.join("\n")
+    }
+}
+
+/// Preview of what a merge would do
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergePreview {
+    /// ID of the source record
+    pub source_id: String,
+    /// Name of the source record
+    pub source_name: String,
+    /// ID of the target record
+    pub target_id: String,
+    /// Name of the target record
+    pub target_name: String,
+    /// Type of records being merged
+    pub record_type: String,
+    /// Number of edges that would be redirected
+    pub edges_would_redirect: usize,
+    /// Number of edges that would be skipped
+    pub edges_would_skip: usize,
+    /// Content fields that would be copied from source
+    pub content_fields_to_merge: Vec<String>,
+    /// Whether description would be merged
+    pub would_merge_description: bool,
+}
+
+impl MergePreview {
+    /// Summary message of what merge would do
+    pub fn summary(&self) -> String {
+        let mut parts = vec![
+            format!("Merge preview: {} → {}", self.source_name, self.target_name),
+            format!("  Source: {} ({})", self.source_id, self.source_name),
+            format!("  Target: {} ({})", self.target_id, self.target_name),
+            format!("  Type: {}", self.record_type),
+            format!("  Edges to redirect: {}", self.edges_would_redirect),
+            format!("  Edges to skip: {}", self.edges_would_skip),
+        ];
+        if !self.content_fields_to_merge.is_empty() {
+            parts.push(format!("  Content fields to merge: {}", self.content_fields_to_merge.join(", ")));
+        }
+        if self.would_merge_description {
+            parts.push("  Would merge description".to_string());
+        }
+        parts.join("\n")
     }
 }
 

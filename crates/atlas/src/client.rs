@@ -873,4 +873,63 @@ impl RecordClient {
 
         serde_json::from_value(result).context("Failed to parse purge result")
     }
+
+    /// Merge two records, redirecting edges from source to target
+    ///
+    /// This combines duplicate records by:
+    /// - Redirecting all edges from source to target
+    /// - Optionally merging content and description
+    /// - Marking source as superseded by target
+    pub async fn merge_records(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        merge_content: bool,
+        merge_description: bool,
+    ) -> Result<crate::store::MergeResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            source_id: &'a str,
+            target_id: &'a str,
+            merge_content: bool,
+            merge_description: bool,
+        }
+
+        let result = self
+            .client
+            .request(
+                "merge_records",
+                Params {
+                    source_id,
+                    target_id,
+                    merge_content,
+                    merge_description,
+                },
+            )
+            .await
+            .context("Failed to merge records")?;
+
+        serde_json::from_value(result).context("Failed to parse merge result")
+    }
+
+    /// Preview what a merge would do without executing it
+    pub async fn preview_merge_records(
+        &self,
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<crate::store::MergePreview> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            source_id: &'a str,
+            target_id: &'a str,
+        }
+
+        let result = self
+            .client
+            .request("preview_merge_records", Params { source_id, target_id })
+            .await
+            .context("Failed to preview merge")?;
+
+        serde_json::from_value(result).context("Failed to parse merge preview")
+    }
 }

@@ -2570,6 +2570,53 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Merge two records for deduplication
+    ///
+    /// When duplicates are discovered, this merges the source into the target:
+    /// - All edges from the source are redirected to the target
+    /// - All edges to the source are redirected to the target
+    /// - Content/description can be optionally merged (source fills in missing fields)
+    /// - The source record is marked as superseded by the target
+    /// - A record.merged event is emitted for provenance
+    ///
+    /// Use dry_run=true to preview what would happen without executing.
+    #[tool]
+    async fn merge_records(
+        &self,
+        /// ID of the record to merge away (the duplicate)
+        source_id: String,
+        /// ID of the record to keep (the survivor)
+        target_id: String,
+        /// If true, merge content fields from source where target has gaps (default: false)
+        merge_content: Option<bool>,
+        /// If true, merge description from source if target lacks one (default: false)
+        merge_description: Option<bool>,
+        /// If true, only preview what would happen without executing (default: false)
+        dry_run: Option<bool>,
+    ) -> mcp_attr::Result<String> {
+        let merge_content = merge_content.unwrap_or(false);
+        let merge_description = merge_description.unwrap_or(false);
+        let dry_run = dry_run.unwrap_or(false);
+
+        if dry_run {
+            match self.record_client.preview_merge_records(&source_id, &target_id).await {
+                Ok(preview) => Ok(preview.summary()),
+                Err(e) => {
+                    let msg = format!("Failed to preview merge: {}", e);
+                    Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+                }
+            }
+        } else {
+            match self.record_client.merge_records(&source_id, &target_id, merge_content, merge_description).await {
+                Ok(result) => Ok(result.summary()),
+                Err(e) => {
+                    let msg = format!("Failed to merge records: {}", e);
+                    Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+                }
+            }
+        }
+    }
+
     /// Create an edge between two records
     ///
     /// Edges define relationships like "rule applies_to repo" or "person member_of team".
