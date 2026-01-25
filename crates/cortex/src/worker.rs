@@ -367,8 +367,14 @@ struct Worker {
 }
 
 /// Manages multiple Claude worker processes
+///
+/// Uses two-tier locking for better concurrency:
+/// - Global map lock: Brief read lock to get worker reference
+/// - Per-worker lock: Write lock for state updates
+///
+/// This allows multiple workers to update state concurrently.
 pub struct WorkerManager {
-    workers: Arc<RwLock<HashMap<WorkerId, Worker>>>,
+    workers: Arc<RwLock<HashMap<WorkerId, Arc<RwLock<Worker>>>>>,
 }
 
 impl WorkerManager {
@@ -403,7 +409,7 @@ impl WorkerManager {
         };
 
         let mut workers = self.workers.write().await;
-        workers.insert(id.clone(), worker);
+        workers.insert(id.clone(), Arc::new(RwLock::new(worker)));
 
         info!("Worker {} created successfully", id);
         Ok(id)
@@ -435,7 +441,7 @@ impl WorkerManager {
         };
 
         let mut workers = self.workers.write().await;
-        workers.insert(id.clone(), worker);
+        workers.insert(id.clone(), Arc::new(RwLock::new(worker)));
 
         info!("Worker {} loaded successfully", id);
         Ok(())
@@ -443,19 +449,25 @@ impl WorkerManager {
 
     /// Get the session ID for a worker (for persistence)
     pub async fn get_session_id(&self, id: &WorkerId) -> Result<Option<String>> {
-        let workers = self.workers.read().await;
-        let worker = workers.get(id).ok_or_else(|| {
-            CortexError::WorkerNotFound(id.to_string())
-        })?;
+        let worker_arc = {
+            let workers = self.workers.read().await;
+            workers.get(id).cloned().ok_or_else(|| {
+                CortexError::WorkerNotFound(id.to_string())
+            })?
+        };
+        let worker = worker_arc.read().await;
         Ok(worker.last_session_id.clone())
     }
 
     /// Get the config for a worker (for persistence)
     pub async fn get_config(&self, id: &WorkerId) -> Result<WorkerConfig> {
-        let workers = self.workers.read().await;
-        let worker = workers.get(id).ok_or_else(|| {
-            CortexError::WorkerNotFound(id.to_string())
-        })?;
+        let worker_arc = {
+            let workers = self.workers.read().await;
+            workers.get(id).cloned().ok_or_else(|| {
+                CortexError::WorkerNotFound(id.to_string())
+            })?
+        };
+        let worker = worker_arc.read().await;
         Ok(worker.config.clone())
     }
 
@@ -466,12 +478,17 @@ impl WorkerManager {
     pub async fn send_message(&self, id: &WorkerId, message: &str) -> Result<WorkerResponse> {
         let start_time = Utc::now();
 
-        // Phase 1: Acquire lock, extract config, update state, add transcript entry, release lock
-        let (cwd, model, system_prompt, last_session_id, mcp_config, transcript_idx, direnv_env) = {
-            let mut workers = self.workers.write().await;
-            let worker = workers.get_mut(id).ok_or_else(|| {
+        // Get worker reference with brief global read lock
+        let worker_arc = {
+            let workers = self.workers.read().await;
+            workers.get(id).cloned().ok_or_else(|| {
                 CortexError::WorkerNotFound(id.to_string())
-            })?;
+            })?
+        };
+
+        // Phase 1: Acquire per-worker lock, extract config, update state, add transcript entry
+        let (cwd, model, system_prompt, last_session_id, mcp_config, transcript_idx, direnv_env) = {
+            let mut worker = worker_arc.write().await;
 
             worker.status.state = WorkerState::Working;
             // Note: current_task is preserved - it holds the task ID assigned at dispatch time
@@ -501,9 +518,9 @@ impl WorkerManager {
                 worker.last_session_id.clone(),
                 worker.config.mcp_config.clone(),
                 idx.min(MAX_TRANSCRIPT_ENTRIES - 1), // Adjust index if we trimmed
-                worker.cached_direnv_env.clone(), // Use cached environment
+                worker.cached_direnv_env.clone(),    // Use cached environment
             )
-            // Lock released here
+            // Per-worker lock released here
         };
 
         // Phase 2: Build and run command (NO LOCK HELD - allows concurrent operations)
@@ -585,8 +602,8 @@ impl WorkerManager {
 
             // Update worker state to error and update transcript
             // Note: current_task is preserved - worker remains assigned to task even on error
-            let mut workers = self.workers.write().await;
-            if let Some(worker) = workers.get_mut(id) {
+            {
+                let mut worker = worker_arc.write().await;
                 worker.status.state = WorkerState::Error(error_msg.clone());
 
                 // Update transcript entry with error
@@ -624,26 +641,24 @@ impl WorkerManager {
             (result, is_error, session_id, duration_ms)
         };
 
-        // Phase 4: Acquire lock again to update final state and transcript
+        // Phase 4: Acquire per-worker lock again to update final state and transcript
         // Note: current_task is preserved - worker remains assigned to task across messages
         {
-            let mut workers = self.workers.write().await;
-            if let Some(worker) = workers.get_mut(id) {
-                // Store session ID for potential resume
-                if let Some(ref sid) = session_id {
-                    worker.last_session_id = Some(sid.clone());
-                }
+            let mut worker = worker_arc.write().await;
+            // Store session ID for potential resume
+            if let Some(ref sid) = session_id {
+                worker.last_session_id = Some(sid.clone());
+            }
 
-                worker.status.messages_received += 1;
-                worker.status.last_activity = Utc::now();
-                worker.status.state = WorkerState::Idle;
+            worker.status.messages_received += 1;
+            worker.status.last_activity = Utc::now();
+            worker.status.state = WorkerState::Idle;
 
-                // Update transcript entry with response
-                if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
-                    entry.response = Some(result.clone());
-                    entry.is_error = is_error;
-                    entry.duration_ms = duration_ms;
-                }
+            // Update transcript entry with response
+            if let Some(entry) = worker.transcript.get_mut(transcript_idx) {
+                entry.response = Some(result.clone());
+                entry.is_error = is_error;
+                entry.duration_ms = duration_ms;
             }
         }
 
@@ -657,17 +672,28 @@ impl WorkerManager {
 
     /// Get status of a worker
     pub async fn status(&self, id: &WorkerId) -> Result<WorkerStatus> {
-        let workers = self.workers.read().await;
-        let worker = workers.get(id).ok_or_else(|| {
-            CortexError::WorkerNotFound(id.to_string())
-        })?;
+        let worker_arc = {
+            let workers = self.workers.read().await;
+            workers.get(id).cloned().ok_or_else(|| {
+                CortexError::WorkerNotFound(id.to_string())
+            })?
+        };
+        let worker = worker_arc.read().await;
         Ok(worker.status.clone())
     }
 
     /// List all workers and their statuses
     pub async fn list(&self) -> Vec<WorkerStatus> {
-        let workers = self.workers.read().await;
-        workers.values().map(|w| w.status.clone()).collect()
+        let worker_arcs: Vec<_> = {
+            let workers = self.workers.read().await;
+            workers.values().cloned().collect()
+        };
+        let mut statuses = Vec::with_capacity(worker_arcs.len());
+        for worker_arc in worker_arcs {
+            let worker = worker_arc.read().await;
+            statuses.push(worker.status.clone());
+        }
+        statuses
     }
 
     /// Set the current task for a worker
@@ -675,10 +701,13 @@ impl WorkerManager {
     /// This updates the in-memory worker status with the task ID.
     /// Use this when dispatching a worker to a task.
     pub async fn set_current_task(&self, id: &WorkerId, task_id: Option<String>) -> Result<()> {
-        let mut workers = self.workers.write().await;
-        let worker = workers.get_mut(id).ok_or_else(|| {
-            CortexError::WorkerNotFound(id.to_string())
-        })?;
+        let worker_arc = {
+            let workers = self.workers.read().await;
+            workers.get(id).cloned().ok_or_else(|| {
+                CortexError::WorkerNotFound(id.to_string())
+            })?
+        };
+        let mut worker = worker_arc.write().await;
         worker.status.current_task = task_id;
         Ok(())
     }
@@ -703,10 +732,13 @@ impl WorkerManager {
 
     /// Get the conversation transcript for a worker
     pub async fn transcript(&self, id: &WorkerId, limit: Option<usize>) -> Result<Vec<TranscriptEntry>> {
-        let workers = self.workers.read().await;
-        let worker = workers.get(id).ok_or_else(|| {
-            CortexError::WorkerNotFound(id.to_string())
-        })?;
+        let worker_arc = {
+            let workers = self.workers.read().await;
+            workers.get(id).cloned().ok_or_else(|| {
+                CortexError::WorkerNotFound(id.to_string())
+            })?
+        };
+        let worker = worker_arc.read().await;
 
         let transcript = &worker.transcript;
         let limit = limit.unwrap_or(transcript.len());
@@ -727,12 +759,15 @@ impl WorkerManager {
     /// - `ShellValidation::Success` if the environment loads correctly
     /// - `ShellValidation::Failed` if there's an error (broken flake.nix, etc.)
     pub async fn validate_shell(&self, id: &WorkerId) -> Result<ShellValidation> {
-        // Get the worker's directory
+        // Get the worker's directory with brief global lock, then per-worker lock
         let cwd = {
-            let workers = self.workers.read().await;
-            let worker = workers.get(id).ok_or_else(|| {
-                CortexError::WorkerNotFound(id.to_string())
-            })?;
+            let worker_arc = {
+                let workers = self.workers.read().await;
+                workers.get(id).cloned().ok_or_else(|| {
+                    CortexError::WorkerNotFound(id.to_string())
+                })?
+            };
+            let worker = worker_arc.read().await;
             worker.config.cwd.clone()
         };
 
@@ -775,12 +810,17 @@ impl WorkerManager {
     /// - `ShellReloadResult::Success` with environment info if reload succeeded
     /// - `ShellReloadResult::Failed` with error details if the shell won't load
     pub async fn reload_shell(&self, id: &WorkerId, clear_session: bool) -> Result<ShellReloadResult> {
-        // First, validate the shell environment
-        let cwd = {
+        // Get worker reference with brief global lock
+        let worker_arc = {
             let workers = self.workers.read().await;
-            let worker = workers.get(id).ok_or_else(|| {
+            workers.get(id).cloned().ok_or_else(|| {
                 CortexError::WorkerNotFound(id.to_string())
-            })?;
+            })?
+        };
+
+        // Get cwd with per-worker lock
+        let cwd = {
+            let worker = worker_arc.read().await;
             worker.config.cwd.clone()
         };
 
@@ -790,23 +830,20 @@ impl WorkerManager {
         match validation {
             ShellValidation::Success { env } => {
                 // Shell is valid - update cached environment and optionally clear session
-                let mut workers = self.workers.write().await;
-                let session_cleared = if let Some(worker) = workers.get_mut(id) {
-                    // Update cached direnv environment
-                    worker.cached_direnv_env = env.clone();
+                let mut worker = worker_arc.write().await;
 
-                    if clear_session {
-                        let had_session = worker.last_session_id.is_some();
-                        worker.last_session_id = None;
-                        info!(
-                            "Worker {} shell reloaded, session {}",
-                            id,
-                            if had_session { "cleared" } else { "was already empty" }
-                        );
-                        had_session
-                    } else {
-                        false
-                    }
+                // Update cached direnv environment
+                worker.cached_direnv_env = env.clone();
+
+                let session_cleared = if clear_session {
+                    let had_session = worker.last_session_id.is_some();
+                    worker.last_session_id = None;
+                    info!(
+                        "Worker {} shell reloaded, session {}",
+                        id,
+                        if had_session { "cleared" } else { "was already empty" }
+                    );
+                    had_session
                 } else {
                     false
                 };
@@ -945,8 +982,9 @@ mod tests {
 
         // Manually set a session ID to test clearing
         {
-            let mut workers = manager.workers.write().await;
-            if let Some(worker) = workers.get_mut(&id) {
+            let workers = manager.workers.read().await;
+            if let Some(worker_arc) = workers.get(&id) {
+                let mut worker = worker_arc.write().await;
                 worker.last_session_id = Some("test-session-123".to_string());
             }
         }
