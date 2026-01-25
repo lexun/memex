@@ -30,25 +30,27 @@ use crate::types::{TranscriptEntry, WorkerConfig, WorkerId, WorkerMcpConfig, Wor
 /// Maximum number of transcript entries to keep per worker
 const MAX_TRANSCRIPT_ENTRIES: usize = 50;
 
-/// Find the claude binary path
+/// Find the claude binary path (async)
 ///
 /// Searches in order:
 /// 1. CLAUDE_BINARY env var (explicit override, used by dev scripts)
 /// 2. `which claude` (uses current PATH)
 /// 3. Common installation locations (homebrew, standard paths)
 /// 4. Falls back to "claude" and hopes PATH works
-fn find_claude_binary() -> PathBuf {
+async fn find_claude_binary_async() -> PathBuf {
     // Check for explicit override first (set by just recipe and dev scripts)
     if let Ok(path) = std::env::var("CLAUDE_BINARY") {
         debug!("Using CLAUDE_BINARY from env: {}", path);
         return PathBuf::from(path);
     }
 
-    // Try `which claude` - this respects the current PATH
-    if let Ok(output) = std::process::Command::new("which")
-        .arg("claude")
-        .output()
-    {
+    // Try `which claude` - this respects the current PATH (async)
+    let mut cmd = Command::new("which");
+    cmd.arg("claude")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Ok(output) = cmd.output().await {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
@@ -59,6 +61,7 @@ fn find_claude_binary() -> PathBuf {
     }
 
     // Check common installation locations
+    // Use tokio::fs::try_exists for async file existence checks
     let common_paths = [
         // NixOS/home-manager user profile
         dirs::home_dir().map(|h| h.join(".nix-profile/bin/claude")),
@@ -72,7 +75,7 @@ fn find_claude_binary() -> PathBuf {
     ];
 
     for path_opt in common_paths.iter().flatten() {
-        if path_opt.exists() {
+        if tokio::fs::try_exists(path_opt).await.unwrap_or(false) {
             debug!("Found claude at: {}", path_opt.display());
             return path_opt.clone();
         }
@@ -83,19 +86,21 @@ fn find_claude_binary() -> PathBuf {
     PathBuf::from("claude")
 }
 
-/// Capture the direnv/devshell environment for a directory
+/// Capture the direnv/devshell environment for a directory (async)
 ///
 /// Runs `direnv export json` to get the environment variables that would be
 /// set by the .envrc in the given directory. This allows workers to spawn
 /// with the correct nix shell environment.
 ///
 /// Returns an empty HashMap if direnv fails or isn't available.
-fn get_direnv_env(path: &std::path::Path) -> HashMap<String, String> {
-    let output = match std::process::Command::new("direnv")
-        .args(["export", "json"])
+async fn get_direnv_env_async(path: &std::path::Path) -> HashMap<String, String> {
+    let mut cmd = Command::new("direnv");
+    cmd.args(["export", "json"])
         .current_dir(path)
-        .output()
-    {
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = match cmd.output().await {
         Ok(output) => output,
         Err(e) => {
             debug!("direnv not available: {}", e);
@@ -356,6 +361,9 @@ struct Worker {
     last_session_id: Option<String>,
     /// Conversation transcript history
     transcript: Vec<TranscriptEntry>,
+    /// Cached direnv environment (captured at worker creation)
+    /// This avoids calling direnv on every message, which can be slow.
+    cached_direnv_env: HashMap<String, String>,
 }
 
 /// Manages multiple Claude worker processes
@@ -375,6 +383,9 @@ impl WorkerManager {
         let id = WorkerId::new();
         info!("Creating worker {} for directory {}", id, config.cwd);
 
+        // Capture direnv environment at creation time (cached for all future messages)
+        let cached_direnv_env = get_direnv_env_async(std::path::Path::new(&config.cwd)).await;
+
         let mut status = WorkerStatus::new(id.clone());
         status.worktree = Some(config.cwd.clone());
         status.host = Some(hostname::get()
@@ -388,6 +399,7 @@ impl WorkerManager {
             status,
             last_session_id: None,
             transcript: Vec::new(),
+            cached_direnv_env,
         };
 
         let mut workers = self.workers.write().await;
@@ -410,12 +422,16 @@ impl WorkerManager {
     ) -> Result<()> {
         info!("Loading worker {} from persistent storage", id);
 
+        // Capture direnv environment (needs to be refreshed on reload)
+        let cached_direnv_env = get_direnv_env_async(std::path::Path::new(&config.cwd)).await;
+
         let worker = Worker {
             id: id.clone(),
             config,
             status,
             last_session_id,
             transcript: Vec::new(), // Fresh transcript on reload
+            cached_direnv_env,
         };
 
         let mut workers = self.workers.write().await;
@@ -451,7 +467,7 @@ impl WorkerManager {
         let start_time = Utc::now();
 
         // Phase 1: Acquire lock, extract config, update state, add transcript entry, release lock
-        let (cwd, model, system_prompt, last_session_id, mcp_config, transcript_idx) = {
+        let (cwd, model, system_prompt, last_session_id, mcp_config, transcript_idx, direnv_env) = {
             let mut workers = self.workers.write().await;
             let worker = workers.get_mut(id).ok_or_else(|| {
                 CortexError::WorkerNotFound(id.to_string())
@@ -485,17 +501,15 @@ impl WorkerManager {
                 worker.last_session_id.clone(),
                 worker.config.mcp_config.clone(),
                 idx.min(MAX_TRANSCRIPT_ENTRIES - 1), // Adjust index if we trimmed
+                worker.cached_direnv_env.clone(), // Use cached environment
             )
             // Lock released here
         };
 
         // Phase 2: Build and run command (NO LOCK HELD - allows concurrent operations)
+        // Note: direnv_env was cached at worker creation time to avoid blocking calls
 
-        // Capture direnv environment for the worker's directory
-        // This ensures workers have access to nix shell tools like `claude`
-        let direnv_env = get_direnv_env(std::path::Path::new(&cwd));
-
-        let claude_path = find_claude_binary();
+        let claude_path = find_claude_binary_async().await;
         let mut cmd = Command::new(&claude_path);
         cmd.arg("-p").arg(message);
         cmd.arg("--output-format").arg("json");
@@ -775,10 +789,13 @@ impl WorkerManager {
 
         match validation {
             ShellValidation::Success { env } => {
-                // Shell is valid - optionally clear session
-                let session_cleared = if clear_session {
-                    let mut workers = self.workers.write().await;
-                    if let Some(worker) = workers.get_mut(id) {
+                // Shell is valid - update cached environment and optionally clear session
+                let mut workers = self.workers.write().await;
+                let session_cleared = if let Some(worker) = workers.get_mut(id) {
+                    // Update cached direnv environment
+                    worker.cached_direnv_env = env.clone();
+
+                    if clear_session {
                         let had_session = worker.last_session_id.is_some();
                         worker.last_session_id = None;
                         info!(
