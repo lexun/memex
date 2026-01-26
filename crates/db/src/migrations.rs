@@ -81,6 +81,11 @@ const ATLAS_MIGRATIONS: &[Migration] = &[
         name: "record_aliases",
         sql: include_str!("../migrations/atlas/1769340000_record_aliases.surql"),
     },
+    Migration {
+        timestamp: 1769429008,
+        name: "backfill_aliases",
+        sql: include_str!("../migrations/atlas/1769429008_backfill_aliases.surql"),
+    },
 ];
 
 /// Run all pending migrations for the given database
