@@ -502,6 +502,30 @@ impl KnowledgeClient {
         serde_json::from_value(result).context("Failed to parse related facts")
     }
 
+    /// Get facts linked to a Record (part of Entity→Record migration)
+    ///
+    /// Uses find_record_by_name_or_alias for flexible identity resolution,
+    /// supporting both canonical names and aliases.
+    pub async fn get_record_facts(
+        &self,
+        name: &str,
+        record_type: Option<&str>,
+    ) -> Result<RecordFactsResult> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            name: &'a str,
+            record_type: Option<&'a str>,
+        }
+
+        let result = self
+            .client
+            .request("get_record_facts", Params { name, record_type })
+            .await
+            .context("Failed to get record facts")?;
+
+        serde_json::from_value(result).context("Failed to parse record facts")
+    }
+
     /// Extract records from a specific memo using the new Records + Links pipeline
     ///
     /// If dry_run is true, returns what would be extracted without creating records.
@@ -591,6 +615,14 @@ pub struct EntityFactsResult {
 pub struct RelatedFactsResult {
     pub fact_id: String,
     pub related_facts: Vec<Fact>,
+    pub count: usize,
+}
+
+/// Result of getting facts for a Record (part of Entity→Record migration)
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecordFactsResult {
+    pub record: String,
+    pub facts: Vec<Fact>,
     pub count: usize,
 }
 

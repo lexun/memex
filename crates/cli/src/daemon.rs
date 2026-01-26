@@ -879,10 +879,13 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "test_import_forge_note" => handle_test_import_forge_note(request, stores).await,
         "test_import_forge_dependency" => handle_test_import_forge_dependency(request, stores).await,
 
-        // Entity operations
+        // Entity operations (legacy - being replaced by Record operations)
         "list_entities" => handle_list_entities(request, &stores.atlas).await,
         "get_entity_facts" => handle_get_entity_facts(request, &stores.atlas).await,
         "get_related_facts" => handle_get_related_facts(request, &stores.atlas).await,
+
+        // Record-based knowledge operations (new - part of Entity→Record migration)
+        "get_record_facts" => handle_get_record_facts(request, &stores.atlas).await,
 
         // Record extraction operations (new Records + Links pipeline)
         "extract_records_from_memo" => handle_extract_records_from_memo(request, stores).await,
@@ -1502,6 +1505,9 @@ struct RecordMemoParams {
 /// Store extraction results (facts and entities) in Atlas
 ///
 /// This is a helper function used by memo recording and task operations.
+///
+/// As part of the Entity→Record consolidation, this function now also links
+/// facts to matching Records (in addition to legacy Entity links).
 async fn store_extraction_results(
     stores: &Stores,
     result: atlas::ExtractionResult,
@@ -1543,17 +1549,28 @@ async fn store_extraction_results(
         }
     }
 
-    // Store facts and create entity links
+    // Store facts and create entity + record links
     for extracted_fact in result.facts {
         match stores.atlas.create_fact(extracted_fact.fact).await {
             Ok(created_fact) => {
-                // Link fact to its referenced entities
+                // Link fact to its referenced entities (legacy) AND matching records (new)
                 if let (Some(ref fact_id), entity_refs) = (&created_fact.id, &extracted_fact.entity_refs) {
                     for entity_name in entity_refs {
+                        // Legacy: Link to Entity
                         if let Some(entity) = entity_map.get(entity_name) {
                             if let Some(ref entity_id) = entity.id {
                                 if let Err(e) = stores.atlas.link_fact_entity(fact_id, entity_id, "mentions").await {
                                     tracing::warn!("Failed to link fact to entity '{}': {}", entity_name, e);
+                                }
+                            }
+                        }
+
+                        // New: Also link to matching Record (for Entity→Record migration)
+                        // Try to find a Record that matches this entity name
+                        if let Ok(Some(record)) = stores.atlas.find_record_by_name_or_alias(entity_name, None).await {
+                            if let Some(record_id) = record.id_str() {
+                                if let Err(e) = stores.atlas.link_fact_record(fact_id, &record_id, "mentions", 1.0).await {
+                                    tracing::debug!("Failed to link fact to record '{}': {}", entity_name, e);
                                 }
                             }
                         }
@@ -1568,6 +1585,9 @@ async fn store_extraction_results(
 }
 
 /// Store extraction results and return counts (facts_created, entities_created, links_created)
+///
+/// As part of the Entity→Record consolidation, this function now also links
+/// facts to matching Records (in addition to legacy Entity links).
 async fn store_extraction_results_counted(
     stores: &Stores,
     result: atlas::ExtractionResult,
@@ -1614,19 +1634,28 @@ async fn store_extraction_results_counted(
         }
     }
 
-    // Store facts and create entity links
+    // Store facts and create entity + record links
     for extracted_fact in result.facts {
         match stores.atlas.create_fact(extracted_fact.fact).await {
             Ok(created_fact) => {
                 facts_created += 1;
-                // Link fact to its referenced entities
+                // Link fact to its referenced entities (legacy) AND matching records (new)
                 if let (Some(ref fact_id), entity_refs) = (&created_fact.id, &extracted_fact.entity_refs) {
                     for entity_name in entity_refs {
+                        // Legacy: Link to Entity
                         if let Some(entity) = entity_map.get(entity_name) {
                             if let Some(ref entity_id) = entity.id {
                                 if stores.atlas.link_fact_entity(fact_id, entity_id, "mentions").await.is_ok() {
                                     links_created += 1;
                                 }
+                            }
+                        }
+
+                        // New: Also link to matching Record (for Entity→Record migration)
+                        if let Ok(Some(record)) = stores.atlas.find_record_by_name_or_alias(entity_name, None).await {
+                            if let Some(record_id) = record.id_str() {
+                                // Record links don't count toward legacy links_created
+                                let _ = stores.atlas.link_fact_record(fact_id, &record_id, "mentions", 1.0).await;
                             }
                         }
                     }
@@ -1912,7 +1941,7 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
         }
     }
 
-    // Entity-focused expansion
+    // Entity-focused expansion (legacy)
     // For each keyword, find matching entities and include their linked facts
     const ENTITY_SCORE: f64 = 0.4; // Lower than direct matches to rank after them
     for keyword in &keywords {
@@ -1929,6 +1958,30 @@ async fn handle_query_knowledge(request: &Request, stores: &Stores) -> Result<se
 
         // Add entity-linked facts (deduplicated)
         for result in entity_results {
+            let id = result.id.clone();
+            if seen_ids.insert(id) {
+                all_results.push(result);
+            }
+        }
+    }
+
+    // Record-focused expansion (new - part of Entity→Record migration)
+    // For each keyword, find matching Records and include their linked facts
+    const RECORD_SCORE: f64 = 0.45; // Slightly higher than entity expansion
+    for keyword in &keywords {
+        let record_results = stores
+            .atlas
+            .expand_via_records(
+                keyword,
+                None, // Search all record types
+                RECORD_SCORE,
+                Some(10), // Limit record-linked facts per keyword
+            )
+            .await
+            .map_err(|e| IpcError::internal(e.to_string()))?;
+
+        // Add record-linked facts (deduplicated)
+        for result in record_results {
             let id = result.id.clone();
             if seen_ids.insert(id) {
                 all_results.push(result);
@@ -2312,6 +2365,35 @@ async fn handle_get_entity_facts(request: &Request, store: &AtlasStore) -> Resul
 }
 
 #[derive(Deserialize)]
+struct GetRecordFactsParams {
+    /// Record name or alias to look up
+    name: String,
+    /// Optional record type filter for more precise matching
+    #[serde(default)]
+    record_type: Option<String>,
+}
+
+/// Get facts linked to a Record (part of Entity→Record migration)
+///
+/// This is the Record-based equivalent of get_entity_facts.
+/// Uses find_record_by_name_or_alias for flexible identity resolution.
+async fn handle_get_record_facts(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: GetRecordFactsParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    let facts = store
+        .get_facts_for_record_name(&params.name, params.record_type.as_deref())
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    Ok(json!({
+        "record": params.name,
+        "facts": facts,
+        "count": facts.len(),
+    }))
+}
+
+#[derive(Deserialize)]
 struct GetRelatedFactsParams {
     fact_id: String,
     #[serde(default)]
@@ -2322,15 +2404,40 @@ async fn handle_get_related_facts(request: &Request, store: &AtlasStore) -> Resu
     let params: GetRelatedFactsParams = serde_json::from_value(request.params.clone())
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
-    let facts = store
+    // Try both Entity-based and Record-based related facts
+    let entity_facts = store
         .get_related_facts(&params.fact_id, params.limit)
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?;
 
+    let record_facts = store
+        .get_related_facts_via_records(&params.fact_id, params.limit)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?;
+
+    // Merge and deduplicate results
+    let mut all_facts = entity_facts;
+    let seen_ids: std::collections::HashSet<_> = all_facts.iter()
+        .filter_map(|f| f.id.as_ref().map(|t| t.to_string()))
+        .collect();
+
+    for fact in record_facts {
+        if let Some(ref id) = fact.id {
+            if !seen_ids.contains(&id.to_string()) {
+                all_facts.push(fact);
+            }
+        }
+    }
+
+    // Apply limit if specified
+    if let Some(limit) = params.limit {
+        all_facts.truncate(limit);
+    }
+
     Ok(json!({
         "fact_id": params.fact_id,
-        "related_facts": facts,
-        "count": facts.len(),
+        "related_facts": all_facts,
+        "count": all_facts.len(),
     }))
 }
 
@@ -2826,18 +2933,26 @@ async fn handle_extract_facts(request: &Request, stores: &Stores) -> Result<serd
                     }
                 }
 
-                // Store facts and create entity links
+                // Store facts and create entity + record links
                 for extracted_fact in result.facts {
                     if let Ok(created_fact) = stores.atlas.create_fact(extracted_fact.fact).await {
                         facts_created += 1;
 
                         if let Some(ref fact_id) = created_fact.id {
                             for entity_name in &extracted_fact.entity_refs {
+                                // Legacy: Link to Entity
                                 if let Some(entity) = entity_map.get(entity_name) {
                                     if let Some(ref entity_id) = entity.id {
                                         if stores.atlas.link_fact_entity(fact_id, entity_id, "mentions").await.is_ok() {
                                             links_created += 1;
                                         }
+                                    }
+                                }
+
+                                // New: Also link to matching Record (for Entity→Record migration)
+                                if let Ok(Some(record)) = stores.atlas.find_record_by_name_or_alias(entity_name, None).await {
+                                    if let Some(record_id) = record.id_str() {
+                                        let _ = stores.atlas.link_fact_record(fact_id, &record_id, "mentions", 1.0).await;
                                     }
                                 }
                             }
@@ -3114,19 +3229,27 @@ async fn handle_rebuild_knowledge(request: &Request, stores: &Stores) -> Result<
                     }
                 }
 
-                // Store facts and create entity links
+                // Store facts and create entity + record links
                 for extracted_fact in result.facts {
                     if let Ok(created_fact) = stores.atlas.create_fact(extracted_fact.fact).await {
                         facts_created += 1;
 
-                        // Link fact to its referenced entities
+                        // Link fact to its referenced entities (legacy) AND matching records (new)
                         if let Some(ref fact_id) = created_fact.id {
                             for entity_name in &extracted_fact.entity_refs {
+                                // Legacy: Link to Entity
                                 if let Some(entity) = entity_map.get(entity_name) {
                                     if let Some(ref entity_id) = entity.id {
                                         if stores.atlas.link_fact_entity(fact_id, entity_id, "mentions").await.is_ok() {
                                             links_created += 1;
                                         }
+                                    }
+                                }
+
+                                // New: Also link to matching Record (for Entity→Record migration)
+                                if let Ok(Some(record)) = stores.atlas.find_record_by_name_or_alias(entity_name, None).await {
+                                    if let Some(record_id) = record.id_str() {
+                                        let _ = stores.atlas.link_fact_record(fact_id, &record_id, "mentions", 1.0).await;
                                     }
                                 }
                             }

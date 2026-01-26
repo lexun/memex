@@ -1288,6 +1288,50 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// Get facts about a specific Record (part of Entity→Record consolidation)
+    ///
+    /// Returns all known facts that are linked to the named Record.
+    /// Uses flexible identity resolution with aliases - "Luke", "@luke", and "lexun"
+    /// will all find facts about the same person if aliased correctly.
+    #[tool]
+    async fn get_record_facts(
+        &self,
+        /// Record name or alias to look up
+        name: String,
+        /// Optional record type filter for more precise matching (e.g., "person", "repo")
+        record_type: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        match self
+            .knowledge_client
+            .get_record_facts(&name, record_type.as_deref())
+            .await
+        {
+            Ok(result) => {
+                if result.facts.is_empty() {
+                    Ok(format!(
+                        "No facts found for record: \"{}\"\n\nThe record may not exist or have no linked facts.",
+                        name
+                    ))
+                } else {
+                    let mut output = format!(
+                        "Found {} fact(s) about \"{}\":\n\n",
+                        result.count, result.record
+                    );
+                    for fact in result.facts {
+                        let content = &fact.content;
+                        let fact_type = &fact.fact_type;
+                        output.push_str(&format!("[{}] {}\n", fact_type, content));
+                    }
+                    Ok(output)
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to get record facts: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     /// Get facts related to a given fact via shared entities
     ///
     /// Traverses the knowledge graph to find facts that share entities with

@@ -546,6 +546,250 @@ impl Store {
         Ok(())
     }
 
+    // ========== Fact-Record Linkage (Entity→Record Migration) ==========
+    //
+    // These methods link Facts to Records instead of Entities.
+    // Part of the Entity→Record consolidation where Records become
+    // the single identity system and Entities are deprecated.
+
+    /// Link a fact to a record
+    ///
+    /// Creates a fact_record relationship to connect extracted facts
+    /// to Records (the unified identity system).
+    pub async fn link_fact_record(
+        &self,
+        fact_id: &Thing,
+        record_id: &str,
+        role: &str,
+        confidence: f32,
+    ) -> Result<()> {
+        let record_thing = Thing::from(("record", record_id));
+
+        let sql = r#"
+            CREATE fact_record SET
+                fact = $fact,
+                record = $record,
+                role = $role,
+                confidence = $confidence,
+                created_at = time::now()
+        "#;
+
+        self.db
+            .client()
+            .query(sql)
+            .bind(("fact", fact_id.clone()))
+            .bind(("record", record_thing))
+            .bind(("role", role.to_string()))
+            .bind(("confidence", confidence))
+            .await
+            .context("Failed to link fact to record")?;
+
+        Ok(())
+    }
+
+    /// Get facts linked to a record
+    ///
+    /// Returns all facts that mention or are about this record.
+    pub async fn get_facts_for_record(&self, record_id: &str) -> Result<Vec<Fact>> {
+        let sql = r#"
+            SELECT * FROM fact WHERE id IN (
+                SELECT fact FROM fact_record WHERE record = type::thing("record", $record_id)
+            )
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("record_id", record_id.to_string()))
+            .await
+            .context("Failed to get facts for record")?;
+
+        let facts: Vec<Fact> = response.take(0).unwrap_or_default();
+        Ok(facts)
+    }
+
+    /// Get facts for a record by name (with alias resolution)
+    ///
+    /// Uses find_record_by_name_or_alias to resolve the name, then returns
+    /// linked facts. This is the Record-based equivalent of get_facts_for_entity_name.
+    pub async fn get_facts_for_record_name(
+        &self,
+        name: &str,
+        record_type: Option<&str>,
+    ) -> Result<Vec<Fact>> {
+        let record = self.find_record_by_name_or_alias(name, record_type).await?;
+
+        match record {
+            Some(r) => {
+                let record_id = r.id_str().unwrap_or_default();
+                self.get_facts_for_record(&record_id).await
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Get records linked to a fact
+    ///
+    /// Returns all records that are mentioned by or related to this fact.
+    pub async fn get_records_for_fact(&self, fact_id: &str) -> Result<Vec<Record>> {
+        let sql = r#"
+            SELECT * FROM record WHERE id IN (
+                SELECT record FROM fact_record WHERE fact = type::thing("fact", $fact_id)
+            ) AND deleted_at IS NONE
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("fact_id", fact_id.to_string()))
+            .await
+            .context("Failed to get records for fact")?;
+
+        let records: Vec<Record> = response.take(0).unwrap_or_default();
+        Ok(records)
+    }
+
+    /// Find facts related to a given fact via shared records
+    ///
+    /// Returns facts that share at least one record with the source fact.
+    /// This is the Record-based equivalent of get_related_facts.
+    pub async fn get_related_facts_via_records(&self, fact_id: &str, limit: Option<usize>) -> Result<Vec<Fact>> {
+        let limit = limit.unwrap_or(10);
+
+        let sql = r#"
+            SELECT * FROM fact WHERE id IN (
+                SELECT fact FROM fact_record WHERE record IN (
+                    SELECT record FROM fact_record WHERE fact = type::thing("fact", $fact_id)
+                )
+            ) AND id != type::thing("fact", $fact_id)
+            LIMIT $limit
+        "#;
+
+        let mut response = self
+            .db
+            .client()
+            .query(sql)
+            .bind(("fact_id", fact_id.to_string()))
+            .bind(("limit", limit))
+            .await
+            .context("Failed to get related facts via records")?;
+
+        let facts: Vec<Fact> = response.take(0).unwrap_or_default();
+        Ok(facts)
+    }
+
+    /// Expand query by finding record-linked facts
+    ///
+    /// Searches for records matching query terms (by name or alias), then returns
+    /// facts linked to those records. This is the Record-based equivalent of expand_via_entities.
+    pub async fn expand_via_records(
+        &self,
+        query: &str,
+        record_type: Option<&str>,
+        score: f64,
+        limit: Option<usize>,
+    ) -> Result<Vec<FactSearchResult>> {
+        // Search for records matching the query
+        let records = self.search_records(query, record_type, Some(3)).await?;
+
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let limit = limit.unwrap_or(5);
+        let mut results = Vec::new();
+
+        for record in records {
+            let record_id = record.id_str().unwrap_or_default();
+            let facts = self.get_facts_for_record(&record_id).await?;
+
+            for fact in facts {
+                results.push(FactSearchResult {
+                    id: fact.id,
+                    content: fact.content,
+                    fact_type: fact.fact_type.to_string(),
+                    confidence: fact.confidence,
+                    project: fact.project,
+                    source_episodes: fact.source_episodes,
+                    created_at: fact.created_at,
+                    updated_at: fact.updated_at,
+                    access_count: fact.access_count,
+                    last_accessed: fact.last_accessed,
+                    embedding: fact.embedding,
+                    score, // Fixed score for record-linked facts
+                });
+
+                if results.len() >= limit {
+                    break;
+                }
+            }
+
+            if results.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Delete fact_record links for a fact
+    ///
+    /// Used during purge operations to clean up record links.
+    pub async fn delete_fact_record_links(&self, fact_id: &str) -> Result<usize> {
+        let count_sql = "SELECT count() FROM fact_record WHERE fact = type::thing('fact', $id) GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(count_sql)
+            .bind(("id", fact_id.to_string()))
+            .await
+            .context("Failed to count fact_record links")?;
+
+        let count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let count = count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        self.db
+            .client()
+            .query("DELETE FROM fact_record WHERE fact = type::thing('fact', $id)")
+            .bind(("id", fact_id.to_string()))
+            .await
+            .context("Failed to delete fact_record links")?;
+
+        Ok(count)
+    }
+
+    /// Delete fact_record links for a record
+    ///
+    /// Used during record purge to clean up fact links.
+    pub async fn delete_record_fact_links(&self, record_id: &str) -> Result<usize> {
+        let count_sql = "SELECT count() FROM fact_record WHERE record = type::thing('record', $id) GROUP ALL";
+        let mut response = self
+            .db
+            .client()
+            .query(count_sql)
+            .bind(("id", record_id.to_string()))
+            .await
+            .context("Failed to count fact_record links")?;
+
+        let count: Option<serde_json::Value> = response.take(0).ok().flatten();
+        let count = count
+            .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
+
+        self.db
+            .client()
+            .query("DELETE FROM fact_record WHERE record = type::thing('record', $id)")
+            .bind(("id", record_id.to_string()))
+            .await
+            .context("Failed to delete fact_record links")?;
+
+        Ok(count)
+    }
+
     /// Get facts related to an entity
     pub async fn get_facts_for_entity(&self, entity_id: &str) -> Result<Vec<Fact>> {
         // Query via fact_entity join table
@@ -2970,13 +3214,21 @@ impl Store {
 
     /// Delete a fact by ID (hard delete)
     pub async fn delete_fact(&self, id: &str) -> Result<Option<crate::fact::Fact>> {
-        // First delete fact_entity links
+        // First delete fact_entity links (legacy)
         self.db
             .client()
             .query("DELETE FROM fact_entity WHERE fact = type::thing('fact', $id)")
             .bind(("id", id.to_string()))
             .await
             .context("Failed to delete fact_entity links")?;
+
+        // Also delete fact_record links (new Record-based linkage)
+        self.db
+            .client()
+            .query("DELETE FROM fact_record WHERE fact = type::thing('fact', $id)")
+            .bind(("id", id.to_string()))
+            .await
+            .context("Failed to delete fact_record links")?;
 
         // Then delete the fact
         let deleted: Option<crate::fact::Fact> = self
