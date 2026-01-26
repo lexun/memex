@@ -23,3 +23,4 @@ mod migrations;
 
 pub use config::DatabaseConfig;
 pub use connection::Database;
+pub use migrations::{get_schema_status, validate_schema, SchemaStatus};

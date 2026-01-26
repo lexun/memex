@@ -2218,6 +2218,12 @@ async fn handle_search_knowledge(request: &Request, stores: &Stores) -> Result<s
 }
 
 /// Get knowledge system status (diagnostic)
+///
+/// Returns comprehensive health information including:
+/// - Schema status and validation
+/// - Fact statistics and embedding coverage
+/// - LLM configuration status
+/// - Overall health assessment
 async fn handle_knowledge_status(stores: &Stores) -> Result<serde_json::Value, IpcError> {
     // Count facts with/without embeddings
     let (with_embeddings, without_embeddings) = stores
@@ -2232,13 +2238,62 @@ async fn handle_knowledge_status(stores: &Stores) -> Result<serde_json::Value, I
     // Check if LLM is configured
     let llm_configured = stores.extractor.is_some();
 
+    // Get schema status for Atlas database
+    let schema_status = db::get_schema_status(stores.atlas.db().client(), "atlas")
+        .await
+        .map_err(|e| IpcError::internal(format!("Schema status check failed: {}", e)))?;
+
+    // Count records (memos, tasks, etc.)
+    let memo_count = stores
+        .atlas
+        .list_memos(Some(1))
+        .await
+        .map(|m| if m.is_empty() { 0 } else { 1 }) // Just check if any exist
+        .unwrap_or(0);
+
+    // Determine overall health
+    let schema_healthy = schema_status.valid;
+    let embeddings_healthy = total_facts == 0 || (with_embeddings as f64 / total_facts as f64) >= 0.5;
+    let overall_healthy = schema_healthy && llm_configured && embeddings_healthy;
+
+    let health_issues: Vec<&str> = {
+        let mut issues = Vec::new();
+        if !schema_healthy {
+            issues.push("Schema validation failed");
+        }
+        if !llm_configured {
+            issues.push("LLM not configured - extraction disabled");
+        }
+        if !embeddings_healthy && total_facts > 0 {
+            issues.push("Many facts missing embeddings - semantic search degraded");
+        }
+        issues
+    };
+
     Ok(json!({
+        "healthy": overall_healthy,
+        "issues": health_issues,
+        "schema": {
+            "version": schema_status.version,
+            "latest_version": schema_status.latest_version,
+            "up_to_date": schema_status.up_to_date,
+            "pending_migrations": schema_status.pending_migrations,
+            "valid": schema_status.valid,
+            "valid_tables": schema_status.valid_tables,
+            "missing_tables": schema_status.missing_tables,
+        },
         "facts": {
             "total": total_facts,
             "with_embeddings": with_embeddings,
             "without_embeddings": without_embeddings,
+            "embedding_coverage": if total_facts > 0 {
+                format!("{:.1}%", (with_embeddings as f64 / total_facts as f64) * 100.0)
+            } else {
+                "N/A".to_string()
+            },
         },
         "llm_configured": llm_configured,
+        "has_data": memo_count > 0 || total_facts > 0,
     }))
 }
 

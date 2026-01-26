@@ -1,0 +1,85 @@
+# Retrieval Test: Basic Reliability
+#
+# Tests the fundamental reliability of the knowledge system:
+# 1. Can we record a memo and find it again?
+# 2. Does extraction capture key information?
+# 3. Do queries return relevant results?
+#
+# This is the "smoke test" for knowledge system reliability.
+# If this fails, something is fundamentally broken.
+
+[scenario]
+name = "basic_reliability"
+description = "Verify basic knowledge recording and retrieval works"
+tests = ["recording", "retrieval", "extraction"]
+
+# =============================================================================
+# SETUP: Record simple, clear facts
+# =============================================================================
+
+[[setup]]
+action = "record_memo"
+content = """
+The Memex project uses SurrealDB as its primary database.
+Luke is the creator and main developer of Memex.
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+Memex has three main components:
+- Atlas: knowledge management (memos, facts, records)
+- Forge: task management (tasks, goals, updates)
+- Cortex: agent orchestration (workers, coordinators)
+"""
+
+[[setup]]
+action = "record_memo"
+content = """
+The preferred coding style for Memex is:
+- Use Rust for all backend code
+- Keep functions small and focused
+- Write descriptive commit messages
+"""
+
+# =============================================================================
+# QUERIES: Test basic retrieval
+# =============================================================================
+
+[queries.database]
+query = "What database does Memex use?"
+description = "Should find the explicitly recorded database choice"
+should_find = ["SurrealDB"]
+should_not_find = ["PostgreSQL", "MongoDB"]
+answer_type = "factual"
+
+[queries.creator]
+query = "Who created Memex?"
+description = "Should find the creator's name"
+should_find = ["Luke"]
+answer_type = "factual"
+
+[queries.components]
+query = "What are the main components of Memex?"
+description = "Should enumerate the three components"
+should_find = ["Atlas", "Forge", "Cortex"]
+answer_type = "list"
+
+[queries.atlas_purpose]
+query = "What does Atlas do?"
+description = "Should find Atlas's purpose from context"
+should_find = ["knowledge"]
+answer_type = "factual"
+
+[queries.coding_style]
+query = "What programming language should I use for Memex?"
+description = "Should find the Rust preference"
+should_find = ["Rust"]
+should_not_find = ["Python", "JavaScript"]
+answer_type = "factual"
+
+[queries.commit_style]
+query = "How should I write commit messages?"
+description = "Should find the commit message guidance"
+should_find = ["descriptive"]
+answer_type = "procedural"
