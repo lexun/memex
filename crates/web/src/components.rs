@@ -1382,20 +1382,9 @@ fn TranscriptEntryView(entry: TranscriptEntry, index: usize) -> impl IntoView {
         .unwrap_or(&entry.timestamp)
         .to_string();
 
-    // Truncate long prompts and responses for display
-    let prompt_preview = if entry.prompt.len() > 300 {
-        format!("{}...", &entry.prompt[..300])
-    } else {
-        entry.prompt.clone()
-    };
-
-    let response_preview = entry.response.as_ref().map(|r| {
-        if r.len() > 500 {
-            format!("{}...", &r[..500])
-        } else {
-            r.clone()
-        }
-    });
+    // Show full prompts and responses without truncation
+    let prompt_preview = entry.prompt.clone();
+    let response_preview = entry.response.clone();
 
     let duration_str = if entry.duration_ms > 0 {
         format!("{}ms", entry.duration_ms)
@@ -1658,20 +1647,9 @@ fn ActivityEntryView(entry: ActivityEntry) -> impl IntoView {
         .unwrap_or(&entry.timestamp)
         .to_string();
 
-    // Truncate long prompts and responses for display
-    let prompt_preview = if entry.prompt.len() > 200 {
-        format!("{}...", &entry.prompt[..200])
-    } else {
-        entry.prompt.clone()
-    };
-
-    let response_preview = entry.response.as_ref().map(|r| {
-        if r.len() > 300 {
-            format!("{}...", &r[..300])
-        } else {
-            r.clone()
-        }
-    });
+    // Show full prompts and responses without truncation
+    let prompt_preview = entry.prompt.clone();
+    let response_preview = entry.response.clone();
 
     let duration_str = if entry.duration_ms > 0 {
         format!("{}ms", entry.duration_ms)

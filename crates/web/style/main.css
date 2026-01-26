@@ -1042,7 +1042,6 @@ code {
 
 /* Transcript View */
 .transcript-card {
-    max-height: 600px;
     display: flex;
     flex-direction: column;
 }
@@ -1077,7 +1076,6 @@ code {
 }
 
 .transcript-entries {
-    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 1rem;
@@ -1145,8 +1143,6 @@ code {
     word-break: break-word;
     overflow-x: auto;
     margin: 0;
-    max-height: 200px;
-    overflow-y: auto;
 }
 
 .transcript-placeholder {
@@ -1265,8 +1261,6 @@ code {
     word-break: break-word;
     overflow-x: auto;
     margin: 0;
-    max-height: 150px;
-    overflow-y: auto;
 }
 
 .activity-error-content {
