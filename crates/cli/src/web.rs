@@ -27,8 +27,8 @@ use crate::config::WebConfig;
 
 // Re-use types from the web crate for API responses
 use memex_web::types::{
-    ActivityEntry, ActivityFeed, DashboardStats, Event, MemoView, Note, Record, RecordDetail,
-    Task, TaskDetail, TranscriptEntry, Worker, WorkerTranscript,
+    ActivityEntry, ActivityFeed, DashboardStats, Event as EventView, MemoView, Note, Record,
+    RecordDetail, Task, TaskDetail, TranscriptEntry, Worker, WorkerTranscript,
 };
 
 // Embedded WASM/JS assets - built by wasm-pack before cargo build
@@ -551,11 +551,11 @@ async fn api_list_memos(State(state): State<Arc<WebState>>) -> impl IntoResponse
 async fn api_list_events(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     match state.atlas.list_events(Some("task."), Some(50)).await {
         Ok(events) => {
-            let events: Vec<Event> = events
+            let events: Vec<EventView> = events
                 .into_iter()
                 .map(|e| {
                     let summary = extract_event_summary(&e.event_type, &e.payload);
-                    Event {
+                    EventView {
                         id: e.id.map(|t| t.id.to_string()).unwrap_or_default(),
                         event_type: e.event_type,
                         source: e.source.actor,
