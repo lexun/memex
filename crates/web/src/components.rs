@@ -1557,51 +1557,76 @@ fn WorkerDetailContent(
 /// Worker activity page showing combined transcript from all workers
 #[component]
 pub fn WorkerActivityPage() -> impl IntoView {
-    // Create a signal for refresh trigger
-    #[allow(unused_variables)]
-    let (refresh_count, set_refresh_count) = create_signal(0u32);
+    // Create a signal for the activity feed that SSE will update
+    let (activity_feed, set_activity_feed) = create_signal::<Option<ActivityFeed>>(None);
+    let (connection_error, set_connection_error) = create_signal::<Option<String>>(None);
 
-    // Create activity feed resource that depends on refresh_count
-    let activity = create_resource(
-        move || refresh_count.get(),
-        |_| async move { fetch_activity_feed().await },
-    );
-
-    // Auto-refresh every 5 seconds when component is mounted
+    // Set up SSE connection for real-time activity updates (client-side only)
     #[cfg(any(feature = "hydrate", feature = "csr"))]
     {
-        use std::time::Duration;
-        let handle = set_interval_with_handle(
-            move || {
-                set_refresh_count.update(|n| *n = n.wrapping_add(1));
-            },
-            Duration::from_secs(5),
-        );
-        on_cleanup(move || {
-            if let Ok(h) = handle {
-                h.clear();
+        use wasm_bindgen::prelude::*;
+        use wasm_bindgen::JsCast;
+
+        // Use create_effect with a guard to only set up SSE once
+        let (sse_initialized, set_sse_initialized) = create_signal(false);
+
+        create_effect(move |_| {
+            // Only initialize SSE once
+            if sse_initialized.get() {
+                return;
             }
+
+            set_sse_initialized.set(true);
+
+            use web_sys::{EventSource, MessageEvent};
+
+            let url = "/api/activity/stream";
+            let es = EventSource::new(url).ok();
+            if let Some(event_source) = es.clone() {
+                let onmessage =
+                    Closure::<dyn Fn(MessageEvent)>::new(move |event: MessageEvent| {
+                        if let Some(data) = event.data().as_string() {
+                            if let Ok(feed_data) = serde_json::from_str::<ActivityFeed>(&data) {
+                                set_activity_feed.set(Some(feed_data));
+                                set_connection_error.set(None);
+                            }
+                        }
+                    });
+                event_source.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+                onmessage.forget();
+
+                let onerror = Closure::<dyn Fn()>::new(move || {
+                    leptos::logging::log!("Activity SSE connection error - will auto-reconnect");
+                });
+                event_source.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+                onerror.forget();
+
+                leptos::logging::log!("SSE connection established for activity feed");
+            } else {
+                set_connection_error.set(Some("Failed to establish SSE connection".to_string()));
+            }
+
+            // Clean up EventSource on unmount
+            on_cleanup(move || {
+                if let Some(event_source) = es {
+                    event_source.close();
+                    leptos::logging::log!("Activity SSE connection closed");
+                }
+            });
         });
     }
 
     view! {
         <Layout title="Worker Activity".to_string() active_section="activity".to_string()>
-            <Suspense fallback=move || view! { <Loading/> }>
-                {move || {
-                    activity
-                        .get()
-                        .map(|result| {
-                            match result {
-                                Ok(feed) => view! { <ActivityFeedView feed=feed/> }.into_view(),
-                                Err(e) => {
-                                    view! { <div class="error">"Error loading activity: " {e}</div> }
-                                        .into_view()
-                                }
-                            }
-                        })
-                }}
-
-            </Suspense>
+            {move || {
+                if let Some(error) = connection_error.get() {
+                    view! { <div class="error">"Connection error: " {error}</div> }.into_view()
+                } else if let Some(feed) = activity_feed.get() {
+                    view! { <ActivityFeedView feed=feed/> }.into_view()
+                } else {
+                    view! { <Loading/> }.into_view()
+                }
+            }}
         </Layout>
     }
 }
@@ -1620,7 +1645,9 @@ fn ActivityFeedView(feed: ActivityFeed) -> impl IntoView {
         <div class="activity-feed">
             <div class="activity-header">
                 <span class="activity-count">{feed.entries.len()} " recent entries"</span>
-                <span class="activity-live">"Live updates enabled"</span>
+                <span class="activity-live">
+                    <span class="live-indicator">"live"</span>
+                </span>
             </div>
             <div class="activity-entries">
                 {feed
@@ -2248,10 +2275,6 @@ async fn fetch_workers() -> Result<Vec<Worker>, String> {
 
 async fn fetch_worker(id: &str) -> Result<Worker, String> {
     fetch_json(&format!("/api/workers/{}", id)).await
-}
-
-async fn fetch_activity_feed() -> Result<ActivityFeed, String> {
-    fetch_json("/api/activity").await
 }
 
 async fn fetch_records_by_type(record_type: &str) -> Result<Vec<Record>, String> {

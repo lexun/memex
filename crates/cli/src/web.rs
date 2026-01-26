@@ -55,6 +55,7 @@ pub fn build_router(state: Arc<WebState>, _config: &WebConfig) -> Router {
         .route("/api/workers/:id/transcript", get(api_get_worker_transcript))
         .route("/api/workers/:id/transcript/stream", get(api_stream_worker_transcript))
         .route("/api/activity", get(api_get_activity_feed))
+        .route("/api/activity/stream", get(api_stream_activity_feed))
         .route("/api/records/:record_type", get(api_list_records_by_type))
         .route("/api/record/:id", get(api_get_record))
         .route("/api/memos", get(api_list_memos))
@@ -667,4 +668,93 @@ async fn api_get_activity_feed(State(state): State<Arc<WebState>>) -> impl IntoR
     all_entries.truncate(50);
 
     Json(ActivityFeed { entries: all_entries }).into_response()
+}
+
+/// SSE endpoint for streaming activity feed updates
+///
+/// Clients connect to receive real-time activity updates from all workers.
+/// The stream polls for updates every second and sends updates when new entries appear.
+async fn api_stream_activity_feed(
+    State(state): State<Arc<WebState>>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    tracing::info!("SSE client connected for activity feed");
+
+    // Track the last timestamp we've sent to detect new entries
+    let mut last_timestamp: Option<String> = None;
+
+    // Create a stream that polls for activity updates
+    let stream = async_stream::stream! {
+        // Send initial feed immediately
+        let initial = get_activity_for_sse(&state).await;
+        if let Some(first) = initial.entries.first() {
+            last_timestamp = Some(first.timestamp.clone());
+        }
+        if let Ok(json) = serde_json::to_string(&initial) {
+            yield Ok(SseEvent::default().data(json));
+        }
+
+        // Poll every second for updates
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+
+            let feed = get_activity_for_sse(&state).await;
+
+            // Check if there are new entries (by comparing first timestamp)
+            let current_first = feed.entries.first().map(|e| e.timestamp.clone());
+
+            if current_first != last_timestamp {
+                last_timestamp = current_first;
+                if let Ok(json) = serde_json::to_string(&feed) {
+                    yield Ok(SseEvent::default().data(json));
+                }
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+/// Helper to get activity feed data for SSE
+async fn get_activity_for_sse(state: &Arc<WebState>) -> ActivityFeed {
+    // Get all workers
+    let workers = match state.forge.list_workers(None).await {
+        Ok(w) => w,
+        Err(_) => return ActivityFeed { entries: vec![] },
+    };
+
+    let mut all_entries: Vec<ActivityEntry> = Vec::new();
+
+    // Get transcript for each worker and combine entries
+    for worker in &workers {
+        let worker_id = cortex::WorkerId::from_string(&worker.worker_id);
+
+        // Get transcript for this worker (limit to last 10 entries per worker)
+        if let Ok(entries) = state.workers.transcript(&worker_id, Some(10)).await {
+            for e in entries {
+                all_entries.push(ActivityEntry {
+                    worker_id: worker.worker_id.clone(),
+                    worker_state: worker.state.clone(),
+                    current_task: worker.current_task.clone(),
+                    timestamp: e.timestamp.to_rfc3339(),
+                    prompt: e.prompt,
+                    response: e.response,
+                    is_error: e.is_error,
+                    duration_ms: e.duration_ms,
+                });
+            }
+        }
+    }
+
+    // Sort by timestamp (newest first)
+    all_entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    // Limit total entries
+    all_entries.truncate(50);
+
+    ActivityFeed { entries: all_entries }
 }
