@@ -20,6 +20,10 @@ pub struct Memo {
 
     /// Source attribution
     pub source: MemoSource,
+
+    /// Curation processing state
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub curation: Option<CurationState>,
 }
 
 /// Source attribution for a memo
@@ -54,6 +58,29 @@ pub struct MemoContext {
     pub via: Option<String>,
 }
 
+/// Curation processing state for a memo
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurationState {
+    /// Whether this memo has been processed by the curation agent
+    pub processed: bool,
+
+    /// When the memo was last processed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processed_at: Option<Datetime>,
+
+    /// Content hash when last processed (to detect edits requiring re-processing)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+
+    /// IDs of records created from this memo
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_records: Option<Vec<String>>,
+
+    /// ID of clarification task if one was created
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarification_task: Option<String>,
+}
+
 impl Memo {
     /// Create a new memo with the given content and source
     pub fn new(content: impl Into<String>, source: MemoSource) -> Self {
@@ -62,12 +89,21 @@ impl Memo {
             created_at: Datetime::default(),
             content: content.into(),
             source,
+            curation: None,
         }
     }
 
     /// Get the memo ID as a string, if set
     pub fn id_str(&self) -> Option<String> {
         self.id.as_ref().map(|t| t.id.to_raw())
+    }
+
+    /// Compute content hash for change detection
+    pub fn content_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.content.as_bytes());
+        format!("{:x}", hasher.finalize())
     }
 }
 

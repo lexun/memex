@@ -147,6 +147,51 @@ impl MemoClient {
 
         serde_json::from_value(result).context("Failed to parse purge result")
     }
+
+    /// List memos that need curation processing
+    pub async fn list_unprocessed_memos(&self, limit: Option<usize>) -> Result<Vec<Memo>> {
+        #[derive(Serialize)]
+        struct Params {
+            limit: Option<usize>,
+        }
+
+        let result = self
+            .client
+            .request("list_unprocessed_memos", Params { limit })
+            .await
+            .context("Failed to list unprocessed memos")?;
+
+        serde_json::from_value(result).context("Failed to parse memos response")
+    }
+
+    /// Mark a memo as processed by the curation agent
+    pub async fn mark_memo_processed(
+        &self,
+        id: &str,
+        created_records: Vec<String>,
+        clarification_task: Option<String>,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Params<'a> {
+            id: &'a str,
+            created_records: Vec<String>,
+            clarification_task: Option<String>,
+        }
+
+        self.client
+            .request(
+                "mark_memo_processed",
+                Params {
+                    id,
+                    created_records,
+                    clarification_task,
+                },
+            )
+            .await
+            .context("Failed to mark memo as processed")?;
+
+        Ok(())
+    }
 }
 
 /// Client for event operations via the daemon

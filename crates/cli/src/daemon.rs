@@ -201,6 +201,38 @@ You have access to all Memex MCP tools including:
 - `record_memo` - capture decisions and findings
 "#;
 
+
+/// System prompt for curation workers
+///
+/// Based on validated prototype that successfully created 10+ high-quality records.
+/// Key learnings: Simple prompts work better than complex ones, Haiku is fast and effective.
+const CURATION_WORKER_PROMPT: &str = r#"You are a knowledge curation agent. Your job is to extract structured Records from memos.
+
+## Your Task
+
+1. Call `extract_records_from_memo` with the memo ID provided
+2. Review the extraction results
+3. If records were created successfully, call `mark_memo_processed` with the created record IDs
+4. If there are questions requiring clarification, create a task for human review and call `mark_memo_processed` with the clarification task ID
+
+## Guidelines
+
+- Trust the extraction system - it's context-aware and checks for duplicates
+- The extraction uses multi-step processing: entity extraction → record matching → action decision
+- Low-confidence items become questions automatically
+- Keep it simple - just extract and mark processed
+
+## Record Type Guidance
+
+Use functional types (repo, project, team, person, rule, skill, task, initiative) when system behavior requires it.
+Use "document" type for everything else (concepts, architectures, components, etc.).
+
+## Available Tools
+
+- `extract_records_from_memo(memo_id, threshold=0.5, dry_run=false, multi_step=true)`
+- `mark_memo_processed(id, created_records, clarification_task)`
+- `create_task(title, description, project)` - if clarification needed
+"#;
 /// Container for stores and services
 struct Stores {
     forge: ForgeStore,
@@ -539,6 +571,21 @@ impl Daemon {
             None
         };
 
+        // Start curation monitor if enabled
+        let curation_handle = if self.config.daemon.curation_monitor.enabled {
+            let stores_for_curation = Arc::clone(&stores);
+            let check_interval = self.config.daemon.curation_monitor.check_interval_secs;
+            let max_workers = self.config.daemon.curation_monitor.max_concurrent_workers;
+            let batch_size = self.config.daemon.curation_monitor.batch_size;
+
+            Some(tokio::spawn(async move {
+                run_curation_monitor(stores_for_curation, check_interval, max_workers, batch_size).await;
+            }))
+        } else {
+            tracing::info!("Background curation monitor disabled");
+            None
+        };
+
         // Write PID file
         let pid_info = PidInfo::new(process::id(), &self.socket_path);
         write_pid_file(&self.pid_path, &pid_info)?;
@@ -546,7 +593,10 @@ impl Daemon {
         // Run the IPC server
         let result = self.run_server(listener, stores).await;
 
-        // Abort health monitor if running
+        // Abort background tasks if running
+        if let Some(handle) = curation_handle {
+            handle.abort();
+        }
         if let Some(handle) = health_handle {
             handle.abort();
         }
@@ -750,6 +800,202 @@ async fn run_health_monitor(
     }
 }
 
+/// Background task that monitors for unprocessed memos and spawns curation workers
+async fn run_curation_monitor(
+    stores: Arc<Stores>,
+    check_interval_secs: u64,
+    max_concurrent_workers: usize,
+    batch_size: usize,
+) {
+    let check_interval = Duration::from_secs(check_interval_secs);
+
+    tracing::info!(
+        "Curation monitor started: checking every {}s, max {} concurrent workers",
+        check_interval_secs,
+        max_concurrent_workers
+    );
+
+    // Track active curation workers: memo_id -> worker_id
+    let mut active_workers: HashMap<String, String> = HashMap::new();
+
+    loop {
+        tokio::time::sleep(check_interval).await;
+
+        // Clean up completed workers
+        let mut to_remove = Vec::new();
+        for (memo_id, worker_id) in &active_workers {
+            let worker_id_obj = WorkerId::from_string(worker_id);
+            // Check if worker still exists
+            let should_remove = match stores.workers.status(&worker_id_obj).await {
+                Ok(status) => {
+                    matches!(&status.state, WorkerState::Stopped | WorkerState::Error(_))
+                }
+                Err(_) => true // Worker gone
+            };
+
+            if should_remove {
+                tracing::debug!("Curation worker {} for memo {} completed or gone", worker_id, memo_id);
+                to_remove.push(memo_id.clone());
+            }
+        }
+
+        for memo_id in to_remove {
+            active_workers.remove(&memo_id);
+        }
+
+        // Check if we can spawn more workers
+        let available_slots = max_concurrent_workers.saturating_sub(active_workers.len());
+        if available_slots == 0 {
+            tracing::debug!("Curation monitor: {} workers active, at max capacity", active_workers.len());
+            continue;
+        }
+
+        // Fetch unprocessed memos (limit to available slots)
+        let fetch_limit = available_slots.min(batch_size);
+        let unprocessed = match stores.atlas.list_unprocessed_memos(Some(fetch_limit)).await {
+            Ok(memos) => memos,
+            Err(e) => {
+                tracing::warn!("Failed to list unprocessed memos: {}", e);
+                continue;
+            }
+        };
+
+        if unprocessed.is_empty() {
+            continue;
+        }
+
+        tracing::info!(
+            "Curation monitor: Found {} unprocessed memos, {} worker slots available",
+            unprocessed.len(),
+            available_slots
+        );
+
+        // Spawn workers for unprocessed memos
+        for memo in unprocessed.iter().take(available_slots) {
+            let memo_id = match memo.id_str() {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Skip if already processing this memo
+            if active_workers.contains_key(&memo_id) {
+                continue;
+            }
+
+            // Spawn curation worker
+            match spawn_curation_worker(&stores, &memo_id).await {
+                Ok(worker_id) => {
+                    tracing::info!("Spawned curation worker {} for memo {}", worker_id, memo_id);
+                    active_workers.insert(memo_id.clone(), worker_id);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to spawn curation worker for memo {}: {}", memo_id, e);
+                }
+            }
+        }
+    }
+}
+
+/// Spawn a curation worker for a specific memo
+///
+/// Creates a lightweight worker (no worktree, just temp dir) with Haiku model
+/// and the curation system prompt. Worker has access to Memex MCP tools.
+async fn spawn_curation_worker(stores: &Arc<Stores>, memo_id: &str) -> Result<String> {
+    // Use a temporary directory for the worker (no worktree needed)
+    let temp_dir = std::env::temp_dir();
+    let cwd = temp_dir.to_string_lossy().to_string();
+
+    // Build worker config
+    let mut config = WorkerConfig::new(&cwd);
+    config = config.with_system_prompt(CURATION_WORKER_PROMPT);
+    config = config.with_model("haiku"); // Fast and effective for extraction
+
+    // Only Memex MCP tools (avoid auth popups from other servers)
+    let memex_mcp_config = r#"{"mcpServers":{"memex":{"command":"memex","args":["mcp","serve"]}}}"#;
+    let mcp_config = cortex::WorkerMcpConfig {
+        strict: true,
+        servers: vec![memex_mcp_config.to_string()],
+    };
+    // Serialize before moving into config
+    let mcp_config_json = serde_json::to_string(&mcp_config).unwrap_or_default();
+    config = config.with_mcp_config(mcp_config);
+
+    // Create in-memory worker (generates worker ID automatically)
+    let worker_id = stores
+        .workers
+        .create(config)
+        .await
+        .context("Failed to create curation worker")?;
+
+    // Persist to database (including MCP config)
+    let db_worker = DbWorker::new(&worker_id.0, &cwd)
+        .with_model("haiku".to_string())
+        .with_system_prompt(CURATION_WORKER_PROMPT.to_string())
+        .with_mcp_config(mcp_config_json);
+
+    if let Err(e) = stores.forge.create_worker(db_worker).await {
+        tracing::warn!("Failed to persist curation worker to DB: {}", e);
+    }
+
+    // Create a Thread record for transcript capture
+    let thread_name = format!("Curation worker for memo {}", memo_id);
+    if let Err(e) = stores
+        .atlas
+        .create_thread(
+            &thread_name,
+            ThreadSource::CortexWorker,
+            None, // session_id will be set after first message
+            Some(&cwd),
+            None, // task_id
+            Some(&worker_id.0),
+        )
+        .await
+    {
+        tracing::warn!(
+            "Failed to create thread for curation worker {}: {}",
+            worker_id.0,
+            e
+        );
+    }
+
+    // Send initial message to start work
+    let initial_message = format!(
+        "Process memo: {}. Extract records and mark it as processed when done.",
+        memo_id
+    );
+
+    // Clone what we need for the spawn
+    let stores_clone = Arc::clone(stores);
+    let worker_id_clone = worker_id.clone();
+    let worker_id_str = worker_id.0.clone();
+
+    // Spawn the work in background
+    tokio::spawn(async move {
+        match stores_clone
+            .workers
+            .send_message(&worker_id_clone, &initial_message)
+            .await
+        {
+            Ok(_) => {
+                tracing::info!("Curation worker {} started processing", worker_id_str);
+                // Persist worker status
+                persist_worker_status(&stores_clone, &worker_id_clone).await;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to send initial message to curation worker {}: {}",
+                    worker_id_str,
+                    e
+                );
+                // Still persist status to capture error state
+                persist_worker_status(&stores_clone, &worker_id_clone).await;
+            }
+        }
+    });
+
+    Ok(worker_id.0)
+}
+
 /// Handle a single client connection
 async fn handle_connection(stream: UnixStream, stores: Arc<Stores>) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
@@ -859,6 +1105,8 @@ async fn dispatch_request(request: &Request, stores: &Arc<Stores>) -> Result<ser
         "get_memo" => handle_get_memo(request, &stores.atlas).await,
         "delete_memo" => handle_delete_memo(request, &stores.atlas).await,
         "purge_memo" => handle_purge_memo(request, &stores.atlas).await,
+        "list_unprocessed_memos" => handle_list_unprocessed_memos(request, &stores.atlas).await,
+        "mark_memo_processed" => handle_mark_memo_processed(request, &stores.atlas).await,
 
         // Event operations (atlas)
         "list_events" => handle_list_events(request, &stores.atlas).await,
@@ -1776,6 +2024,59 @@ async fn handle_purge_memo(request: &Request, store: &AtlasStore) -> Result<serd
             .map(|result| serde_json::to_value(result).unwrap())
             .map_err(|e| IpcError::internal(e.to_string()))
     }
+}
+
+#[derive(Deserialize)]
+struct ListUnprocessedMemosParams {
+    limit: Option<usize>,
+}
+
+async fn handle_list_unprocessed_memos(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: ListUnprocessedMemosParams = serde_json::from_value(request.params.clone())
+        .unwrap_or(ListUnprocessedMemosParams { limit: None });
+
+    store
+        .list_unprocessed_memos(params.limit)
+        .await
+        .map(|memos| serde_json::to_value(memos).unwrap())
+        .map_err(|e| IpcError::internal(e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct MarkMemoProcessedParams {
+    id: String,
+    created_records: Vec<String>,
+    clarification_task: Option<String>,
+}
+
+async fn handle_mark_memo_processed(request: &Request, store: &AtlasStore) -> Result<serde_json::Value, IpcError> {
+    let params: MarkMemoProcessedParams = serde_json::from_value(request.params.clone())
+        .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
+
+    // Get the memo to compute its content hash
+    let memo = store
+        .get_memo(&params.id)
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?
+        .ok_or_else(|| IpcError::invalid_params(format!("Memo not found: {}", params.id)))?;
+
+    let curation = atlas::memo::CurationState {
+        processed: true,
+        processed_at: Some(chrono::Utc::now().into()),
+        content_hash: Some(memo.content_hash()),
+        created_records: if params.created_records.is_empty() {
+            None
+        } else {
+            Some(params.created_records)
+        },
+        clarification_task: params.clarification_task,
+    };
+
+    store
+        .update_memo_curation(&params.id, curation)
+        .await
+        .map(|_| serde_json::Value::Null)
+        .map_err(|e| IpcError::internal(e.to_string()))
 }
 
 // ========== Event Handlers ==========

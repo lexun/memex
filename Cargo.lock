@@ -458,6 +458,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "surrealdb",
  "thiserror 1.0.69",
  "tokio",

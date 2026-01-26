@@ -1016,6 +1016,79 @@ impl McpServer for MemexMcpServer {
         }
     }
 
+    /// List memos that need curation processing
+    ///
+    /// Returns memos that haven't been processed by the curation agent yet.
+    /// Used by the background curation system to find memos requiring attention.
+    #[tool]
+    async fn list_unprocessed_memos(&self, limit: Option<i32>) -> mcp_attr::Result<String> {
+        let limit = limit.map(|l| l as usize);
+        match self.memo_client.list_unprocessed_memos(limit).await {
+            Ok(memos) => {
+                if memos.is_empty() {
+                    Ok("No unprocessed memos found".to_string())
+                } else {
+                    let output = memos
+                        .iter()
+                        .map(|m| {
+                            let id = m.id.as_ref().map(|t| t.id.to_raw()).unwrap_or_default();
+                            let content = if m.content.len() > 60 {
+                                format!("{}...", &m.content[..60])
+                            } else {
+                                m.content.clone()
+                            };
+                            format!("[{}] {}", id, content)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Ok(format!("Unprocessed memos ({}):  \n{}", memos.len(), output))
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to list unprocessed memos: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
+    /// Mark a memo as processed by the curation agent
+    ///
+    /// Records that the memo has been processed, tracking:
+    /// - Content hash (to detect if memo is edited and needs reprocessing)
+    /// - IDs of records created from this memo
+    /// - Clarification task ID if one was created for ambiguous content
+    #[tool]
+    async fn mark_memo_processed(
+        &self,
+        /// Memo ID to mark as processed
+        id: String,
+        /// IDs of records created from this memo
+        created_records: Vec<String>,
+        /// ID of clarification task if one was created
+        clarification_task: Option<String>,
+    ) -> mcp_attr::Result<String> {
+        match self
+            .memo_client
+            .mark_memo_processed(&id, created_records.clone(), clarification_task.clone())
+            .await
+        {
+            Ok(_) => {
+                let mut output = format!("Marked memo {} as processed\n", id);
+                if !created_records.is_empty() {
+                    output.push_str(&format!("  Created {} record(s)\n", created_records.len()));
+                }
+                if clarification_task.is_some() {
+                    output.push_str("  Clarification task created\n");
+                }
+                Ok(output)
+            }
+            Err(e) => {
+                let msg = format!("Failed to mark memo as processed: {}", e);
+                Err(mcp_attr::Error::new(ErrorCode::INTERNAL_ERROR).with_message(msg, true))
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Event tools (Atlas event history)
     // -------------------------------------------------------------------------

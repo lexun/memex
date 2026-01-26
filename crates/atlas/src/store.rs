@@ -121,6 +121,45 @@ impl Store {
         Ok(deleted)
     }
 
+    /// Update memo curation state
+    pub async fn update_memo_curation(
+        &self,
+        id: &str,
+        curation: crate::memo::CurationState,
+    ) -> Result<()> {
+        self.db
+            .client()
+            .query("UPDATE $memo SET curation = $curation")
+            .bind(("memo", Thing::from(("memo", id))))
+            .bind(("curation", curation))
+            .await
+            .context("Failed to update memo curation state")?;
+
+        Ok(())
+    }
+
+    /// List memos that need curation processing
+    pub async fn list_unprocessed_memos(&self, limit: Option<usize>) -> Result<Vec<Memo>> {
+        let query = match limit {
+            Some(n) => format!(
+                "SELECT * FROM memo WHERE curation.processed IS NONE OR curation.processed = false ORDER BY created_at ASC LIMIT {}",
+                n
+            ),
+            None => "SELECT * FROM memo WHERE curation.processed IS NONE OR curation.processed = false ORDER BY created_at ASC".to_string(),
+        };
+
+        let mut response = self
+            .db
+            .client()
+            .query(&query)
+            .await
+            .context("Failed to query unprocessed memos")?;
+
+        let memos: Vec<Memo> = response.take(0).context("Failed to parse memos")?;
+
+        Ok(memos)
+    }
+
     // ========== Event Operations ==========
 
     /// Record a new event
@@ -1575,8 +1614,14 @@ impl Store {
         if !include_deleted {
             conditions.push("deleted_at IS NONE");
         }
-        if record_type.is_some() {
+
+        if let Some(rt) = record_type {
+            // If specific type requested, filter for it
             conditions.push("record_type = $record_type");
+        } else {
+            // When listing all, exclude worker transcript records (thread/entry)
+            // These are internal bookkeeping and clutter general listings
+            conditions.push("record_type NOT IN ['thread', 'entry']");
         }
 
         if !conditions.is_empty() {

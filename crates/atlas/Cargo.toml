@@ -16,6 +16,7 @@ surrealdb.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 regex.workspace = true
+sha2 = "0.10"
 
 db = { path = "../db" }
 ipc = { path = "../ipc" }
