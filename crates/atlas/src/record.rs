@@ -436,6 +436,43 @@ impl RecordEdge {
 }
 
 /// Result of a graph traversal for context assembly
+///
+/// This struct holds all records collected during a knowledge graph traversal,
+/// enabling autonomous agents to receive rich context about a codebase, its rules,
+/// available skills, and team members.
+///
+/// # Usage in Agent Orchestration
+///
+/// When dispatching a worker for a task, the orchestrator:
+/// 1. Starts from a Repo or Task record
+/// 2. Calls `AtlasStore::assemble_context()` to traverse the graph
+/// 3. Uses `to_system_prompt()` to generate agent instructions
+/// 4. Uses `mcp_server_configs()` to configure worker MCP tools
+///
+/// # Record Types Included
+///
+/// After traversal, the assembly contains:
+/// - **Repo/Initiative**: Codebase description and high-level goals
+/// - **Rules**: Coding standards, git workflow, testing requirements
+/// - **Skills**: Available agent capabilities
+/// - **People**: Team members and their roles
+/// - **MCP Servers**: Tool configurations for the worker
+///
+/// # Example
+///
+/// ```ignore
+/// let context = store.assemble_context(&repo_id, 3).await?;
+///
+/// // Generate system prompt for agent
+/// let system_prompt = context.to_system_prompt();
+///
+/// // Get MCP server configs for worker
+/// let mcp_configs = context.mcp_server_configs();
+///
+/// // Access specific record types
+/// let rules = context.rules();
+/// let skills = context.skills();
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContextAssembly {
     /// Records collected during traversal, grouped by type
@@ -479,6 +516,21 @@ impl ContextAssembly {
         self.records_of_type(RecordType::McpServer)
     }
 
+    /// Get all repos
+    pub fn repos(&self) -> Vec<&Record> {
+        self.records_of_type(RecordType::Repo)
+    }
+
+    /// Get all initiatives
+    pub fn initiatives(&self) -> Vec<&Record> {
+        self.records_of_type(RecordType::Initiative)
+    }
+
+    /// Get all teams
+    pub fn teams(&self) -> Vec<&Record> {
+        self.records_of_type(RecordType::Team)
+    }
+
     /// Convert MCP server records to MCP config JSON strings
     ///
     /// Returns a vector of JSON config strings, one per MCP server.
@@ -496,14 +548,50 @@ impl ContextAssembly {
     /// Format the context assembly as a system prompt for agents
     ///
     /// This creates a structured text representation suitable for injection
-    /// into an agent's system prompt.
+    /// into an agent's system prompt. The output includes:
+    ///
+    /// - Repository/project information for architectural context
+    /// - Rules that apply to the codebase
+    /// - Available skills
+    /// - Team members
+    ///
+    /// This enables autonomous agents to make decisions aligned with
+    /// project standards without human intervention.
     pub fn to_system_prompt(&self) -> String {
         let mut sections = Vec::new();
 
-        // Rules section
+        // Repository context section - helps agents understand the codebase
+        let repos = self.repos();
+        if !repos.is_empty() {
+            let mut repo_lines = vec!["## Repository".to_string(), String::new()];
+            for repo in repos {
+                repo_lines.push(format!("**{}**", repo.name));
+                if let Some(ref desc) = repo.description {
+                    repo_lines.push(desc.clone());
+                }
+            }
+            sections.push(repo_lines.join("\n"));
+        }
+
+        // Initiative/Project context - high-level goals
+        let initiatives = self.initiatives();
+        if !initiatives.is_empty() {
+            let mut init_lines = vec!["## Project Context".to_string(), String::new()];
+            for initiative in initiatives {
+                init_lines.push(format!("**{}**", initiative.name));
+                if let Some(ref desc) = initiative.description {
+                    init_lines.push(desc.clone());
+                }
+            }
+            sections.push(init_lines.join("\n"));
+        }
+
+        // Rules section - critical for autonomous work
         let rules = self.rules();
         if !rules.is_empty() {
             let mut rule_lines = vec!["## Rules".to_string(), String::new()];
+            rule_lines.push("Follow these rules when working on this codebase:".to_string());
+            rule_lines.push(String::new());
             for rule in rules {
                 rule_lines.push(format!("### {}", rule.name));
                 if let Some(ref desc) = rule.description {
@@ -2177,20 +2265,42 @@ mod tests {
                 make_record("rule", "TDD Required", Some("Write tests first")),
                 make_record("skill", "Rust Development", Some("Can write Rust code")),
                 make_record("person", "Luke", None),
-                make_record("repo", "memex", Some("Knowledge management system")), // Should be ignored
+                make_record("repo", "memex", Some("Knowledge management system")),
             ],
             traversal_path: vec![],
         };
 
         let prompt = assembly.to_system_prompt();
+        // Repo context section
+        assert!(prompt.contains("## Repository"));
+        assert!(prompt.contains("**memex**"));
+        assert!(prompt.contains("Knowledge management system"));
+        // Rules section
         assert!(prompt.contains("## Rules"));
         assert!(prompt.contains("### TDD Required"));
+        // Skills section
         assert!(prompt.contains("## Available Skills"));
         assert!(prompt.contains("- **Rust Development**"));
+        // Team section
         assert!(prompt.contains("## Team"));
         assert!(prompt.contains("- **Luke**"));
-        // Repo should not appear (not a recognized section)
-        assert!(!prompt.contains("memex"));
+    }
+
+    #[test]
+    fn test_to_system_prompt_with_initiative() {
+        let assembly = ContextAssembly {
+            records: vec![
+                make_record("initiative", "Context Assembly", Some("Enable autonomous agent orchestration")),
+                make_record("rule", "Git Rules", Some("Use single-line commits")),
+            ],
+            traversal_path: vec![],
+        };
+
+        let prompt = assembly.to_system_prompt();
+        assert!(prompt.contains("## Project Context"));
+        assert!(prompt.contains("**Context Assembly**"));
+        assert!(prompt.contains("Enable autonomous agent orchestration"));
+        assert!(prompt.contains("## Rules"));
     }
 
     #[test]

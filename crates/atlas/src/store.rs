@@ -1832,13 +1832,70 @@ impl Store {
 
     /// Traverse the record graph from a starting point to collect context
     ///
-    /// Starting from a record (e.g., a Repo), follows edges to collect:
-    /// - Rules that apply_to this record or its ancestors
-    /// - Skills available_to this record or its ancestors
-    /// - People who are member_of related teams
-    /// - Teams this record belongs_to
+    /// This is the core capability for autonomous agent orchestration. Given a starting
+    /// record (typically a Repo or Task), it traverses the knowledge graph to collect
+    /// all relevant context needed for an agent to work autonomously.
     ///
-    /// Returns a ContextAssembly with all collected records.
+    /// # Edge Traversal Rules
+    ///
+    /// The algorithm uses BFS with asymmetric edge traversal:
+    ///
+    /// ## Outgoing edges (current record → target)
+    ///
+    /// Only follows **hierarchy** edges upward:
+    /// - `belongs_to`: repo → team, team → company, task → project
+    /// - `part_of`: component → project, sub-task → parent-task
+    ///
+    /// ## Incoming edges (source → current record)
+    ///
+    /// Follows **applicability** edges to find what applies to this record:
+    /// - `applies_to`: rule → repo (rules that govern this codebase)
+    /// - `available_to`: skill → repo (capabilities for this codebase)
+    /// - `member_of`: person → team (team members)
+    /// - `part_of`: document → project (documents in this project)
+    /// - `owns`: person → repo (ownership)
+    /// - `contains`: project → document (containment)
+    ///
+    /// # Typical Graph Structure for Worker Context
+    ///
+    /// ```text
+    /// Starting from a Repo:
+    ///
+    ///   ┌─────────────────────────────────────────────┐
+    ///   │                   Company                   │
+    ///   └────────────────────▲────────────────────────┘
+    ///                        │ belongs_to
+    ///   ┌────────────────────┴────────────────────────┐
+    ///   │                    Team                     │
+    ///   └────────────────────▲────────────────────────┘
+    ///         member_of ┌────┴────┐ belongs_to
+    ///                   │         │
+    ///   ┌───────────────┴──┐  ┌───┴───────────────────┐
+    ///   │      Person      │  │         Repo          │◄── START
+    ///   └──────────────────┘  └───▲───────────▲───────┘
+    ///                             │           │
+    ///                   applies_to│           │available_to
+    ///                   ┌─────────┴──┐   ┌────┴────────────┐
+    ///                   │    Rule    │   │      Skill      │
+    ///                   └────────────┘   └─────────────────┘
+    /// ```
+    ///
+    /// # Output
+    ///
+    /// Returns a [`ContextAssembly`] containing:
+    /// - All collected records (rules, skills, people, repos, teams, etc.)
+    /// - A traversal path for debugging
+    ///
+    /// The assembly can be converted to a system prompt via [`ContextAssembly::to_system_prompt()`]
+    /// which formats rules, skills, and team info for agent consumption.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let context = store.assemble_context(&repo_id, 3).await?;
+    /// let system_prompt = context.to_system_prompt();
+    /// let mcp_configs = context.mcp_server_configs();
+    /// ```
     pub async fn assemble_context(
         &self,
         start_record_id: &str,
@@ -4010,6 +4067,269 @@ mod tests {
         // Only strips leading @ or #, preserves internal ones
         assert_eq!(normalize_identity_query("foo@bar.com"), "foo@bar.com");
         assert_eq!(normalize_identity_query("@user@domain"), "user@domain");
+    }
+
+    /// Comprehensive integration test for context assembly graph traversal.
+    ///
+    /// Tests the full graph structure expected for autonomous agent orchestration:
+    ///   - Repo as entry point
+    ///   - Rules that apply_to the repo
+    ///   - Skills that are available_to the repo
+    ///   - Team that the repo belongs_to
+    ///   - People who are member_of the team
+    ///   - MCP servers for the repo
+    ///
+    /// Run with: cargo test -p atlas context_assembly_full_graph -- --nocapture --ignored
+    #[tokio::test]
+    #[ignore] // Requires running database
+    async fn context_assembly_full_graph() -> Result<()> {
+        use crate::record::McpServerContent;
+
+        let config = DatabaseConfig::embedded(PathBuf::from("./.memex/db"));
+        let db = db::Database::connect(&config, "atlas", None).await?;
+        let store = Store::new(db);
+
+        // Helper to clean up test records
+        async fn cleanup(store: &Store, record_type: &str, name: &str) {
+            if let Ok(Some(r)) = store.get_record_by_type_name(record_type, name).await {
+                if let Some(id) = r.id_str() {
+                    let _ = store.delete_record(&id).await;
+                }
+            }
+        }
+
+        // Clean up from any previous test runs
+        let test_records = vec![
+            ("repo", "test-context-repo"),
+            ("team", "test-context-team"),
+            ("person", "test-person-alice"),
+            ("person", "test-person-bob"),
+            ("rule", "test-rule-commits"),
+            ("rule", "test-rule-testing"),
+            ("skill", "test-skill-git"),
+            ("mcp_server", "test-mcp-github"),
+        ];
+        for (record_type, name) in &test_records {
+            cleanup(&store, record_type, name).await;
+        }
+
+        // 1. Create team
+        let team = Record::new(RecordType::Team, "test-context-team")
+            .with_description("Test development team");
+        let team = store.create_record(team).await?;
+        let team_id = team.id_str().unwrap();
+
+        // 2. Create people who are member_of the team
+        let alice = Record::new(RecordType::Person, "test-person-alice")
+            .with_description("Lead developer, Rust expert");
+        let alice = store.create_record(alice).await?;
+        let alice_id = alice.id_str().unwrap();
+        store.create_edge(&alice_id, &team_id, EdgeRelation::MemberOf, None).await?;
+
+        let bob = Record::new(RecordType::Person, "test-person-bob")
+            .with_description("Backend developer");
+        let bob = store.create_record(bob).await?;
+        let bob_id = bob.id_str().unwrap();
+        store.create_edge(&bob_id, &team_id, EdgeRelation::MemberOf, None).await?;
+
+        // 3. Create repo that belongs_to the team
+        let repo = Record::new(RecordType::Repo, "test-context-repo")
+            .with_description("Test repository for context assembly")
+            .with_content(json!({
+                "path": "/path/to/test-repo",
+                "default_branch": "main"
+            }));
+        let repo = store.create_record(repo).await?;
+        let repo_id = repo.id_str().unwrap();
+        store.create_edge(&repo_id, &team_id, EdgeRelation::BelongsTo, None).await?;
+
+        // 4. Create rules that apply_to the repo
+        let rule_commits = Record::new(RecordType::Rule, "test-rule-commits")
+            .with_description("Use single-line commit messages under 50 characters");
+        let rule_commits = store.create_record(rule_commits).await?;
+        let rule_commits_id = rule_commits.id_str().unwrap();
+        store.create_edge(&rule_commits_id, &repo_id, EdgeRelation::AppliesTo, None).await?;
+
+        let rule_testing = Record::new(RecordType::Rule, "test-rule-testing")
+            .with_description("All code must have unit tests with >80% coverage");
+        let rule_testing = store.create_record(rule_testing).await?;
+        let rule_testing_id = rule_testing.id_str().unwrap();
+        store.create_edge(&rule_testing_id, &repo_id, EdgeRelation::AppliesTo, None).await?;
+
+        // 5. Create skill that is available_to the repo
+        let skill_git = Record::new(RecordType::Skill, "test-skill-git")
+            .with_description("Can perform git operations including commits, branches, and merges");
+        let skill_git = store.create_record(skill_git).await?;
+        let skill_git_id = skill_git.id_str().unwrap();
+        store.create_edge(&skill_git_id, &repo_id, EdgeRelation::AvailableTo, None).await?;
+
+        // 6. Create MCP server record
+        let mcp_content = McpServerContent {
+            command: "gh".to_string(),
+            args: vec!["mcp".to_string()],
+            env: None,
+        };
+        let mcp_server = Record::new(RecordType::McpServer, "test-mcp-github")
+            .with_description("GitHub CLI MCP server")
+            .with_content(mcp_content.to_json());
+        let mcp_server = store.create_record(mcp_server).await?;
+        let mcp_server_id = mcp_server.id_str().unwrap();
+        store.create_edge(&mcp_server_id, &repo_id, EdgeRelation::AvailableTo, None).await?;
+
+        // NOW TEST CONTEXT ASSEMBLY
+        println!("\n=== Testing context assembly from repo ===");
+
+        let context = store.assemble_context(&repo_id, 3).await?;
+
+        println!("Traversal path:");
+        for path in &context.traversal_path {
+            println!("  {}", path);
+        }
+
+        println!("\nRecords found: {}", context.records.len());
+        for record in &context.records {
+            println!(
+                "  [{}] {} - {}",
+                record.record_type,
+                record.name,
+                record.description.as_deref().unwrap_or("")
+            );
+        }
+
+        // Verify we found all expected records
+        assert_eq!(context.rules().len(), 2, "Should find 2 rules");
+        assert_eq!(context.skills().len(), 1, "Should find 1 skill");
+        assert_eq!(context.people().len(), 2, "Should find 2 people");
+        assert_eq!(context.mcp_servers().len(), 1, "Should find 1 MCP server");
+
+        // Verify specific records were found
+        let rule_names: Vec<&str> = context.rules().iter().map(|r| r.name.as_str()).collect();
+        assert!(rule_names.contains(&"test-rule-commits"), "Should find commits rule");
+        assert!(rule_names.contains(&"test-rule-testing"), "Should find testing rule");
+
+        let people_names: Vec<&str> = context.people().iter().map(|r| r.name.as_str()).collect();
+        assert!(people_names.contains(&"test-person-alice"), "Should find Alice");
+        assert!(people_names.contains(&"test-person-bob"), "Should find Bob");
+
+        // Verify system prompt generation
+        println!("\n=== Generated system prompt ===");
+        let prompt = context.to_system_prompt();
+        println!("{}", prompt);
+
+        assert!(prompt.contains("# Context from Knowledge Base"));
+        assert!(prompt.contains("## Rules"));
+        assert!(prompt.contains("test-rule-commits"));
+        assert!(prompt.contains("test-rule-testing"));
+        assert!(prompt.contains("## Available Skills"));
+        assert!(prompt.contains("test-skill-git"));
+        assert!(prompt.contains("## Team"));
+        assert!(prompt.contains("test-person-alice"));
+        assert!(prompt.contains("test-person-bob"));
+
+        // Verify MCP server config extraction
+        println!("\n=== MCP server configs ===");
+        let mcp_configs = context.mcp_server_configs();
+        assert_eq!(mcp_configs.len(), 1, "Should find 1 MCP config");
+        let config_json = &mcp_configs[0];
+        println!("{}", config_json);
+
+        // Parse and verify the config
+        let parsed: serde_json::Value = serde_json::from_str(config_json)?;
+        assert!(parsed["mcpServers"]["test-mcp-github"].is_object());
+        assert_eq!(parsed["mcpServers"]["test-mcp-github"]["command"], "gh");
+
+        // Cleanup
+        for (record_type, name) in &test_records {
+            cleanup(&store, record_type, name).await;
+        }
+        println!("\n=== Cleaned up test records ===");
+
+        Ok(())
+    }
+
+    /// Test context assembly depth limiting.
+    ///
+    /// Verifies that the max_depth parameter correctly limits traversal depth.
+    ///
+    /// Run with: cargo test -p atlas context_assembly_depth_limit -- --nocapture --ignored
+    #[tokio::test]
+    #[ignore] // Requires running database
+    async fn context_assembly_depth_limit() -> Result<()> {
+        let config = DatabaseConfig::embedded(PathBuf::from("./.memex/db"));
+        let db = db::Database::connect(&config, "atlas", None).await?;
+        let store = Store::new(db);
+
+        // Helper to clean up test records
+        async fn cleanup(store: &Store, record_type: &str, name: &str) {
+            if let Ok(Some(r)) = store.get_record_by_type_name(record_type, name).await {
+                if let Some(id) = r.id_str() {
+                    let _ = store.delete_record(&id).await;
+                }
+            }
+        }
+
+        // Clean up
+        let test_records = vec![
+            ("repo", "depth-repo"),
+            ("team", "depth-team"),
+            ("person", "depth-person"),
+            ("rule", "depth-rule"),
+        ];
+        for (record_type, name) in &test_records {
+            cleanup(&store, record_type, name).await;
+        }
+
+        // Create a chain: repo -> team -> person (via member_of)
+        //                 rule -> repo (via applies_to)
+        let team = Record::new(RecordType::Team, "depth-team");
+        let team = store.create_record(team).await?;
+        let team_id = team.id_str().unwrap();
+
+        let person = Record::new(RecordType::Person, "depth-person");
+        let person = store.create_record(person).await?;
+        let person_id = person.id_str().unwrap();
+        store.create_edge(&person_id, &team_id, EdgeRelation::MemberOf, None).await?;
+
+        let repo = Record::new(RecordType::Repo, "depth-repo");
+        let repo = store.create_record(repo).await?;
+        let repo_id = repo.id_str().unwrap();
+        store.create_edge(&repo_id, &team_id, EdgeRelation::BelongsTo, None).await?;
+
+        let rule = Record::new(RecordType::Rule, "depth-rule");
+        let rule = store.create_record(rule).await?;
+        let rule_id = rule.id_str().unwrap();
+        store.create_edge(&rule_id, &repo_id, EdgeRelation::AppliesTo, None).await?;
+
+        // Test depth 0: should only get the starting record
+        let ctx0 = store.assemble_context(&repo_id, 0).await?;
+        println!("Depth 0: {} records", ctx0.records.len());
+        assert_eq!(ctx0.records.len(), 1, "Depth 0 should only include the start record");
+        assert_eq!(ctx0.records[0].name, "depth-repo");
+
+        // Test depth 1: should get repo + immediate neighbors (team, rule)
+        let ctx1 = store.assemble_context(&repo_id, 1).await?;
+        println!("Depth 1: {} records", ctx1.records.len());
+        assert!(ctx1.records.len() >= 2, "Depth 1 should include immediate neighbors");
+        let names: Vec<&str> = ctx1.records.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"depth-repo"));
+        assert!(names.contains(&"depth-team") || names.contains(&"depth-rule"));
+
+        // Test depth 3: should get all records
+        let ctx3 = store.assemble_context(&repo_id, 3).await?;
+        println!("Depth 3: {} records", ctx3.records.len());
+        assert_eq!(ctx3.records.len(), 4, "Depth 3 should include all records");
+        let names: Vec<&str> = ctx3.records.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"depth-repo"));
+        assert!(names.contains(&"depth-team"));
+        assert!(names.contains(&"depth-person"));
+        assert!(names.contains(&"depth-rule"));
+
+        // Cleanup
+        for (record_type, name) in &test_records {
+            cleanup(&store, record_type, name).await;
+        }
+
+        Ok(())
     }
 }
 
