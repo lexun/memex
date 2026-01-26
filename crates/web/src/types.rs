@@ -40,6 +40,8 @@ pub struct Worker {
     pub id: String,
     pub state: String,
     pub current_task: Option<String>,
+    /// Task name/title for display (truncated version of task title)
+    pub task_name: Option<String>,
     pub worktree: Option<String>,
     pub cwd: String,
     pub model: Option<String>,
@@ -157,6 +159,8 @@ pub struct ActivityEntry {
     pub worker_id: String,
     pub worker_state: String,
     pub current_task: Option<String>,
+    /// Task name/title for display (truncated version of task title)
+    pub task_name: Option<String>,
     pub timestamp: String,
     pub prompt: String,
     pub response: Option<String>,

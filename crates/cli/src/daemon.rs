@@ -4384,19 +4384,18 @@ async fn handle_cortex_dispatch_task(
         .map(|s| s.to_string());
 
     // 2. Find context source (repo or project record)
-    // Try to find a repo record that matches the project name
+    // Try to find a record that matches the project name, checking multiple types
     let context_record_id = if let Some(ref project) = task_project {
-        // Try to find a repo with this name
-        match stores.atlas.get_record_by_type_name("repo", project).await {
-            Ok(Some(repo)) => repo.id.map(|t| t.id.to_raw()),
-            _ => {
-                // Try to find a project record
-                match stores.atlas.get_record_by_type_name("initiative", project).await {
-                    Ok(Some(proj)) => proj.id.map(|t| t.id.to_raw()),
-                    _ => None
-                }
+        // Try repo first, then project, then initiative
+        let record_types = ["repo", "project", "initiative"];
+        let mut found_id = None;
+        for record_type in record_types {
+            if let Ok(Some(record)) = stores.atlas.get_record_by_type_name(record_type, project).await {
+                found_id = record.id.map(|t| t.id.to_raw());
+                break;
             }
         }
+        found_id
     } else {
         None
     };
@@ -4740,16 +4739,17 @@ async fn dispatch_single_task(
         .map(|s| s.to_string());
 
     // 2. Find context source (repo or project record)
+    // Try to find a record that matches the project name, checking multiple types
     let context_record_id = if let Some(ref project) = task_project {
-        match stores.atlas.get_record_by_type_name("repo", project).await {
-            Ok(Some(repo)) => repo.id.map(|t| t.id.to_raw()),
-            _ => {
-                match stores.atlas.get_record_by_type_name("initiative", project).await {
-                    Ok(Some(proj)) => proj.id.map(|t| t.id.to_raw()),
-                    _ => None
-                }
+        let record_types = ["repo", "project", "initiative"];
+        let mut found_id = None;
+        for record_type in record_types {
+            if let Ok(Some(record)) = stores.atlas.get_record_by_type_name(record_type, project).await {
+                found_id = record.id.map(|t| t.id.to_raw());
+                break;
             }
         }
+        found_id
     } else {
         None
     };
@@ -5101,7 +5101,7 @@ async fn handle_vibetree_merge(request: &Request) -> Result<serde_json::Value, I
         .map_err(|e| IpcError::invalid_params(format!("Invalid params: {}", e)))?;
 
     let path = std::path::PathBuf::from(&params.cwd);
-    let into_branch = params.into.as_deref().unwrap_or("main");
+    let into_branch = params.into.as_deref().unwrap_or("dev");
     let squash = params.squash.unwrap_or(false);
     let remove_after = params.remove.unwrap_or(false);
 

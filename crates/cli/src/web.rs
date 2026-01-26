@@ -178,14 +178,16 @@ async fn api_get_task(
         .collect();
 
     // Get workers assigned to this task
-    let assigned_workers: Vec<Worker> = state
+    let db_workers = state
         .forge
         .get_workers_by_task(&id)
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(worker_to_view)
-        .collect();
+        .unwrap_or_default();
+    let mut assigned_workers = Vec::with_capacity(db_workers.len());
+    for w in db_workers {
+        let task_name = lookup_task_name(&state.atlas, w.current_task.as_deref()).await;
+        assigned_workers.push(worker_to_view(w, task_name));
+    }
 
     let task_view = Task {
         id: task.id.map(|id| id.id.to_string()).unwrap_or_default(),
@@ -206,11 +208,12 @@ async fn api_get_task(
     .into_response()
 }
 
-fn worker_to_view(w: forge::DbWorker) -> Worker {
+fn worker_to_view(w: forge::DbWorker, task_name: Option<String>) -> Worker {
     Worker {
         id: w.worker_id,
         state: w.state,
         current_task: w.current_task,
+        task_name,
         worktree: w.worktree,
         cwd: w.cwd,
         model: w.model,
@@ -222,11 +225,38 @@ fn worker_to_view(w: forge::DbWorker) -> Worker {
     }
 }
 
+/// Helper to truncate a task name for display (max 30 chars)
+fn truncate_task_name(name: &str) -> String {
+    if name.len() > 30 {
+        format!("{}...", &name[..27])
+    } else {
+        name.to_string()
+    }
+}
+
+/// Look up the task name for a worker's current_task (Atlas record ID)
+async fn lookup_task_name(atlas: &atlas::Store, task_id: Option<&str>) -> Option<String> {
+    match task_id {
+        Some(id) => {
+            if let Ok(Some(record)) = atlas.get_record(id).await {
+                Some(truncate_task_name(&record.name))
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
+}
+
 async fn api_list_workers(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     match state.forge.list_workers(None).await {
         Ok(workers) => {
-            let workers: Vec<Worker> = workers.into_iter().map(worker_to_view).collect();
-            Json(workers).into_response()
+            let mut result = Vec::with_capacity(workers.len());
+            for w in workers {
+                let task_name = lookup_task_name(&state.atlas, w.current_task.as_deref()).await;
+                result.push(worker_to_view(w, task_name));
+            }
+            Json(result).into_response()
         }
         Err(e) => {
             tracing::error!("Failed to list workers: {}", e);
@@ -240,7 +270,10 @@ async fn api_get_worker(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.forge.get_worker(&id).await {
-        Ok(Some(w)) => Json(worker_to_view(w)).into_response(),
+        Ok(Some(w)) => {
+            let task_name = lookup_task_name(&state.atlas, w.current_task.as_deref()).await;
+            Json(worker_to_view(w, task_name)).into_response()
+        }
         Ok(None) => (StatusCode::NOT_FOUND, "Worker not found").into_response(),
         Err(e) => {
             tracing::error!("Failed to get worker {}: {}", id, e);
@@ -643,6 +676,7 @@ async fn api_get_activity_feed(State(state): State<Arc<WebState>>) -> impl IntoR
     // Get transcript for each worker and combine entries
     for worker in &workers {
         let worker_id = cortex::WorkerId::from_string(&worker.worker_id);
+        let task_name = lookup_task_name(&state.atlas, worker.current_task.as_deref()).await;
 
         // Get transcript for this worker (limit to last 10 entries per worker)
         if let Ok(entries) = state.workers.transcript(&worker_id, Some(10)).await {
@@ -651,6 +685,7 @@ async fn api_get_activity_feed(State(state): State<Arc<WebState>>) -> impl IntoR
                     worker_id: worker.worker_id.clone(),
                     worker_state: worker.state.clone(),
                     current_task: worker.current_task.clone(),
+                    task_name: task_name.clone(),
                     timestamp: e.timestamp.to_rfc3339(),
                     prompt: e.prompt,
                     response: e.response,
@@ -732,6 +767,7 @@ async fn get_activity_for_sse(state: &Arc<WebState>) -> ActivityFeed {
     // Get transcript for each worker and combine entries
     for worker in &workers {
         let worker_id = cortex::WorkerId::from_string(&worker.worker_id);
+        let task_name = lookup_task_name(&state.atlas, worker.current_task.as_deref()).await;
 
         // Get transcript for this worker (limit to last 10 entries per worker)
         if let Ok(entries) = state.workers.transcript(&worker_id, Some(10)).await {
@@ -740,6 +776,7 @@ async fn get_activity_for_sse(state: &Arc<WebState>) -> ActivityFeed {
                     worker_id: worker.worker_id.clone(),
                     worker_state: worker.state.clone(),
                     current_task: worker.current_task.clone(),
+                    task_name: task_name.clone(),
                     timestamp: e.timestamp.to_rfc3339(),
                     prompt: e.prompt,
                     response: e.response,

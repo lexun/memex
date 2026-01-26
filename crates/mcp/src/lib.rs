@@ -2214,7 +2214,7 @@ impl McpServer for MemexMcpServer {
 
     /// Merge a worktree branch into another branch
     ///
-    /// Merges the specified branch into the target branch (default: main).
+    /// Merges the specified branch into the target branch (default: dev).
     /// Optionally squashes commits and removes the worktree after merge.
     ///
     /// IMPORTANT: Always provide a clear, descriptive commit message.
@@ -2229,7 +2229,7 @@ impl McpServer for MemexMcpServer {
         /// Commit message for the merge. Required. Use a single line under 50 chars
         /// describing what the branch adds (e.g., "Add macOS launchd daemon autostart").
         message: String,
-        /// Target branch to merge into (default: "main")
+        /// Target branch to merge into (default: "dev")
         into: Option<String>,
         /// Squash commits into a single commit
         squash: Option<bool>,
@@ -2248,7 +2248,7 @@ impl McpServer for MemexMcpServer {
         match self.ipc_client.request("vibetree_merge", params).await {
             Ok(result) => {
                 let merged = result.get("merged").and_then(|v| v.as_str()).unwrap_or(&branch_name);
-                let into_branch = result.get("into").and_then(|v| v.as_str()).unwrap_or("main");
+                let into_branch = result.get("into").and_then(|v| v.as_str()).unwrap_or("dev");
                 let squashed = result.get("squashed").and_then(|v| v.as_bool()).unwrap_or(false);
                 let removed = result.get("removed").and_then(|v| v.as_bool()).unwrap_or(false);
 

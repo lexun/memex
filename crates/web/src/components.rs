@@ -1176,9 +1176,11 @@ fn WorkersTable(workers: Vec<Worker>) -> impl IntoView {
                                         .map(|task_id| {
                                             // Worker task IDs are Atlas record IDs, not Forge task IDs
                                             let task_href = format!("/records/{}", task_id);
+                                            // Show task name if available, otherwise fall back to task ID
+                                            let display_text = w.task_name.clone().unwrap_or_else(|| task_id.clone());
                                             view! {
-                                                <a href=task_href>
-                                                    <code>{task_id}</code>
+                                                <a href=task_href title=task_id.clone()>
+                                                    {display_text}
                                                 </a>
                                             }
                                                 .into_view()
@@ -1191,13 +1193,15 @@ fn WorkersTable(workers: Vec<Worker>) -> impl IntoView {
                                         .worktree
                                         .as_ref()
                                         .map(|path| {
-                                            let truncated = if path.len() > 40 {
-                                                format!("...{}", &path[path.len() - 37..])
-                                            } else {
-                                                path.clone()
-                                            };
+                                            // Extract branch name from vibetree path
+                                            // e.g., "/path/to/.vibetree/branches/task-abc123" -> "task-abc123"
+                                            let branch_name = path
+                                                .trim_end_matches('/')
+                                                .rsplit('/')
+                                                .next()
+                                                .unwrap_or(path);
                                             view! {
-                                                <code title=path.clone()>{truncated}</code>
+                                                <code title=path.clone()>{branch_name.to_string()}</code>
                                             }
                                                 .into_view()
                                         })
@@ -1485,10 +1489,17 @@ fn WorkerDetailContent(
                     .worktree
                     .as_ref()
                     .map(|path| {
+                        // Extract branch name from vibetree path
+                        let branch_name = path
+                            .trim_end_matches('/')
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(path)
+                            .to_string();
                         view! {
                             <div class="card">
                                 <h3>"Worktree"</h3>
-                                <code class="path-display">{path.clone()}</code>
+                                <code class="path-display" title=path.clone()>{branch_name}</code>
                             </div>
                         }
                     })}
@@ -1536,9 +1547,11 @@ fn WorkerDetailContent(
                         .map(|task_id| {
                             // Worker task IDs are Atlas record IDs, not Forge task IDs
                             let href = format!("/records/{}", task_id);
+                            // Show task name if available, otherwise fall back to task ID
+                            let display_text = worker.task_name.clone().unwrap_or_else(|| task_id.clone());
                             view! {
-                                <a href=href class="task-link">
-                                    <code>{task_id.clone()}</code>
+                                <a href=href class="task-link" title=task_id.clone()>
+                                    {display_text}
                                     <span class="link-arrow">"\u{2192}"</span>
                                 </a>
                             }
@@ -1707,9 +1720,11 @@ fn ActivityEntryView(entry: ActivityEntry) -> impl IntoView {
                     .map(|task_id| {
                         // Worker task IDs are Atlas record IDs, not Forge task IDs
                         let task_href = format!("/records/{}", task_id);
+                        // Show task name if available, otherwise fall back to task ID
+                        let display_text = entry.task_name.clone().unwrap_or_else(|| task_id.clone());
                         view! {
-                            <a href=task_href class="activity-task-link">
-                                "Task: " <code>{task_id.clone()}</code>
+                            <a href=task_href class="activity-task-link" title=task_id.clone()>
+                                {display_text}
                             </a>
                         }
                     })}
